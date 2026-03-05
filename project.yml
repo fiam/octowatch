@@ -1,0 +1,30 @@
+name: Octobar
+options:
+  createIntermediateGroups: true
+configs:
+  Debug: debug
+  Release: release
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: dev.octobar.app
+    SWIFT_VERSION: 6.0
+targets:
+  Octobar:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Sources/Octobar
+    settings:
+      base:
+        PRODUCT_NAME: Octobar
+        INFOPLIST_FILE: Octobar/Info.plist
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: YES
+schemes:
+  Octobar:
+    build:
+      targets:
+        Octobar: all
+    run:
+      config: Debug
