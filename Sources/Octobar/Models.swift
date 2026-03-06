@@ -4,7 +4,6 @@ enum AttentionItemType: String, Hashable, Sendable {
     case assignedPullRequest
     case actionableNotification
     case actionRequiredRun
-    case postMergeWorkflowFailure
 
     var iconName: String {
         switch self {
@@ -14,8 +13,6 @@ enum AttentionItemType: String, Hashable, Sendable {
             return "at"
         case .actionRequiredRun:
             return "gear.badge.xmark"
-        case .postMergeWorkflowFailure:
-            return "exclamationmark.triangle.fill"
         }
     }
 }

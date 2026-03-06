@@ -37,8 +37,7 @@ This file captures project-specific guidance for coding agents working in `octob
   - assigned pull requests
   - actionable notifications
   - action-required workflow runs
-  - post-merge workflow watch (for recently merged PRs reviewed/authored by the user)
-- Post-merge watch resolves the merge commit SHA per PR and inspects workflow runs on that SHA.
+- Items related to already closed or merged pull requests should be filtered out.
 - Prefer conservative API usage and keep polling interval at or above 60s unless user asks otherwise.
 
 ## Security And Privacy

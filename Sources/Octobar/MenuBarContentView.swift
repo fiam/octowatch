@@ -187,8 +187,6 @@ struct MenuBarContentView: View {
             return .secondary
         case .actionRequiredRun:
             return .orange
-        case .postMergeWorkflowFailure:
-            return .red
         }
     }
 }

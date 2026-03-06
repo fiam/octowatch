@@ -43,23 +43,19 @@ struct GitHubClient {
 
         async let pullRequestsTask = fetchAssignedPullRequests(token: token, login: login)
         async let notificationsTask = fetchActionableNotifications(token: token)
-        async let postMergeWatchTask = fetchPostMergeWatchItems(token: token, login: login)
 
         let pullRequests = try await pullRequestsTask
         let notifications = try await notificationsTask
-        let postMergeWatchItems = (try? await postMergeWatchTask) ?? []
 
         let repositories = Set(
             pullRequests.map(\PullRequestSummary.repository)
             + notifications.map(\NotificationSummary.repository)
-            + postMergeWatchItems.map(\PostMergeWatchSummary.repository)
         )
         let actionRuns = try await fetchActionRequiredRuns(token: token, actor: login, repositories: Array(repositories))
         let attentionItems = buildAttentionItems(
             pullRequests: pullRequests,
             notifications: notifications,
-            actionRuns: actionRuns,
-            postMergeWatchItems: postMergeWatchItems
+            actionRuns: actionRuns
         )
 
         return GitHubSnapshot(
@@ -71,8 +67,7 @@ struct GitHubClient {
     private func buildAttentionItems(
         pullRequests: [PullRequestSummary],
         notifications: [NotificationSummary],
-        actionRuns: [ActionRunSummary],
-        postMergeWatchItems: [PostMergeWatchSummary]
+        actionRuns: [ActionRunSummary]
     ) -> [AttentionItem] {
         let pullRequestItems = pullRequests.map { pullRequest in
             AttentionItem(
@@ -107,22 +102,7 @@ struct GitHubClient {
             )
         }
 
-        let postMergeFailureItems = postMergeWatchItems
-            .filter { $0.status == .failed }
-            .map { watchItem in
-                let failureLabel = watchItem.failedRuns.first?.name ?? "Workflow failure"
-
-                return AttentionItem(
-                    id: "postmerge:\(watchItem.id)",
-                    type: .postMergeWorkflowFailure,
-                    title: watchItem.title,
-                    subtitle: "\(watchItem.repository) · \(failureLabel)",
-                    timestamp: watchItem.mergedAt,
-                    url: watchItem.destinationURL
-                )
-            }
-
-        return (pullRequestItems + notificationItems + actionRunItems + postMergeFailureItems)
+        return (pullRequestItems + notificationItems + actionRunItems)
             .sorted { $0.timestamp > $1.timestamp }
     }
 
@@ -191,23 +171,80 @@ struct GitHubClient {
             "manual"
         ]
 
-        return threads
-            .filter { actionableReasons.contains($0.reason) }
-            .map { thread in
-                NotificationSummary(
-                    id: thread.id,
-                    title: thread.subject.title,
-                    reason: thread.reason,
-                    repository: thread.repository.fullName,
-                    url: subjectWebURL(
-                        subjectURL: thread.subject.url,
-                        repositoryWebURL: thread.repository.htmlURL,
-                        subjectType: thread.subject.type
-                    ),
-                    updatedAt: thread.updatedAt
-                )
+        let candidateThreads = threads.filter { actionableReasons.contains($0.reason) }
+
+        return await withTaskGroup(of: NotificationSummary?.self) { group in
+            for thread in candidateThreads {
+                group.addTask {
+                    do {
+                        if let pullRequestReference = pullRequestReference(from: thread.subject.url) {
+                            let isOpen = try await isPullRequestOpen(
+                                token: token,
+                                reference: pullRequestReference
+                            )
+                            if !isOpen {
+                                return nil
+                            }
+                        }
+
+                        return NotificationSummary(
+                            id: thread.id,
+                            title: thread.subject.title,
+                            reason: thread.reason,
+                            repository: thread.repository.fullName,
+                            url: subjectWebURL(
+                                subjectURL: thread.subject.url,
+                                repositoryWebURL: thread.repository.htmlURL,
+                                subjectType: thread.subject.type
+                            ),
+                            updatedAt: thread.updatedAt
+                        )
+                    } catch {
+                        return nil
+                    }
+                }
             }
-            .sorted { $0.updatedAt > $1.updatedAt }
+
+            var items: [NotificationSummary] = []
+            for await item in group {
+                if let item {
+                    items.append(item)
+                }
+            }
+
+            return items.sorted { $0.updatedAt > $1.updatedAt }
+        }
+    }
+
+    private func pullRequestReference(from subjectURL: URL?) -> PullRequestReference? {
+        guard let subjectURL else {
+            return nil
+        }
+
+        let parts = subjectURL.pathComponents
+        guard
+            let reposIndex = parts.firstIndex(of: "repos"),
+            reposIndex + 4 < parts.count,
+            parts[reposIndex + 3] == "pulls",
+            let number = Int(parts[reposIndex + 4])
+        else {
+            return nil
+        }
+
+        return PullRequestReference(
+            owner: parts[reposIndex + 1],
+            name: parts[reposIndex + 2],
+            number: number
+        )
+    }
+
+    private func isPullRequestOpen(token: String, reference: PullRequestReference) async throws -> Bool {
+        let pullRequest: PullRequestStateResponse = try await request(
+            path: "/repos/\(reference.owner)/\(reference.name)/pulls/\(reference.number)",
+            token: token
+        )
+
+        return pullRequest.state == "open" && !pullRequest.merged
     }
 
     private func fetchPostMergeWatchItems(token: String, login: String) async throws -> [PostMergeWatchSummary] {
@@ -571,6 +608,12 @@ private struct RepositoryIdentifier: Hashable, Sendable {
     let name: String
 }
 
+private struct PullRequestReference: Hashable, Sendable {
+    let owner: String
+    let name: String
+    let number: Int
+}
+
 private struct IssueItem: Decodable {
     let id: Int
     let number: Int
@@ -613,6 +656,11 @@ private struct PullRequestDetails: Decodable {
         case mergedAt = "merged_at"
         case mergeCommitSHA = "merge_commit_sha"
     }
+}
+
+private struct PullRequestStateResponse: Decodable {
+    let state: String
+    let merged: Bool
 }
 
 private struct NotificationThread: Decodable {
