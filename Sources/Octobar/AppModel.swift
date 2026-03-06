@@ -3,11 +3,7 @@ import SwiftUI
 
 @MainActor
 final class AppModel: ObservableObject {
-    @Published private(set) var assignedPullRequests: [PullRequestSummary] = []
-    @Published private(set) var actionableNotifications: [NotificationSummary] = []
-    @Published private(set) var actionRequiredRuns: [ActionRunSummary] = []
-    @Published private(set) var postMergeWatchItems: [PostMergeWatchSummary] = []
-    @Published private(set) var userLogin: String?
+    @Published private(set) var attentionItems: [AttentionItem] = []
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var lastError: String?
     @Published private(set) var isRefreshing = false
@@ -21,9 +17,14 @@ final class AppModel: ObservableObject {
     private let notifier = UserNotifier()
 
     private var token: String?
+    private var userLogin: String?
     private var pollingTask: Task<Void, Never>?
     private var knownItemIDs = Set<String>()
-    private var knownPostMergeFailureIDs = Set<String>()
+    private let relativeDateFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
 
     init() {
         token = keychain.read(account: tokenAccount)
@@ -51,14 +52,16 @@ final class AppModel: ObservableObject {
     }
 
     var actionableCount: Int {
-        assignedPullRequests.count
-            + actionableNotifications.count
-            + actionRequiredRuns.count
-            + postMergeFailureItems.count
+        attentionItems.count
     }
 
-    var postMergeFailureItems: [PostMergeWatchSummary] {
-        postMergeWatchItems.filter { $0.status.isActionable }
+    var relativeLastUpdated: String {
+        guard let lastUpdated else {
+            return "Not refreshed yet"
+        }
+
+        let relative = relativeDateFormatter.localizedString(for: lastUpdated, relativeTo: Date())
+        return "Updated \(relative)"
     }
 
     func saveToken() {
@@ -76,7 +79,6 @@ final class AppModel: ObservableObject {
 
         token = cleaned
         knownItemIDs.removeAll()
-        knownPostMergeFailureIDs.removeAll()
         lastError = nil
 
         startPollingIfNeeded()
@@ -88,15 +90,11 @@ final class AppModel: ObservableObject {
 
         token = nil
         tokenInput = ""
-        assignedPullRequests = []
-        actionableNotifications = []
-        actionRequiredRuns = []
-        postMergeWatchItems = []
+        attentionItems = []
         userLogin = nil
         lastUpdated = nil
         lastError = nil
         knownItemIDs.removeAll()
-        knownPostMergeFailureIDs.removeAll()
 
         pollingTask?.cancel()
         pollingTask = nil
@@ -162,10 +160,7 @@ final class AppModel: ObservableObject {
         do {
             let snapshot = try await client.fetchSnapshot(token: token, preferredLogin: userLogin)
             userLogin = snapshot.login
-            assignedPullRequests = snapshot.assignedPullRequests
-            actionableNotifications = snapshot.actionableNotifications
-            actionRequiredRuns = snapshot.actionRequiredRuns
-            postMergeWatchItems = snapshot.postMergeWatchItems
+            attentionItems = snapshot.attentionItems
             lastUpdated = Date()
             lastError = nil
 
@@ -189,14 +184,7 @@ final class AppModel: ObservableObject {
     }
 
     private func notifyIfNeeded() {
-        let currentIDs = Set(
-            assignedPullRequests.map { "pr:\($0.id)" }
-            + actionableNotifications.map { "notif:\($0.id)" }
-            + actionRequiredRuns.map { "run:\($0.id)" }
-        )
-        let currentPostMergeFailureIDs = Set(
-            postMergeFailureItems.map { "postmerge:\($0.id)" }
-        )
+        let currentIDs = Set(attentionItems.map(\.id))
 
         let newItems = currentIDs.subtracting(knownItemIDs)
         if !knownItemIDs.isEmpty, !newItems.isEmpty {
@@ -208,17 +196,6 @@ final class AppModel: ObservableObject {
             )
         }
 
-        let newFailedPostMergeItems = currentPostMergeFailureIDs.subtracting(knownPostMergeFailureIDs)
-        if !knownPostMergeFailureIDs.isEmpty, !newFailedPostMergeItems.isEmpty {
-            let count = newFailedPostMergeItems.count
-            let suffix = count == 1 ? "" : "s"
-            notifier.notify(
-                title: "Octobar",
-                body: "\(count) post-merge workflow\(suffix) failed."
-            )
-        }
-
         knownItemIDs = currentIDs
-        knownPostMergeFailureIDs = currentPostMergeFailureIDs
     }
 }

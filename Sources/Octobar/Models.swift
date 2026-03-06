@@ -1,5 +1,34 @@
 import Foundation
 
+enum AttentionItemType: String, Hashable, Sendable {
+    case assignedPullRequest
+    case actionableNotification
+    case actionRequiredRun
+    case postMergeWorkflowFailure
+
+    var iconName: String {
+        switch self {
+        case .assignedPullRequest:
+            return "arrow.triangle.pull"
+        case .actionableNotification:
+            return "at"
+        case .actionRequiredRun:
+            return "gear.badge.xmark"
+        case .postMergeWorkflowFailure:
+            return "exclamationmark.triangle.fill"
+        }
+    }
+}
+
+struct AttentionItem: Identifiable, Hashable, Sendable {
+    let id: String
+    let type: AttentionItemType
+    let title: String
+    let subtitle: String
+    let timestamp: Date
+    let url: URL
+}
+
 struct PullRequestSummary: Identifiable, Hashable, Sendable {
     let id: Int
     let number: Int
@@ -78,8 +107,5 @@ struct PostMergeWatchSummary: Identifiable, Hashable, Sendable {
 
 struct GitHubSnapshot: Sendable {
     let login: String
-    let assignedPullRequests: [PullRequestSummary]
-    let actionableNotifications: [NotificationSummary]
-    let actionRequiredRuns: [ActionRunSummary]
-    let postMergeWatchItems: [PostMergeWatchSummary]
+    let attentionItems: [AttentionItem]
 }

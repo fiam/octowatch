@@ -5,176 +5,103 @@ struct MenuBarContentView: View {
     @ObservedObject var model: AppModel
 
     @State private var showTokenEditor = false
+    private let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
-
+        VStack(alignment: .leading, spacing: 10) {
             if model.hasToken {
-                content
+                queueHeader
+                attentionList
             } else {
                 tokenSetup
+            }
+
+            if let lastError = model.lastError {
+                Text(lastError)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
             }
 
             Divider()
             footer
         }
-        .padding(14)
+        .padding(12)
         .frame(width: 420)
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Octobar")
-                    .font(.title3.bold())
+    private var queueHeader: some View {
+        HStack(spacing: 8) {
+            Text("\(model.actionableCount)")
+                .font(.title3.bold())
+                .monospacedDigit()
 
-                Spacer()
-
-                if model.isRefreshing {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
-
-            Text("Actionable items: \(model.actionableCount)")
+            Text(model.actionableCount == 1 ? "item needs attention" : "items need attention")
                 .font(.subheadline)
+                .foregroundStyle(.secondary)
 
-            if let login = model.userLogin {
-                Text("Signed in as @\(login)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Spacer()
 
-            if let lastUpdated = model.lastUpdated {
-                Text("Updated \(lastUpdated.formatted(date: .omitted, time: .shortened))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if let lastError = model.lastError {
-                Text(lastError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+            if model.isRefreshing {
+                ProgressView()
+                    .controlSize(.small)
             }
         }
     }
 
-    private var content: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                sectionHeader("Assigned Pull Requests", count: model.assignedPullRequests.count)
-                if model.assignedPullRequests.isEmpty {
-                    Text("No open pull requests assigned to you.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(model.assignedPullRequests.prefix(8)) { pullRequest in
-                        Link(destination: pullRequest.url) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(pullRequest.title)
-                                    .font(.callout)
-                                    .lineLimit(2)
-                                Text("#\(pullRequest.number) · \(pullRequest.repository)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+    private var attentionList: some View {
+        Group {
+            if model.attentionItems.isEmpty {
+                Text("Nothing requiring attention right now.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(model.attentionItems.prefix(30)) { item in
+                            Link(destination: item.url) {
+                                HStack(alignment: .top, spacing: 10) {
+                                    Image(systemName: item.type.iconName)
+                                        .frame(width: 16)
+                                        .foregroundStyle(iconColor(for: item.type))
 
-                sectionHeader("Action Required Runs", count: model.actionRequiredRuns.count)
-                if model.actionRequiredRuns.isEmpty {
-                    Text("No workflow runs with status action_required.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(model.actionRequiredRuns.prefix(8)) { run in
-                        Link(destination: run.url) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(run.title)
-                                    .font(.callout)
-                                    .lineLimit(2)
-                                Text("\(run.repository) · \(run.status) · \(run.event)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(item.title)
+                                            .font(.callout)
+                                            .lineLimit(2)
 
-                sectionHeader("Post-Merge Workflow Watch", count: model.postMergeWatchItems.count)
-                if model.postMergeWatchItems.isEmpty {
-                    Text("No recently merged PRs tracked yet.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(model.postMergeWatchItems.prefix(8)) { item in
-                        Link(destination: item.destinationURL) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.title)
-                                    .font(.callout)
-                                    .lineLimit(2)
+                                        Text(item.subtitle)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
 
-                                HStack(spacing: 4) {
-                                    Text("#\(item.number) · \(item.repository)")
-                                    Text("·")
-                                    Text(item.status.label)
-                                        .foregroundStyle(statusColor(item.status))
-                                }
-                                .font(.caption)
+                                    Spacer(minLength: 8)
 
-                                if item.status == .failed, let failedRun = item.failedRuns.first {
-                                    Text("Failed: \(failedRun.name) (\(failedRun.conclusion))")
-                                        .font(.caption2)
-                                        .foregroundStyle(.red)
-                                        .lineLimit(1)
-                                } else {
-                                    Text("Runs on merge commit: \(item.totalRuns)")
+                                    Text(relativeFormatter.localizedString(for: item.timestamp, relativeTo: Date()))
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
+                                        .fixedSize()
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-
-                sectionHeader("Actionable Notifications", count: model.actionableNotifications.count)
-                if model.actionableNotifications.isEmpty {
-                    Text("No actionable notifications right now.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(model.actionableNotifications.prefix(8)) { notification in
-                        Link(destination: notification.url) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(notification.title)
-                                    .font(.callout)
-                                    .lineLimit(2)
-                                Text("\(notification.repository) · \(notification.reason)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+                .frame(maxHeight: 320)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxHeight: 320)
     }
 
     private var tokenSetup: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Add a GitHub personal access token to start polling your queue.")
+            Text("Add a GitHub personal access token to start polling your attention queue.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -185,25 +112,35 @@ struct MenuBarContentView: View {
                 model.saveToken()
             }
 
-            Text("Required scopes depend on your repos. Start with read access to repository metadata, pull requests, actions, and notifications.")
+            Text("If gh is authenticated, Octobar can import token automatically via `gh auth token`.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
     }
 
     private var footer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle(
-                "Poll every 60 seconds",
-                isOn: Binding(
-                    get: { model.pollingEnabled },
-                    set: { model.setPollingEnabled($0) }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Toggle(
+                    "Poll every 60s",
+                    isOn: Binding(
+                        get: { model.pollingEnabled },
+                        set: { model.setPollingEnabled($0) }
+                    )
                 )
-            )
-            .disabled(!model.hasToken)
+                .disabled(!model.hasToken)
+
+                Spacer()
+
+                TimelineView(.periodic(from: .now, by: 30)) { _ in
+                    Text(model.relativeLastUpdated)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
 
             HStack {
-                Button("Refresh Now") {
+                Button("Refresh") {
                     model.refreshNow()
                 }
                 .disabled(!model.hasToken)
@@ -214,6 +151,9 @@ struct MenuBarContentView: View {
                 .disabled(!model.hasToken)
 
                 Spacer()
+
+                Link("Notifications", destination: URL(string: "https://github.com/notifications")!)
+                    .font(.caption)
 
                 Button("Quit") {
                     NSApplication.shared.terminate(nil)
@@ -236,36 +176,19 @@ struct MenuBarContentView: View {
                     Spacer()
                 }
             }
-
-            HStack {
-                Link("GitHub Notifications", destination: URL(string: "https://github.com/notifications")!)
-                Link("Assigned PRs", destination: URL(string: "https://github.com/pulls/assigned")!)
-            }
-            .font(.caption)
         }
     }
 
-    private func sectionHeader(_ title: String, count: Int) -> some View {
-        HStack {
-            Text(title)
-                .font(.headline)
-            Spacer()
-            Text("\(count)")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func statusColor(_ status: PostMergeWorkflowStatus) -> Color {
-        switch status {
-        case .failed:
-            return .red
-        case .pending:
-            return .orange
-        case .succeeded:
-            return .green
-        case .noRuns:
+    private func iconColor(for itemType: AttentionItemType) -> Color {
+        switch itemType {
+        case .assignedPullRequest:
+            return .blue
+        case .actionableNotification:
             return .secondary
+        case .actionRequiredRun:
+            return .orange
+        case .postMergeWorkflowFailure:
+            return .red
         }
     }
 }

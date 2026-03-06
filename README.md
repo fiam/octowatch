@@ -10,6 +10,7 @@ Octobar is a SwiftUI menu bar app for macOS that polls GitHub with a personal ac
 - Recently merged PRs you reviewed/authored, with workflow run outcomes on the merge commit (to catch post-merge failures)
 
 The app polls every 60 seconds and shows local macOS notifications when new actionable items appear.
+In the menu, all actionable signals are shown as one attention queue with per-type icons.
 
 ## Requirements
 

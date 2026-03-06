@@ -55,14 +55,79 @@ struct GitHubClient {
             + postMergeWatchItems.map(\PostMergeWatchSummary.repository)
         )
         let actionRuns = try await fetchActionRequiredRuns(token: token, actor: login, repositories: Array(repositories))
+        let attentionItems = buildAttentionItems(
+            pullRequests: pullRequests,
+            notifications: notifications,
+            actionRuns: actionRuns,
+            postMergeWatchItems: postMergeWatchItems
+        )
 
         return GitHubSnapshot(
             login: login,
-            assignedPullRequests: pullRequests,
-            actionableNotifications: notifications,
-            actionRequiredRuns: actionRuns,
-            postMergeWatchItems: postMergeWatchItems
+            attentionItems: attentionItems
         )
+    }
+
+    private func buildAttentionItems(
+        pullRequests: [PullRequestSummary],
+        notifications: [NotificationSummary],
+        actionRuns: [ActionRunSummary],
+        postMergeWatchItems: [PostMergeWatchSummary]
+    ) -> [AttentionItem] {
+        let pullRequestItems = pullRequests.map { pullRequest in
+            AttentionItem(
+                id: "pr:\(pullRequest.id)",
+                type: .assignedPullRequest,
+                title: pullRequest.title,
+                subtitle: "#\(pullRequest.number) · \(pullRequest.repository)",
+                timestamp: pullRequest.updatedAt,
+                url: pullRequest.url
+            )
+        }
+
+        let notificationItems = notifications.map { notification in
+            AttentionItem(
+                id: "notif:\(notification.id)",
+                type: .actionableNotification,
+                title: notification.title,
+                subtitle: "\(notification.repository) · \(humanized(reason: notification.reason))",
+                timestamp: notification.updatedAt,
+                url: notification.url
+            )
+        }
+
+        let actionRunItems = actionRuns.map { run in
+            AttentionItem(
+                id: "run:\(run.id)",
+                type: .actionRequiredRun,
+                title: run.title,
+                subtitle: "\(run.repository) · \(run.status) · \(run.event)",
+                timestamp: run.createdAt,
+                url: run.url
+            )
+        }
+
+        let postMergeFailureItems = postMergeWatchItems
+            .filter { $0.status == .failed }
+            .map { watchItem in
+                let failureLabel = watchItem.failedRuns.first?.name ?? "Workflow failure"
+
+                return AttentionItem(
+                    id: "postmerge:\(watchItem.id)",
+                    type: .postMergeWorkflowFailure,
+                    title: watchItem.title,
+                    subtitle: "\(watchItem.repository) · \(failureLabel)",
+                    timestamp: watchItem.mergedAt,
+                    url: watchItem.destinationURL
+                )
+            }
+
+        return (pullRequestItems + notificationItems + actionRunItems + postMergeFailureItems)
+            .sorted { $0.timestamp > $1.timestamp }
+    }
+
+    private func humanized(reason: String) -> String {
+        reason.replacingOccurrences(of: "_", with: " ")
     }
 
     private func resolveLogin(token: String, preferredLogin: String?) async throws -> String {

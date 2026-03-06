@@ -20,7 +20,7 @@ struct SettingsView: View {
                     }
                 }
 
-                Text("Octobar stores the token in Keychain and uses it to poll your assigned pull requests, actionable notifications, action_required workflow runs, and post-merge workflow outcomes.")
+                Text("Octobar stores the token in Keychain and polls GitHub to build a single attention queue from pull requests, notifications, and workflow signals.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -42,9 +42,8 @@ struct SettingsView: View {
             }
 
             if model.hasToken {
-                Section("Current Watch") {
-                    Text("Post-merge failures: \(model.postMergeFailureItems.count)")
-                    Text("Merged PRs being watched: \(model.postMergeWatchItems.count)")
+                Section("Current Queue") {
+                    Text("Items requiring attention: \(model.actionableCount)")
                 }
             }
 
