@@ -66,33 +66,6 @@ struct AttentionWindowView: View {
         }
         .animation(.easeInOut(duration: 0.18), value: showsInitialLoadingState)
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Picker("Filter", selection: $listFilter) {
-                    ForEach(ListFilter.allCases) { filter in
-                        Text(filter.title).tag(filter)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 150)
-            }
-
-            ToolbarItemGroup(placement: .navigation) {
-                Button(action: model.refreshNow) {
-                    ZStack {
-                        Image(systemName: "arrow.clockwise")
-                            .opacity(model.isRefreshing ? 0 : 1)
-
-                        if model.isRefreshing && !showsInitialLoadingState {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                    }
-                    .frame(width: 18, height: 18)
-                }
-                .disabled(model.isRefreshing)
-                .help("Refresh")
-            }
-
             if let selectedItem, model.hasToken {
                 ToolbarItemGroup {
                     Button {
@@ -171,35 +144,61 @@ struct AttentionWindowView: View {
     }
 
     private func sidebar(relativeTo referenceDate: Date) -> some View {
-        Group {
-            if !model.hasToken {
-                connectionRequiredView
-            } else if displayedItems.isEmpty {
-                emptyStateView
-            } else {
-                List(displayedItems, selection: $selectedItemID) { item in
-                    AttentionSidebarRow(
-                        item: item,
-                        relativeTimestamp: relativeFormatter.localizedString(
-                            for: item.timestamp,
-                            relativeTo: referenceDate
+        VStack(spacing: 0) {
+            if model.hasToken {
+                sidebarHeader(relativeTo: referenceDate)
+            }
+
+            Group {
+                if !model.hasToken {
+                    connectionRequiredView
+                } else if displayedItems.isEmpty {
+                    emptyStateView
+                } else {
+                    List(displayedItems, selection: $selectedItemID) { item in
+                        AttentionSidebarRow(
+                            item: item,
+                            relativeTimestamp: relativeFormatter.localizedString(
+                                for: item.timestamp,
+                                relativeTo: referenceDate
+                            )
                         )
-                    )
-                    .tag(item.id)
-                }
-                .listStyle(.sidebar)
-                .safeAreaInset(edge: .top) {
-                    sidebarHeader(relativeTo: referenceDate)
+                        .tag(item.id)
+                    }
+                    .listStyle(.sidebar)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .navigationSplitViewColumnWidth(min: 320, ideal: 360)
     }
 
     private func sidebarHeader(relativeTo referenceDate: Date) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Inbox")
-                .font(.title2.weight(.semibold))
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
+                Text("Inbox")
+                    .font(.title2.weight(.semibold))
+
+                Spacer()
+
+                unreadFilterButton
+
+                Button(action: model.refreshNow) {
+                    ZStack {
+                        Image(systemName: "arrow.clockwise")
+                            .opacity(model.isRefreshing ? 0 : 1)
+
+                        if model.isRefreshing && !showsInitialLoadingState {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                    .frame(width: 18, height: 18)
+                }
+                .disabled(model.isRefreshing)
+                .buttonStyle(.borderless)
+                .help("Refresh")
+            }
 
             Text("\(displayedItems.count) items · \(model.unreadCount) unread")
                 .font(.subheadline)
@@ -228,6 +227,38 @@ struct AttentionWindowView: View {
         .padding(.top, 12)
         .padding(.bottom, 8)
         .background(.bar)
+    }
+
+    private var unreadFilterButton: some View {
+        Button {
+            listFilter = listFilter == .unread ? .all : .unread
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: listFilter == .unread ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                    .imageScale(.medium)
+                Text("Unread")
+                    .font(.subheadline.weight(.medium))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .foregroundStyle(listFilter == .unread ? .white : .primary)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(listFilter == .unread ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(
+                        listFilter == .unread
+                            ? Color.accentColor.opacity(0.85)
+                            : Color(nsColor: .separatorColor).opacity(0.45),
+                        lineWidth: 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .help(listFilter == .unread ? "Show all items" : "Show unread items")
+        .accessibilityLabel(listFilter == .unread ? "Showing unread items" : "Showing all items")
     }
 
     private func detailPane(relativeTo referenceDate: Date) -> some View {
