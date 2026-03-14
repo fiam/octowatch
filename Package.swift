@@ -12,7 +12,14 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "Octobar"
+            name: "Octobar",
+            resources: [
+                .process("Assets.xcassets")
+            ]
+        ),
+        .testTarget(
+            name: "OctobarTests",
+            dependencies: ["Octobar"]
         )
     ]
 )

@@ -283,15 +283,14 @@ final class AppModel: ObservableObject {
 
     private func notifyIfNeeded() {
         let currentIDs = Set(attentionItems.map(\.id))
+        let newItems = attentionItems
+            .filter { currentIDs.contains($0.id) && !knownItemIDs.contains($0.id) }
+            .sorted { $0.timestamp < $1.timestamp }
 
-        let newItems = currentIDs.subtracting(knownItemIDs)
-        if !knownItemIDs.isEmpty, !newItems.isEmpty {
-            let count = newItems.count
-            let suffix = count == 1 ? "" : "s"
-            notifier.notify(
-                title: "Octobar",
-                body: "\(count) new GitHub item\(suffix) need attention."
-            )
+        if !knownItemIDs.isEmpty {
+            for item in newItems.prefix(5) {
+                notifier.notify(item: item)
+            }
         }
 
         knownItemIDs = currentIDs

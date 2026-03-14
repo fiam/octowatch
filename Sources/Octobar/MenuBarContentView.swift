@@ -107,9 +107,7 @@ struct MenuBarContentView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(model.attentionItems.prefix(30)) { item in
                             HStack(alignment: .top, spacing: 10) {
-                                Image(systemName: item.type.iconName)
-                                    .frame(width: 16)
-                                    .foregroundStyle(iconColor(for: item.type))
+                                eventBadge(for: item.type)
 
                                 Button {
                                     model.toggleReadState(for: item)
@@ -140,10 +138,16 @@ struct MenuBarContentView: View {
                                 }
                                 .buttonStyle(.plain)
 
-                                Text(relativeFormatter.localizedString(for: item.timestamp, relativeTo: Date()))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize()
+                                VStack(alignment: .trailing, spacing: 6) {
+                                    if let actor = item.actor {
+                                        ActorAvatarView(actor: actor)
+                                    }
+
+                                    Text(relativeFormatter.localizedString(for: item.timestamp, relativeTo: Date()))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize()
+                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -173,14 +177,107 @@ struct MenuBarContentView: View {
         NotificationCenter.default.post(name: .openSettingsRequested, object: nil)
     }
 
+    @ViewBuilder
+    private func eventBadge(for itemType: AttentionItemType) -> some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(iconBackground(for: itemType))
+            .frame(width: 24, height: 24)
+            .overlay {
+                Image(systemName: itemType.iconName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(iconColor(for: itemType))
+            }
+            .accessibilityLabel(itemType.accessibilityLabel)
+    }
+
     private func iconColor(for itemType: AttentionItemType) -> Color {
         switch itemType {
         case .assignedPullRequest:
             return .blue
-        case .actionableNotification:
+        case .comment, .reviewComment:
             return .secondary
-        case .actionRequiredRun:
+        case .mention:
+            return .purple
+        case .reviewRequested:
+            return .indigo
+        case .reviewApproved:
+            return .green
+        case .reviewChangesRequested:
+            return .orange
+        case .pullRequestStateChanged:
+            return .brown
+        case .ciActivity:
+            return .teal
+        case .workflowFailed:
+            return .red
+        case .workflowApprovalRequired:
             return .orange
         }
+    }
+
+    private func iconBackground(for itemType: AttentionItemType) -> Color {
+        switch itemType {
+        case .assignedPullRequest:
+            return .blue.opacity(0.14)
+        case .comment, .reviewComment:
+            return .secondary
+                .opacity(0.12)
+        case .mention:
+            return .purple.opacity(0.14)
+        case .reviewRequested:
+            return .indigo.opacity(0.14)
+        case .reviewApproved:
+            return .green.opacity(0.14)
+        case .reviewChangesRequested:
+            return .orange.opacity(0.14)
+        case .pullRequestStateChanged:
+            return .brown.opacity(0.14)
+        case .ciActivity:
+            return .teal.opacity(0.14)
+        case .workflowFailed:
+            return .red.opacity(0.14)
+        case .workflowApprovalRequired:
+            return .orange.opacity(0.14)
+        }
+    }
+}
+
+private struct ActorAvatarView: View {
+    let actor: AttentionActor
+
+    var body: some View {
+        Group {
+            if let avatarURL = actor.avatarURL {
+                AsyncImage(url: avatarURL) { phase in
+                    switch phase {
+                    case let .success(image):
+                        image
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFill()
+                    default:
+                        placeholder
+                    }
+                }
+            } else {
+                placeholder
+            }
+        }
+        .frame(width: 20, height: 20)
+        .clipShape(Circle())
+        .overlay {
+            Circle()
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+        .help(actor.login)
+    }
+
+    private var placeholder: some View {
+        Circle()
+            .fill(Color.secondary.opacity(0.12))
+            .overlay {
+                Image(systemName: "person.crop.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
     }
 }

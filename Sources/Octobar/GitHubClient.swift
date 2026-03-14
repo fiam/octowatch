@@ -27,14 +27,9 @@ struct GitHubClient {
     private let session: URLSession
     private let decoder: JSONDecoder
     private let baseURL = URL(string: "https://api.github.com")!
-    private let trackedMergedPullRequestsLimit = 12
-    private let watchedRunLimit = 30
-    private let failedRunConclusions: Set<String> = [
-        "action_required",
-        "failure",
-        "timed_out",
-        "startup_failure"
-    ]
+    private let notificationThreadLimit = 12
+    private let workflowCandidateLimit = 8
+    private let workflowRunLimit = 20
 
     init(session: URLSession = .shared) {
         self.session = session
@@ -96,26 +91,20 @@ struct GitHubClient {
         let login = try await resolveLogin(token: token, preferredLogin: preferredLogin)
 
         async let pullRequestsTask = fetchAssignedPullRequests(token: token, login: login)
-        async let notificationsTask = fetchActionableNotifications(token: token)
+        async let notificationsTask = fetchActionableNotifications(token: token, login: login)
+        async let workflowRunsTask = fetchWatchedWorkflowRuns(token: token, login: login)
 
         let pullRequests = try await pullRequestsTask
         let notifications = try await notificationsTask
+        let workflowRuns = try await workflowRunsTask
 
-        let repositories = Set(
-            pullRequests.map(\PullRequestSummary.repository)
-            + notifications.map(\NotificationSummary.repository)
-        )
-        let actionRuns = try await fetchActionRequiredRuns(token: token, actor: login, repositories: Array(repositories))
         let attentionItems = buildAttentionItems(
             pullRequests: pullRequests,
             notifications: notifications,
-            actionRuns: actionRuns
+            actionRuns: workflowRuns
         )
 
-        return GitHubSnapshot(
-            login: login,
-            attentionItems: attentionItems
-        )
+        return GitHubSnapshot(login: login, attentionItems: attentionItems)
     }
 
     private func buildAttentionItems(
@@ -128,7 +117,7 @@ struct GitHubClient {
                 id: "pr:\(pullRequest.id)",
                 type: .assignedPullRequest,
                 title: pullRequest.title,
-                subtitle: "#\(pullRequest.number) · \(pullRequest.repository)",
+                subtitle: pullRequest.subtitle,
                 timestamp: pullRequest.updatedAt,
                 url: pullRequest.url
             )
@@ -137,11 +126,12 @@ struct GitHubClient {
         let notificationItems = notifications.map { notification in
             AttentionItem(
                 id: "notif:\(notification.id)",
-                type: .actionableNotification,
+                type: notification.type,
                 title: notification.title,
-                subtitle: "\(notification.repository) · \(humanized(reason: notification.reason))",
+                subtitle: notification.subtitle,
                 timestamp: notification.updatedAt,
                 url: notification.url,
+                actor: notification.actor,
                 isUnread: notification.unread
             )
         }
@@ -149,20 +139,17 @@ struct GitHubClient {
         let actionRunItems = actionRuns.map { run in
             AttentionItem(
                 id: "run:\(run.id)",
-                type: .actionRequiredRun,
+                type: run.type,
                 title: run.title,
-                subtitle: "\(run.repository) · \(run.status) · \(run.event)",
+                subtitle: run.subtitle,
                 timestamp: run.createdAt,
-                url: run.url
+                url: run.url,
+                actor: run.actor
             )
         }
 
         return (pullRequestItems + notificationItems + actionRunItems)
             .sorted { $0.timestamp > $1.timestamp }
-    }
-
-    private func humanized(reason: String) -> String {
-        reason.replacingOccurrences(of: "_", with: " ")
     }
 
     private func resolveLogin(token: String, preferredLogin: String?) async throws -> String {
@@ -197,6 +184,7 @@ struct GitHubClient {
                 id: issue.id,
                 number: issue.number,
                 title: issue.title,
+                subtitle: "#\(issue.number) · \(repository)",
                 repository: repository,
                 url: issue.htmlURL,
                 updatedAt: issue.updatedAt
@@ -204,26 +192,31 @@ struct GitHubClient {
         }
     }
 
-    private func fetchActionableNotifications(token: String) async throws -> [NotificationSummary] {
+    private func fetchActionableNotifications(
+        token: String,
+        login: String
+    ) async throws -> [NotificationSummary] {
         let threads: [NotificationThread] = try await request(
             path: "/notifications",
             queryItems: [
                 URLQueryItem(name: "all", value: "false"),
                 URLQueryItem(name: "participating", value: "true"),
-                URLQueryItem(name: "per_page", value: "30")
+                URLQueryItem(name: "per_page", value: "\(notificationThreadLimit)")
             ],
             token: token
         )
 
         let actionableReasons: Set<String> = [
             "assign",
+            "author",
+            "comment",
+            "manual",
             "mention",
-            "team_mention",
             "review_requested",
-            "ci_activity",
             "security_alert",
             "state_change",
-            "manual"
+            "subscribed",
+            "team_mention"
         ]
 
         let candidateThreads = threads.filter { actionableReasons.contains($0.reason) }
@@ -232,28 +225,10 @@ struct GitHubClient {
             for thread in candidateThreads {
                 group.addTask {
                     do {
-                        if let pullRequestReference = pullRequestReference(from: thread.subject.url) {
-                            let isOpen = try await isPullRequestOpen(
-                                token: token,
-                                reference: pullRequestReference
-                            )
-                            if !isOpen {
-                                return nil
-                            }
-                        }
-
-                        return NotificationSummary(
-                            id: thread.id,
-                            title: thread.subject.title,
-                            reason: thread.reason,
-                            repository: thread.repository.fullName,
-                            url: subjectWebURL(
-                                subjectURL: thread.subject.url,
-                                repositoryWebURL: thread.repository.htmlURL,
-                                subjectType: thread.subject.type
-                            ),
-                            updatedAt: thread.updatedAt,
-                            unread: thread.unread
+                        return try await buildNotificationSummary(
+                            token: token,
+                            login: login,
+                            thread: thread
                         )
                     } catch {
                         return nil
@@ -272,237 +247,180 @@ struct GitHubClient {
         }
     }
 
-    private func pullRequestReference(from subjectURL: URL?) -> PullRequestReference? {
+    private func buildNotificationSummary(
+        token: String,
+        login: String,
+        thread: NotificationThread
+    ) async throws -> NotificationSummary? {
+        var actor: AttentionActor?
+        var type = AttentionItemType.notificationType(
+            reason: thread.reason,
+            timelineEvent: nil,
+            reviewState: nil
+        )
+
+        if let reference = discussionReference(from: thread.subject.url) {
+            if reference.kind == .pullRequest {
+                let state = try await fetchPullRequestState(token: token, reference: reference)
+                guard PullRequestAttentionPolicy.shouldIncludeActivity(
+                    state: state.state,
+                    merged: state.merged,
+                    closedAt: state.closedAt
+                ) else {
+                    return nil
+                }
+            }
+
+            if let timelineContext = try await fetchTimelineContext(
+                token: token,
+                reference: reference,
+                currentLogin: login
+            ) {
+                actor = timelineContext.actor
+                type = AttentionItemType.notificationType(
+                    reason: thread.reason,
+                    timelineEvent: timelineContext.event,
+                    reviewState: timelineContext.reviewState
+                )
+            }
+        }
+
+        let repository = thread.repository.fullName
+        let url = subjectWebURL(
+            subjectURL: thread.subject.url,
+            repositoryWebURL: thread.repository.htmlURL,
+            subjectType: thread.subject.type
+        )
+
+        return NotificationSummary(
+            id: thread.id,
+            type: type,
+            title: thread.subject.title,
+            subtitle: notificationSubtitle(type: type, repository: repository, actor: actor),
+            repository: repository,
+            url: url,
+            updatedAt: thread.updatedAt,
+            unread: thread.unread,
+            actor: actor
+        )
+    }
+
+    private func fetchTimelineContext(
+        token: String,
+        reference: DiscussionReference,
+        currentLogin: String
+    ) async throws -> TimelineContext? {
+        let timeline: [TimelineEntry] = try await request(
+            path: "/repos/\(reference.owner)/\(reference.name)/issues/\(reference.number)/timeline",
+            queryItems: [
+                URLQueryItem(name: "per_page", value: "20")
+            ],
+            token: token
+        )
+
+        let relevantEntries = timeline.compactMap { entry -> TimelineContext? in
+            let event = (entry.event ?? "").lowercased()
+            let actor = entry.actor ?? entry.user
+            let timestamp = entry.submittedAt ?? entry.createdAt
+            guard let timestamp else {
+                return nil
+            }
+
+            guard !event.isEmpty else {
+                return nil
+            }
+
+            guard actor?.login != currentLogin else {
+                return nil
+            }
+
+            switch event {
+            case "assigned",
+                "closed",
+                "commented",
+                "committed",
+                "head_ref_force_pushed",
+                "merged",
+                "reopened",
+                "review_requested",
+                "reviewed":
+                return TimelineContext(
+                    event: event,
+                    reviewState: entry.state,
+                    actor: attentionActor(from: actor),
+                    timestamp: timestamp
+                )
+            default:
+                return nil
+            }
+        }
+
+        return relevantEntries.sorted { $0.timestamp > $1.timestamp }.first
+    }
+
+    private func notificationSubtitle(
+        type: AttentionItemType,
+        repository: String,
+        actor: AttentionActor?
+    ) -> String {
+        if let actor {
+            return "\(actor.login) · \(repository) · \(type.accessibilityLabel)"
+        }
+
+        return "\(repository) · \(type.accessibilityLabel)"
+    }
+
+    private func discussionReference(from subjectURL: URL?) -> DiscussionReference? {
         guard let subjectURL else {
             return nil
         }
 
         let parts = subjectURL.pathComponents
-        guard
-            let reposIndex = parts.firstIndex(of: "repos"),
-            reposIndex + 4 < parts.count,
-            parts[reposIndex + 3] == "pulls",
-            let number = Int(parts[reposIndex + 4])
-        else {
+        guard let reposIndex = parts.firstIndex(of: "repos"), reposIndex + 4 < parts.count else {
             return nil
         }
 
-        return PullRequestReference(
-            owner: parts[reposIndex + 1],
-            name: parts[reposIndex + 2],
-            number: number
-        )
+        let owner = parts[reposIndex + 1]
+        let name = parts[reposIndex + 2]
+        let subjectKind = parts[reposIndex + 3]
+        guard let number = Int(parts[reposIndex + 4]) else {
+            return nil
+        }
+
+        switch subjectKind {
+        case "pulls":
+            return DiscussionReference(owner: owner, name: name, number: number, kind: .pullRequest)
+        case "issues":
+            return DiscussionReference(owner: owner, name: name, number: number, kind: .issue)
+        default:
+            return nil
+        }
     }
 
-    private func isPullRequestOpen(token: String, reference: PullRequestReference) async throws -> Bool {
-        let pullRequest: PullRequestStateResponse = try await request(
+    private func fetchPullRequestState(
+        token: String,
+        reference: DiscussionReference
+    ) async throws -> PullRequestStateResponse {
+        try await request(
             path: "/repos/\(reference.owner)/\(reference.name)/pulls/\(reference.number)",
             token: token
         )
-
-        return pullRequest.state == "open" && !pullRequest.merged
     }
 
-    private func fetchPostMergeWatchItems(token: String, login: String) async throws -> [PostMergeWatchSummary] {
-        async let reviewedByMeTask = fetchMergedPullRequestCandidates(
-            token: token,
-            query: "is:pr is:merged reviewed-by:\(login) archived:false"
-        )
-        async let authoredByMeTask = fetchMergedPullRequestCandidates(
-            token: token,
-            query: "is:pr is:merged author:\(login) archived:false"
-        )
+    private func fetchWatchedWorkflowRuns(
+        token: String,
+        login: String
+    ) async throws -> [ActionRunSummary] {
+        let candidates = try await fetchWorkflowWatchCandidates(token: token, login: login)
 
-        let reviewedByMe = try await reviewedByMeTask
-        let authoredByMe = try await authoredByMeTask
-
-        var uniqueCandidates = [String: MergedPullRequestCandidate]()
-        for candidate in reviewedByMe + authoredByMe {
-            let key = "\(candidate.repository)#\(candidate.number)"
-            if let existing = uniqueCandidates[key], existing.mergedAt >= candidate.mergedAt {
-                continue
-            }
-            uniqueCandidates[key] = candidate
-        }
-
-        let candidates = uniqueCandidates.values
-            .sorted { $0.mergedAt > $1.mergedAt }
-            .prefix(trackedMergedPullRequestsLimit)
-
-        return await withTaskGroup(of: PostMergeWatchSummary?.self) { group in
+        return await withTaskGroup(of: [ActionRunSummary].self) { group in
             for candidate in candidates {
                 group.addTask {
                     do {
-                        return try await buildPostMergeWatchSummary(token: token, candidate: candidate)
-                    } catch {
-                        return nil
-                    }
-                }
-            }
-
-            var results: [PostMergeWatchSummary] = []
-            for await item in group {
-                if let item {
-                    results.append(item)
-                }
-            }
-
-            return results.sorted { $0.mergedAt > $1.mergedAt }
-        }
-    }
-
-    private func fetchMergedPullRequestCandidates(token: String, query: String) async throws -> [MergedPullRequestCandidate] {
-        let response: SearchIssuesResponse = try await request(
-            path: "/search/issues",
-            queryItems: [
-                URLQueryItem(name: "q", value: query),
-                URLQueryItem(name: "sort", value: "updated"),
-                URLQueryItem(name: "order", value: "desc"),
-                URLQueryItem(name: "per_page", value: "\(trackedMergedPullRequestsLimit)")
-            ],
-            token: token
-        )
-
-        return response.items.compactMap { issue in
-            guard
-                let repository = repositoryFullName(from: issue.repositoryURL),
-                let mergedAt = issue.pullRequest?.mergedAt
-            else {
-                return nil
-            }
-
-            return MergedPullRequestCandidate(
-                repository: repository,
-                number: issue.number,
-                mergedAt: mergedAt
-            )
-        }
-    }
-
-    private func buildPostMergeWatchSummary(token: String, candidate: MergedPullRequestCandidate) async throws -> PostMergeWatchSummary? {
-        let repositoryID = try parseRepositoryFullName(candidate.repository)
-
-        let pullRequest: PullRequestDetails = try await request(
-            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/pulls/\(candidate.number)",
-            token: token
-        )
-
-        guard
-            pullRequest.merged,
-            let mergedAt = pullRequest.mergedAt,
-            let mergeCommitSHA = pullRequest.mergeCommitSHA,
-            !mergeCommitSHA.isEmpty
-        else {
-            return nil
-        }
-
-        let runs = try await fetchWorkflowRunsForCommit(
-            token: token,
-            repository: candidate.repository,
-            mergeCommitSHA: mergeCommitSHA
-        )
-
-        let status = postMergeWorkflowStatus(from: runs)
-
-        let failedRuns = runs
-            .filter(isFailedWorkflowRun)
-            .map { run in
-                PostMergeFailedRun(
-                    name: run.name ?? "Workflow run",
-                    conclusion: run.conclusion ?? "failure",
-                    url: run.htmlURL ?? runWebURL(repository: candidate.repository, runID: run.id)
-                )
-            }
-
-        let latestRunURL = runs
-            .sorted { $0.createdAt > $1.createdAt }
-            .first
-            .map { run in
-                run.htmlURL ?? runWebURL(repository: candidate.repository, runID: run.id)
-            }
-
-        return PostMergeWatchSummary(
-            id: "\(candidate.repository)#\(candidate.number)",
-            number: candidate.number,
-            title: pullRequest.title,
-            repository: candidate.repository,
-            prURL: pullRequest.htmlURL,
-            mergedAt: mergedAt,
-            mergeCommitSHA: mergeCommitSHA,
-            status: status,
-            totalRuns: runs.count,
-            failedRuns: failedRuns,
-            latestRunURL: latestRunURL
-        )
-    }
-
-    private func fetchWorkflowRunsForCommit(
-        token: String,
-        repository: String,
-        mergeCommitSHA: String
-    ) async throws -> [WorkflowRun] {
-        let repositoryID = try parseRepositoryFullName(repository)
-        let response: WorkflowRunsResponse = try await request(
-            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/actions/runs",
-            queryItems: [
-                URLQueryItem(name: "head_sha", value: mergeCommitSHA),
-                URLQueryItem(name: "per_page", value: "\(watchedRunLimit)")
-            ],
-            token: token
-        )
-
-        return response.workflowRuns
-    }
-
-    private func postMergeWorkflowStatus(from runs: [WorkflowRun]) -> PostMergeWorkflowStatus {
-        if runs.isEmpty {
-            return .noRuns
-        }
-
-        if runs.contains(where: isFailedWorkflowRun) {
-            return .failed
-        }
-
-        if runs.contains(where: isPendingWorkflowRun) {
-            return .pending
-        }
-
-        return .succeeded
-    }
-
-    private func isPendingWorkflowRun(_ run: WorkflowRun) -> Bool {
-        let status = (run.status ?? "").lowercased()
-        if status != "completed" {
-            return true
-        }
-
-        return run.conclusion == nil
-    }
-
-    private func isFailedWorkflowRun(_ run: WorkflowRun) -> Bool {
-        let status = (run.status ?? "").lowercased()
-        if status == "action_required" {
-            return true
-        }
-
-        guard let conclusion = run.conclusion?.lowercased() else {
-            return false
-        }
-
-        return failedRunConclusions.contains(conclusion)
-    }
-
-    private func fetchActionRequiredRuns(token: String, actor: String, repositories: [String]) async throws -> [ActionRunSummary] {
-        let repositoriesToQuery = Array(repositories.sorted().prefix(10))
-
-        return await withTaskGroup(of: [ActionRunSummary].self) { group in
-            for repository in repositoriesToQuery {
-                group.addTask {
-                    do {
-                        return try await fetchActionRequiredRuns(
+                        return try await fetchWorkflowRuns(
                             token: token,
-                            actor: actor,
-                            repository: repository
+                            login: login,
+                            candidate: candidate
                         )
                     } catch {
                         return []
@@ -510,41 +428,228 @@ struct GitHubClient {
                 }
             }
 
-            var allRuns: [ActionRunSummary] = []
+            var mergedByRunID = [String: ActionRunSummary]()
             for await runs in group {
-                allRuns.append(contentsOf: runs)
+                for run in runs {
+                    if let existing = mergedByRunID[run.id], existing.createdAt >= run.createdAt {
+                        continue
+                    }
+                    mergedByRunID[run.id] = run
+                }
             }
 
-            return allRuns.sorted { $0.createdAt > $1.createdAt }
+            return mergedByRunID.values.sorted { $0.createdAt > $1.createdAt }
         }
     }
 
-    private func fetchActionRequiredRuns(token: String, actor: String, repository: String) async throws -> [ActionRunSummary] {
-        let repositoryID = try parseRepositoryFullName(repository)
+    private func fetchWorkflowWatchCandidates(
+        token: String,
+        login: String
+    ) async throws -> [WorkflowWatchCandidate] {
+        async let authoredTask = searchWorkflowWatchCandidates(
+            token: token,
+            query: "is:pr author:\(login) archived:false",
+            relationship: .authored
+        )
+        async let approvedTask = searchWorkflowWatchCandidates(
+            token: token,
+            query: "is:pr reviewed-by:\(login) archived:false",
+            relationship: .approved
+        )
+        async let mergedTask = searchWorkflowWatchCandidates(
+            token: token,
+            query: "is:pr is:merged merged-by:\(login) archived:false",
+            relationship: .merged
+        )
 
-        let response: WorkflowRunsResponse = try await request(
-            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/actions/runs",
+        let authored = try await authoredTask
+        let approved = try await approvedTask
+        let merged = try await mergedTask
+
+        var byKey = [String: WorkflowWatchCandidate]()
+        for candidate in authored + approved + merged {
+            let key = "\(candidate.repository)#\(candidate.number)"
+            if let existing = byKey[key], existing.relationship.priority >= candidate.relationship.priority {
+                continue
+            }
+            byKey[key] = candidate
+        }
+
+        return byKey.values
+            .sorted { lhs, rhs in
+                if lhs.relationship.priority == rhs.relationship.priority {
+                    return lhs.number > rhs.number
+                }
+                return lhs.relationship.priority > rhs.relationship.priority
+            }
+            .prefix(workflowCandidateLimit)
+            .map { $0 }
+    }
+
+    private func searchWorkflowWatchCandidates(
+        token: String,
+        query: String,
+        relationship: WorkflowWatchRelationship
+    ) async throws -> [WorkflowWatchCandidate] {
+        let response: SearchIssuesResponse = try await request(
+            path: "/search/issues",
             queryItems: [
-                URLQueryItem(name: "actor", value: actor),
-                URLQueryItem(name: "status", value: "action_required"),
-                URLQueryItem(name: "per_page", value: "10")
+                URLQueryItem(name: "q", value: query),
+                URLQueryItem(name: "sort", value: "updated"),
+                URLQueryItem(name: "order", value: "desc"),
+                URLQueryItem(name: "per_page", value: "\(workflowCandidateLimit)")
             ],
             token: token
         )
 
-        return response.workflowRuns.map { run in
-            let fallbackURL = runWebURL(repository: repository, runID: run.id)
+        return response.items.compactMap { issue in
+            guard let repository = repositoryFullName(from: issue.repositoryURL) else {
+                return nil
+            }
 
-            return ActionRunSummary(
-                id: "\(repository)-\(run.id)",
-                title: run.name ?? "Workflow run",
+            return WorkflowWatchCandidate(
                 repository: repository,
-                status: run.status ?? "unknown",
-                event: run.event,
-                createdAt: run.createdAt,
-                url: run.htmlURL ?? fallbackURL
+                number: issue.number,
+                relationship: relationship
             )
         }
+    }
+
+    private func fetchWorkflowRuns(
+        token: String,
+        login: String,
+        candidate: WorkflowWatchCandidate
+    ) async throws -> [ActionRunSummary] {
+        let repositoryID = try parseRepositoryFullName(candidate.repository)
+        let pullRequest: PullRequestDetails = try await request(
+            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/pulls/\(candidate.number)",
+            token: token
+        )
+
+        if candidate.relationship == .approved {
+            guard try await didUserApprovePullRequest(
+                token: token,
+                repository: candidate.repository,
+                number: candidate.number,
+                login: login
+            ) else {
+                return []
+            }
+        }
+
+        guard PullRequestAttentionPolicy.shouldWatchWorkflows(
+            state: pullRequest.state,
+            merged: pullRequest.merged,
+            mergedAt: pullRequest.mergedAt
+        ) else {
+            return []
+        }
+
+        let commitSHA: String
+        if pullRequest.merged {
+            guard let mergeCommitSHA = pullRequest.mergeCommitSHA else {
+                return []
+            }
+            commitSHA = mergeCommitSHA
+        } else {
+            commitSHA = pullRequest.head.sha
+        }
+
+        let runs = try await fetchWorkflowRunsForCommit(
+            token: token,
+            repository: candidate.repository,
+            commitSHA: commitSHA
+        )
+
+        return runs.compactMap { run in
+            guard let type = AttentionItemType.workflowType(
+                status: run.status,
+                conclusion: run.conclusion
+            ) else {
+                return nil
+            }
+
+            let actor = attentionActor(from: run.triggeringActor ?? run.actor)
+            let summaryTitle = run.displayTitle ?? run.name ?? "Workflow run"
+            let summarySubtitle = workflowSubtitle(
+                type: type,
+                actor: actor,
+                repository: candidate.repository,
+                number: candidate.number
+            )
+
+            return ActionRunSummary(
+                id: "\(candidate.repository)-\(run.id)",
+                type: type,
+                title: summaryTitle,
+                subtitle: summarySubtitle,
+                repository: candidate.repository,
+                createdAt: run.createdAt,
+                url: run.htmlURL ?? runWebURL(repository: candidate.repository, runID: run.id),
+                actor: actor
+            )
+        }
+    }
+
+    private func didUserApprovePullRequest(
+        token: String,
+        repository: String,
+        number: Int,
+        login: String
+    ) async throws -> Bool {
+        let repositoryID = try parseRepositoryFullName(repository)
+        let reviews: [PullRequestReview] = try await request(
+            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/pulls/\(number)/reviews",
+            queryItems: [
+                URLQueryItem(name: "per_page", value: "100")
+            ],
+            token: token
+        )
+
+        return reviews.contains {
+            $0.user.login.caseInsensitiveCompare(login) == .orderedSame &&
+                $0.state.caseInsensitiveCompare("APPROVED") == .orderedSame
+        }
+    }
+
+    private func fetchWorkflowRunsForCommit(
+        token: String,
+        repository: String,
+        commitSHA: String
+    ) async throws -> [WorkflowRun] {
+        let repositoryID = try parseRepositoryFullName(repository)
+        let response: WorkflowRunsResponse = try await request(
+            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/actions/runs",
+            queryItems: [
+                URLQueryItem(name: "head_sha", value: commitSHA),
+                URLQueryItem(name: "per_page", value: "\(workflowRunLimit)")
+            ],
+            token: token
+        )
+
+        return response.workflowRuns
+    }
+
+    private func workflowSubtitle(
+        type: AttentionItemType,
+        actor: AttentionActor?,
+        repository: String,
+        number: Int
+    ) -> String {
+        let prLabel = "PR #\(number)"
+        if let actor {
+            return "\(actor.login) · \(repository) · \(prLabel) · \(type.accessibilityLabel)"
+        }
+
+        return "\(repository) · \(prLabel) · \(type.accessibilityLabel)"
+    }
+
+    private func attentionActor(from user: GitHubUser?) -> AttentionActor? {
+        guard let user else {
+            return nil
+        }
+
+        return AttentionActor(login: user.login, avatarURL: user.avatarURL)
     }
 
     private func parseRepositoryFullName(_ repository: String) throws -> RepositoryIdentifier {
@@ -582,7 +687,6 @@ struct GitHubClient {
         request.setValue("Octobar", forHTTPHeaderField: "User-Agent")
 
         let data = try await perform(request)
-
         return try decoder.decode(Response.self, from: data)
     }
 
@@ -699,21 +803,51 @@ private struct SearchIssuesResponse: Decodable {
     let items: [IssueItem]
 }
 
-private struct MergedPullRequestCandidate: Hashable, Sendable {
-    let repository: String
-    let number: Int
-    let mergedAt: Date
-}
-
 private struct RepositoryIdentifier: Hashable, Sendable {
     let owner: String
     let name: String
 }
 
-private struct PullRequestReference: Hashable, Sendable {
+private enum DiscussionKind: Hashable, Sendable {
+    case issue
+    case pullRequest
+}
+
+private struct DiscussionReference: Hashable, Sendable {
     let owner: String
     let name: String
     let number: Int
+    let kind: DiscussionKind
+}
+
+private enum WorkflowWatchRelationship: Hashable, Sendable {
+    case authored
+    case approved
+    case merged
+
+    var priority: Int {
+        switch self {
+        case .authored:
+            return 1
+        case .approved:
+            return 2
+        case .merged:
+            return 3
+        }
+    }
+}
+
+private struct WorkflowWatchCandidate: Hashable, Sendable {
+    let repository: String
+    let number: Int
+    let relationship: WorkflowWatchRelationship
+}
+
+private struct TimelineContext: Hashable, Sendable {
+    let event: String
+    let reviewState: String?
+    let actor: AttentionActor?
+    let timestamp: Date
 }
 
 private struct IssueItem: Decodable {
@@ -723,7 +857,6 @@ private struct IssueItem: Decodable {
     let htmlURL: URL
     let repositoryURL: URL
     let updatedAt: Date
-    let pullRequest: IssuePullRequest?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -732,37 +865,58 @@ private struct IssueItem: Decodable {
         case htmlURL = "html_url"
         case repositoryURL = "repository_url"
         case updatedAt = "updated_at"
-        case pullRequest = "pull_request"
-    }
-}
-
-private struct IssuePullRequest: Decodable {
-    let mergedAt: Date?
-
-    enum CodingKeys: String, CodingKey {
-        case mergedAt = "merged_at"
     }
 }
 
 private struct PullRequestDetails: Decodable {
     let title: String
     let htmlURL: URL
+    let state: String
     let merged: Bool
     let mergedAt: Date?
     let mergeCommitSHA: String?
+    let head: PullRequestBranch
 
     enum CodingKeys: String, CodingKey {
         case title
         case htmlURL = "html_url"
+        case state
         case merged
         case mergedAt = "merged_at"
         case mergeCommitSHA = "merge_commit_sha"
+        case head
     }
+}
+
+private struct PullRequestBranch: Decodable {
+    let sha: String
 }
 
 private struct PullRequestStateResponse: Decodable {
     let state: String
     let merged: Bool
+    let closedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case merged
+        case closedAt = "closed_at"
+    }
+}
+
+private struct PullRequestReview: Decodable {
+    let state: String
+    let user: GitHubUser
+}
+
+private struct GitHubUser: Decodable {
+    let login: String
+    let avatarURL: URL?
+
+    enum CodingKeys: String, CodingKey {
+        case login
+        case avatarURL = "avatar_url"
+    }
 }
 
 private struct NotificationThread: Decodable {
@@ -799,6 +953,24 @@ private struct Repository: Decodable {
     }
 }
 
+private struct TimelineEntry: Decodable {
+    let event: String?
+    let createdAt: Date?
+    let submittedAt: Date?
+    let actor: GitHubUser?
+    let user: GitHubUser?
+    let state: String?
+
+    enum CodingKeys: String, CodingKey {
+        case event
+        case createdAt = "created_at"
+        case submittedAt = "submitted_at"
+        case actor
+        case user
+        case state
+    }
+}
+
 private struct WorkflowRunsResponse: Decodable {
     let workflowRuns: [WorkflowRun]
 
@@ -810,20 +982,26 @@ private struct WorkflowRunsResponse: Decodable {
 private struct WorkflowRun: Decodable {
     let id: Int
     let name: String?
+    let displayTitle: String?
     let htmlURL: URL?
     let event: String
     let status: String?
     let conclusion: String?
     let createdAt: Date
+    let actor: GitHubUser?
+    let triggeringActor: GitHubUser?
 
     enum CodingKeys: String, CodingKey {
         case id
         case name
+        case displayTitle = "display_title"
         case htmlURL = "html_url"
         case event
         case status
         case conclusion
         case createdAt = "created_at"
+        case actor
+        case triggeringActor = "triggering_actor"
     }
 }
 

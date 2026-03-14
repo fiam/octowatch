@@ -13,14 +13,16 @@ final class UserNotifier {
         }
     }
 
-    func notify(title: String, body: String) {
+    func notify(item: AttentionItem) {
         let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
+        content.title = item.nativeNotificationTitle
+        content.subtitle = item.title
+        content.body = item.subtitle
         content.sound = .default
+        content.userInfo = ["url": item.url.absoluteString]
 
         let request = UNNotificationRequest(
-            identifier: UUID().uuidString,
+            identifier: item.id,
             content: content,
             trigger: nil
         )

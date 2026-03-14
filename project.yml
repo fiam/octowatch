@@ -22,10 +22,21 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
+  OctobarTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Tests/OctobarTests
+    dependencies:
+      - target: Octobar
 schemes:
   Octobar:
     build:
       targets:
         Octobar: all
+    test:
+      targets:
+        - name: OctobarTests
     run:
       config: Debug

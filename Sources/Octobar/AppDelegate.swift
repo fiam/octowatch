@@ -1,9 +1,10 @@
 import AppKit
 import Combine
 import SwiftUI
+import UserNotifications
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private struct StatusPresentation: Equatable {
         let symbolName: String
         let title: String
@@ -18,12 +19,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
         configurePopover()
         configureStatusItem()
         observeAppEvents()
         observeModelChanges()
         observeWindowLifecycle()
+        modelNotifierSetup()
     }
 
     deinit {
@@ -86,6 +87,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSWindow.willCloseNotification,
             object: nil
         )
+    }
+
+    private func modelNotifierSetup() {
+        UNUserNotificationCenter.current().delegate = self
     }
 
     private func updateStatusItemButton() {
@@ -203,7 +208,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         settingsWindow = window
-        NSApp.setActivationPolicy(.regular)
     }
 
     @objc
@@ -216,7 +220,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         settingsWindow = nil
-        NSApp.setActivationPolicy(.accessory)
     }
 
     private func isSettingsWindow(_ window: NSWindow) -> Bool {
@@ -232,7 +235,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             popover.performClose(nil)
         }
 
-        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.async { [weak self] in
             NotificationCenter.default.post(name: .performSettingsOpen, object: nil)
@@ -243,7 +245,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func focusSettingsWindowWhenAvailable(retries: Int = 12) {
         if let window = findSettingsWindow() {
             settingsWindow = window
-            NSApp.setActivationPolicy(.regular)
             window.makeKeyAndOrderFront(nil)
             window.orderFrontRegardless()
             NSApp.activate(ignoringOtherApps: true)
@@ -251,9 +252,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         guard retries > 0 else {
-            if settingsWindow == nil {
-                NSApp.setActivationPolicy(.accessory)
-            }
             return
         }
 
@@ -274,5 +272,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return NSApp.windows.first(where: isSettingsWindow)
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        if !flag {
+            openSettingsWindow()
+            return false
+        }
+
+        return true
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .list, .sound]
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        guard
+            let rawURL = response.notification.request.content.userInfo["url"] as? String,
+            let url = URL(string: rawURL)
+        else {
+            return
+        }
+
+        await MainActor.run {
+            NSApp.activate(ignoringOtherApps: true)
+            NSWorkspace.shared.open(url)
+        }
     }
 }

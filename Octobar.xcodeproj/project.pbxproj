@@ -12,6 +12,7 @@
 		5071EC18C014C61F8ACB30AE /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C22D0B6E42FD058AAEA66C2B /* Assets.xcassets */; };
 		5443BC8EAD2812C9C3D12E76 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31A252828A52BA5E17F5920E /* Models.swift */; };
 		7B8B617103F1517E4F214970 /* MenuBarContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B0ACE59509378D66E0E942 /* MenuBarContentView.swift */; };
+		83177DA9137B1E1C86816A48 /* AttentionClassificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF90E990504642D5B6D443C5 /* AttentionClassificationTests.swift */; };
 		89BE6B308281D77845E5EE65 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50D11BE24DC83FBD3D4635B7 /* AppDelegate.swift */; };
 		A3B60B5869252589079CD7BC /* GitHubClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAB66DDC53ED0991FECB280 /* GitHubClient.swift */; };
 		A8AA077185880B25F39A3841 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA536A90E069D6834E4342D5 /* AppModel.swift */; };
@@ -21,6 +22,16 @@
 		DB044C1CB8322350FC01DB1F /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D1F7D38E5F2BEA55062C857 /* SettingsView.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		1799FD0E6AE6CD09B686645F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2313ADA72DD1DB9A780EF7FB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 594E71714DFA477789751D01;
+			remoteInfo = Octobar;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		0D1F7D38E5F2BEA55062C857 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		0ED430DC7D4AC36CF58F0E4C /* Octobar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Octobar.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -29,19 +40,38 @@
 		50D11BE24DC83FBD3D4635B7 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		774836DEA4733813D3C7EB51 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		8BC552F43770D5BFAC833FAD /* GitHubCLITokenProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubCLITokenProvider.swift; sourceTree = "<group>"; };
+		A6CE05BFD3EDC9DF5A7C3015 /* OctobarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OctobarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A9B0ACE59509378D66E0E942 /* MenuBarContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarContentView.swift; sourceTree = "<group>"; };
 		ADAB66DDC53ED0991FECB280 /* GitHubClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubClient.swift; sourceTree = "<group>"; };
 		C22D0B6E42FD058AAEA66C2B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		D6D1E733253571AE4E024EFC /* AppEvents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEvents.swift; sourceTree = "<group>"; };
 		DA536A90E069D6834E4342D5 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		F3026C9C2E8BB2D9E383D810 /* OctobarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OctobarApp.swift; sourceTree = "<group>"; };
+		FF90E990504642D5B6D443C5 /* AttentionClassificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttentionClassificationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
+		053ECF4B0498490785B7DC89 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				1B518AE22EDC87138B72A6E1 /* OctobarTests */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		1B518AE22EDC87138B72A6E1 /* OctobarTests */ = {
+			isa = PBXGroup;
+			children = (
+				FF90E990504642D5B6D443C5 /* AttentionClassificationTests.swift */,
+			);
+			path = OctobarTests;
+			sourceTree = "<group>";
+		};
 		2645857357F481686458C748 = {
 			isa = PBXGroup;
 			children = (
 				38DC3BF2744CCA877A18FF77 /* Sources */,
+				053ECF4B0498490785B7DC89 /* Tests */,
 				69162C0962AC5C2660115756 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -58,6 +88,7 @@
 			isa = PBXGroup;
 			children = (
 				0ED430DC7D4AC36CF58F0E4C /* Octobar.app */,
+				A6CE05BFD3EDC9DF5A7C3015 /* OctobarTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -102,6 +133,24 @@
 			productReference = 0ED430DC7D4AC36CF58F0E4C /* Octobar.app */;
 			productType = "com.apple.product-type.application";
 		};
+		EE1BEEBF5AAE06FF7A0F6D41 /* OctobarTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB48FEB6C2C471303E3CD131 /* Build configuration list for PBXNativeTarget "OctobarTests" */;
+			buildPhases = (
+				774E02480D6917D130FC5839 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				040CBC6B1D0132B12399FAF0 /* PBXTargetDependency */,
+			);
+			name = OctobarTests;
+			packageProductDependencies = (
+			);
+			productName = OctobarTests;
+			productReference = A6CE05BFD3EDC9DF5A7C3015 /* OctobarTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -131,6 +180,7 @@
 			projectRoot = "";
 			targets = (
 				594E71714DFA477789751D01 /* Octobar */,
+				EE1BEEBF5AAE06FF7A0F6D41 /* OctobarTests */,
 			);
 		};
 /* End PBXProject section */
@@ -147,6 +197,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		774E02480D6917D130FC5839 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				83177DA9137B1E1C86816A48 /* AttentionClassificationTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		CC0DFB64B30B9190C5B74A2F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -167,6 +225,14 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		040CBC6B1D0132B12399FAF0 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 594E71714DFA477789751D01 /* Octobar */;
+			targetProxy = 1799FD0E6AE6CD09B686645F /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
 		0421B1BD2633F603B972D590 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -183,6 +249,22 @@
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				PRODUCT_NAME = Octobar;
 				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		0D2960A40C747F2AA8A28FA5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Octobar.app/Contents/MacOS/Octobar";
 			};
 			name = Debug;
 		};
@@ -323,6 +405,22 @@
 			};
 			name = Debug;
 		};
+		D70AF7122D43FC2ACC469EE7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Octobar.app/Contents/MacOS/Octobar";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -340,6 +438,15 @@
 			buildConfigurations = (
 				D3ACA648084F74291340169C /* Debug */,
 				A6B8894703E86025A570C398 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		BB48FEB6C2C471303E3CD131 /* Build configuration list for PBXNativeTarget "OctobarTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0D2960A40C747F2AA8A28FA5 /* Debug */,
+				D70AF7122D43FC2ACC469EE7 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
