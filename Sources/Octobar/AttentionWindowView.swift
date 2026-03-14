@@ -39,10 +39,18 @@ struct AttentionWindowView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            NavigationSplitView {
-                sidebar(relativeTo: context.date)
-            } detail: {
-                detailPane(relativeTo: context.date)
+            ZStack {
+                if showsInitialLoadingState {
+                    loadingView
+                        .transition(.opacity.combined(with: .scale(scale: 0.985)))
+                } else {
+                    NavigationSplitView {
+                        sidebar(relativeTo: context.date)
+                    } detail: {
+                        detailPane(relativeTo: context.date)
+                    }
+                    .transition(.opacity)
+                }
             }
         }
         .navigationSplitViewStyle(.balanced)
@@ -56,6 +64,7 @@ struct AttentionWindowView: View {
         .onChange(of: listFilter) { _, _ in
             syncSelection()
         }
+        .animation(.easeInOut(duration: 0.18), value: showsInitialLoadingState)
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Picker("Filter", selection: $listFilter) {
@@ -90,6 +99,27 @@ struct AttentionWindowView: View {
                 .help("Settings")
             }
         }
+    }
+
+    private var showsInitialLoadingState: Bool {
+        model.isResolvingInitialContent
+    }
+
+    private var loadingView: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .controlSize(.large)
+
+            Text("Refreshing inbox…")
+                .font(.title3.weight(.semibold))
+
+            Text("Fetching the latest GitHub activity.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var displayedItems: [AttentionItem] {

@@ -16,6 +16,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isRefreshing = false
 
     @Published var tokenInput = ""
+    @Published private(set) var isResolvingInitialContent = true
     @Published private(set) var gitHubCLIAvailable = false
     @Published private(set) var usingGitHubCLIToken = false
     @Published private(set) var isValidatingToken = false
@@ -141,6 +142,10 @@ final class AppModel: ObservableObject {
     }
 
     func refreshNow() {
+        guard hasToken, !isRefreshing else {
+            return
+        }
+
         Task {
             await refresh(force: true)
         }
@@ -179,7 +184,7 @@ final class AppModel: ObservableObject {
     }
 
     private func refresh(force: Bool) async {
-        guard hasToken else {
+        guard hasToken, !isRefreshing else {
             return
         }
 
@@ -204,10 +209,17 @@ final class AppModel: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
+
+        if isResolvingInitialContent {
+            isResolvingInitialContent = false
+        }
     }
 
     private func bootstrapToken() async {
-        _ = await importTokenFromGitHubCLIIfAvailable(force: false)
+        let importedToken = await importTokenFromGitHubCLIIfAvailable(force: false)
+        if !importedToken {
+            isResolvingInitialContent = false
+        }
     }
 
     private func importTokenFromGitHubCLIIfAvailable(force: Bool) async -> Bool {
