@@ -1,143 +1,133 @@
 import SwiftUI
 
 struct SettingsView: View {
+    private enum TokenSource: Hashable {
+        case githubCLI
+        case personalAccessToken
+    }
+
     @ObservedObject var model: AppModel
     @FocusState private var tokenFieldFocused: Bool
-    @State private var showCustomTokenEditor = false
+    @State private var selectedTokenSource: TokenSource = .personalAccessToken
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.95, green: 0.97, blue: 1.0),
-                    Color(red: 0.96, green: 0.96, blue: 0.98)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            Color(nsColor: .windowBackgroundColor)
+                .ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 14) {
-                tokenCard
-                pollingCard
-                Spacer(minLength: 0)
-            }
-            .padding(22)
-        }
-        .frame(width: 560, height: 360)
-        .onAppear {
-            if model.gitHubCLIAvailable, !model.usingGitHubCLIToken {
-                showCustomTokenEditor = true
-            }
-
-            if (!model.gitHubCLIAvailable || showCustomTokenEditor), !model.hasToken {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                    tokenFieldFocused = true
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    tokenCard
+                    pollingCard
                 }
+                .padding(28)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
+            .scrollIndicators(.never)
+        }
+        .frame(width: 760, height: 460)
+        .onAppear {
+            syncSelectedTokenSource()
+            focusTokenFieldIfNeeded()
         }
         .onChange(of: model.usingGitHubCLIToken) { _, usingCLI in
             if usingCLI {
-                showCustomTokenEditor = false
+                selectedTokenSource = .githubCLI
             }
         }
     }
 
     private var tokenCard: some View {
-        card {
-            VStack(alignment: .leading, spacing: 10) {
-                sectionTitle("GitHub Token", systemImage: "key.horizontal")
+        settingsCard {
+            cardIntro(
+                title: "GitHub Auth",
+                message: tokenSummary
+            ) {
+                GitHubMarkBadge()
+            }
 
+            Divider()
+                .padding(.horizontal, 20)
+
+            settingsRow(
+                title: "Authentication",
+                subtitle: authSubtitle
+            ) {
                 if model.gitHubCLIAvailable {
-                    Text("GitHub CLI detected. Octobar reads your token from `gh auth token` at runtime and never writes to Keychain.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    HStack(spacing: 10) {
-                        Button("Reload from gh") {
-                            model.reloadTokenFromGitHubCLI()
-                        }
-                        .buttonStyle(.borderedProminent)
-
-                        Text(model.usingGitHubCLIToken ? "Using gh token (default)" : "Using custom session token")
-                            .font(.caption)
-                            .foregroundStyle(model.hasToken ? .green : .secondary)
+                    Picker("Authentication", selection: tokenSourceSelection) {
+                        Text("GitHub CLI").tag(TokenSource.githubCLI)
+                        Text("Personal Access Token").tag(TokenSource.personalAccessToken)
                     }
-
-                    if model.usingGitHubCLIToken, !showCustomTokenEditor {
-                        Button("Use Custom Token…") {
-                            showCustomTokenEditor = true
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                tokenFieldFocused = true
-                            }
-                        }
-                        .buttonStyle(.bordered)
-                    }
-
-                    if showCustomTokenEditor || !model.usingGitHubCLIToken {
-                        SecureField("ghp_...", text: $model.tokenInput)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.body, design: .monospaced))
-                            .focused($tokenFieldFocused)
-
-                        HStack(spacing: 10) {
-                            Button("Use Custom Token") {
-                                model.saveToken()
-                            }
-                            .buttonStyle(.borderedProminent)
-
-                            Button("Use gh Default") {
-                                model.reloadTokenFromGitHubCLI()
-                            }
-                            .buttonStyle(.bordered)
-
-                            Button("Clear Token") {
-                                model.clearToken()
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(!model.hasToken)
-                        }
-                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 320)
+                    .labelsHidden()
                 } else {
-                    Text("GitHub CLI not found. Provide a token for this session only.")
-                        .font(.caption)
+                    Text("Personal Access Token")
                         .foregroundStyle(.secondary)
+                }
+            }
 
-                    SecureField("ghp_...", text: $model.tokenInput)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                        .focused($tokenFieldFocused)
+            Divider()
+                .padding(.leading, 20)
 
-                    HStack(spacing: 10) {
-                        Button("Use Session Token") {
-                            model.saveToken()
+            if selectedTokenSource == .githubCLI {
+                settingsRow(
+                    title: "GitHub CLI",
+                    subtitle: "Octobar validates `gh auth token` before using it."
+                ) {
+                    Button(model.usingGitHubCLIToken ? "Check Again" : "Use GitHub CLI") {
+                        Task {
+                            let success = await model.reloadTokenFromGitHubCLI()
+                            if !success {
+                                selectedTokenSource = .personalAccessToken
+                                focusTokenFieldIfNeeded(force: true)
+                            }
                         }
-                        .buttonStyle(.borderedProminent)
-
-                        Button("Clear Token") {
-                            model.clearToken()
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!model.hasToken)
                     }
+                    .disabled(model.isValidatingToken)
                 }
+            } else {
+                customTokenEditor
+            }
 
-                if let error = model.lastError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
+            if let error = model.lastError {
+                Divider()
+                    .padding(.leading, 20)
+
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 16)
             }
         }
     }
 
     private var pollingCard: some View {
-        card {
-            VStack(alignment: .leading, spacing: 10) {
-                sectionTitle("Polling", systemImage: "clock.arrow.circlepath")
+        settingsCard {
+            cardIntro(
+                title: "Refresh Interval",
+                message: "Choose how often Octobar refreshes GitHub activity."
+            ) {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(.orange.gradient)
+                    .frame(width: 46, height: 46)
+                    .overlay {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 21, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+            }
 
+            Divider()
+                .padding(.horizontal, 20)
+
+            settingsRow(
+                title: "Refresh Interval",
+                subtitle: "Shorter intervals check more often but increase API traffic."
+            ) {
                 Picker(
-                    "Poll Interval",
+                    "Refresh Interval",
                     selection: Binding(
                         get: { model.pollIntervalSeconds },
                         set: { model.setPollIntervalSeconds($0) }
@@ -148,15 +138,112 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .frame(maxWidth: 220, alignment: .leading)
+                .frame(width: 140)
+                .labelsHidden()
             }
         }
     }
 
-    private func sectionTitle(_ title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.headline)
-            .labelStyle(.titleAndIcon)
+    private var customTokenEditor: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Personal Access Token")
+                .font(.headline)
+
+            Text("Octobar validates the token before it starts using it.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            SecureField("Personal access token", text: $model.tokenInput)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+                .focused($tokenFieldFocused)
+
+            HStack {
+                Button("Apply Token") {
+                    Task {
+                        _ = await model.saveToken()
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.isValidatingToken)
+
+                Button("Clear") {
+                    model.clearToken()
+                }
+                .disabled(model.isValidatingToken || (!model.hasToken && model.tokenInput.isEmpty))
+
+                if model.isValidatingToken {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+    }
+
+    private var tokenSummary: String {
+        if model.usingGitHubCLIToken {
+            return "GitHub CLI was detected and its token validated automatically."
+        }
+
+        if model.gitHubCLIAvailable {
+            return "Octobar tries GitHub CLI first and falls back to a personal access token when needed."
+        }
+
+        return "GitHub CLI was not found, so use a personal access token."
+    }
+
+    private var authSubtitle: String {
+        if model.gitHubCLIAvailable {
+            return "Select a validated GitHub CLI token or provide a personal access token."
+        }
+
+        return "GitHub CLI is not installed, so use a personal access token."
+    }
+
+    private var tokenSourceSelection: Binding<TokenSource> {
+        Binding(
+            get: {
+                if model.gitHubCLIAvailable {
+                    return selectedTokenSource
+                }
+
+                return .personalAccessToken
+            },
+            set: { newValue in
+                if newValue == .githubCLI {
+                    selectedTokenSource = .githubCLI
+                    Task {
+                        let success = await model.reloadTokenFromGitHubCLI()
+                        if !success {
+                            selectedTokenSource = .personalAccessToken
+                            focusTokenFieldIfNeeded(force: true)
+                        }
+                    }
+                    return
+                }
+
+                selectedTokenSource = .personalAccessToken
+                focusTokenFieldIfNeeded(force: true)
+            }
+        )
+    }
+
+    private func syncSelectedTokenSource() {
+        selectedTokenSource = model.usingGitHubCLIToken ? .githubCLI : .personalAccessToken
+    }
+
+    private func focusTokenFieldIfNeeded(force: Bool = false) {
+        guard selectedTokenSource == .personalAccessToken || force else {
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            tokenFieldFocused = true
+        }
     }
 
     private func label(for seconds: Int) -> String {
@@ -172,16 +259,84 @@ struct SettingsView: View {
         return "\(minutes) minutes"
     }
 
-    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        content()
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .fill(.regularMaterial)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .strokeBorder(.primary.opacity(0.08))
-            )
+    private func settingsCard<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            content()
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    private func cardIntro<Leading: View>(
+        title: String,
+        message: String,
+        @ViewBuilder leading: () -> Leading
+    ) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            leading()
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.title2.weight(.semibold))
+
+                Text(message)
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(20)
+    }
+
+    private func settingsRow<Accessory: View>(
+        title: String,
+        subtitle: String,
+        @ViewBuilder accessory: () -> Accessory
+    ) -> some View {
+        HStack(alignment: .center, spacing: 20) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 24)
+
+            accessory()
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+    }
+}
+
+private struct GitHubMarkBadge: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .fill(Color(nsColor: .windowBackgroundColor))
+            .frame(width: 46, height: 46)
+            .overlay {
+                Image("GitHubMark")
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 28, height: 28)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.05), radius: 8, y: 2)
     }
 }

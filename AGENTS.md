@@ -12,6 +12,11 @@ This file captures project-specific guidance for coding agents working in `octob
 - Use `xcodegen` for Xcode project generation.
 - Treat `project.yml` as canonical project config.
 - Do not hand-edit `Octobar.xcodeproj/project.pbxproj` unless explicitly requested.
+- For UI work, follow Apple's Human Interface Guidelines:
+  https://developer.apple.com/design/human-interface-guidelines
+- Prefer standard macOS controls, settings window conventions, spacing,
+  and interaction patterns unless the user explicitly asks for a custom
+  treatment.
 
 ## Common Commands
 - Generate Xcode project:
@@ -30,7 +35,7 @@ This file captures project-specific guidance for coding agents working in `octob
 - `Sources/Octobar/GitHubClient.swift`: GitHub API integration and snapshot assembly.
 - `Sources/Octobar/MenuBarContentView.swift`: menu bar UI.
 - `Sources/Octobar/SettingsView.swift`: token and polling settings.
-- `Sources/Octobar/KeychainStore.swift`: PAT storage in Keychain.
+- `Sources/Octobar/GitHubCLITokenProvider.swift`: runtime token loading from `gh`.
 
 ## GitHub Integration Notes
 - Primary views tracked:
@@ -41,8 +46,8 @@ This file captures project-specific guidance for coding agents working in `octob
 - Prefer conservative API usage and keep polling interval at or above 60s unless user asks otherwise.
 
 ## Security And Privacy
-- Personal access token is stored in Keychain (`service: dev.octobar.app`).
-- On startup, if Keychain has no token, app may import one from GitHub CLI via `gh auth token`.
+- Default token source is GitHub CLI via `gh auth token`, read at runtime.
+- User-entered custom tokens are session-only and are not persisted.
 - Never print tokens or persist them in logs/files.
 - Keep token scopes minimal for read-only monitoring.
 

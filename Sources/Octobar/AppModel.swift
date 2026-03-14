@@ -3,6 +3,11 @@ import SwiftUI
 
 @MainActor
 final class AppModel: ObservableObject {
+    private enum TokenSource {
+        case githubCLI
+        case personalAccessToken
+    }
+
     static let shared = AppModel()
 
     @Published private(set) var attentionItems: [AttentionItem] = []
@@ -13,6 +18,7 @@ final class AppModel: ObservableObject {
     @Published var tokenInput = ""
     @Published private(set) var gitHubCLIAvailable = false
     @Published private(set) var usingGitHubCLIToken = false
+    @Published private(set) var isValidatingToken = false
     @Published private(set) var pollIntervalSeconds = 60
 
     private let readStateStoreKey = "attention-item-read-state-v1"
@@ -33,8 +39,14 @@ final class AppModel: ObservableObject {
 
     init() {
         gitHubCLIAvailable = GitHubCLITokenProvider.isInstalled
-        pollIntervalSeconds = Self.loadPollInterval(from: UserDefaults.standard, key: pollIntervalStoreKey)
-        readStateByItemID = Self.loadReadState(from: UserDefaults.standard, key: readStateStoreKey)
+        pollIntervalSeconds = Self.loadPollInterval(
+            from: UserDefaults.standard,
+            key: pollIntervalStoreKey
+        )
+        readStateByItemID = Self.loadReadState(
+            from: UserDefaults.standard,
+            key: readStateStoreKey
+        )
 
         Task {
             await notifier.requestAuthorization()
@@ -66,7 +78,10 @@ final class AppModel: ObservableObject {
             return "Not refreshed yet"
         }
 
-        let relative = relativeDateFormatter.localizedString(for: lastUpdated, relativeTo: Date())
+        let relative = relativeDateFormatter.localizedString(
+            for: lastUpdated,
+            relativeTo: Date()
+        )
         return "Updated \(relative)"
     }
 
@@ -74,21 +89,15 @@ final class AppModel: ObservableObject {
         [30, 60, 120, 300, 600, 900]
     }
 
-    func saveToken() {
+    func saveToken() async -> Bool {
         let cleaned = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if cleaned.isEmpty {
             clearToken()
-            return
+            return false
         }
 
-        token = cleaned
-        usingGitHubCLIToken = false
-        knownItemIDs.removeAll()
-        lastError = nil
-
-        startPollingIfNeeded()
-        refreshNow()
+        return await validateAndApplyToken(cleaned, source: .personalAccessToken)
     }
 
     func clearToken() {
@@ -105,10 +114,8 @@ final class AppModel: ObservableObject {
         pollingTask = nil
     }
 
-    func reloadTokenFromGitHubCLI() {
-        Task { [weak self] in
-            await self?.importTokenFromGitHubCLIIfAvailable(force: true)
-        }
+    func reloadTokenFromGitHubCLI() async -> Bool {
+        await importTokenFromGitHubCLIIfAvailable(force: true)
     }
 
     func setPollIntervalSeconds(_ seconds: Int) {
@@ -176,7 +183,10 @@ final class AppModel: ObservableObject {
         defer { isRefreshing = false }
 
         do {
-            let snapshot = try await client.fetchSnapshot(token: token, preferredLogin: userLogin)
+            let snapshot = try await client.fetchSnapshot(
+                token: token,
+                preferredLogin: userLogin
+            )
             userLogin = snapshot.login
             attentionItems = snapshot.attentionItems.map(applyingLocalReadState)
             lastUpdated = Date()
@@ -189,37 +199,86 @@ final class AppModel: ObservableObject {
     }
 
     private func bootstrapToken() async {
-        await importTokenFromGitHubCLIIfAvailable(force: false)
-
-        if hasToken {
-            startPollingIfNeeded()
-        }
+        _ = await importTokenFromGitHubCLIIfAvailable(force: false)
     }
 
-    private func importTokenFromGitHubCLIIfAvailable(force: Bool) async {
+    private func importTokenFromGitHubCLIIfAvailable(force: Bool) async -> Bool {
         guard gitHubCLIAvailable else {
-            return
+            if force {
+                lastError = "GitHub CLI is not installed."
+            }
+            return false
         }
 
         if !force, hasToken {
-            return
+            return true
         }
 
         guard let cliToken = await GitHubCLITokenProvider.fetchToken() else {
             if force {
                 lastError = "Could not load token from `gh auth token`."
             }
-            return
+            return false
         }
 
-        token = cliToken
-        tokenInput = ""
-        usingGitHubCLIToken = true
-        knownItemIDs.removeAll()
-        lastError = nil
+        return await validateAndApplyToken(cliToken, source: .githubCLI)
+    }
 
-        startPollingIfNeeded()
-        refreshNow()
+    private func validateAndApplyToken(
+        _ candidate: String,
+        source: TokenSource
+    ) async -> Bool {
+        guard !isValidatingToken else {
+            return false
+        }
+
+        isValidatingToken = true
+        defer { isValidatingToken = false }
+
+        do {
+            let validatedLogin = try await client.validateToken(token: candidate)
+
+            token = candidate
+            userLogin = validatedLogin
+            usingGitHubCLIToken = source == .githubCLI
+            tokenInput = source == .githubCLI ? "" : candidate
+            knownItemIDs.removeAll()
+            lastError = nil
+
+            startPollingIfNeeded()
+            refreshNow()
+            return true
+        } catch {
+            lastError = userFacingTokenError(for: error, source: source)
+            return false
+        }
+    }
+
+    private func userFacingTokenError(
+        for error: Error,
+        source: TokenSource
+    ) -> String {
+        if let clientError = error as? GitHubClientError {
+            switch clientError {
+            case .invalidCredentials:
+                return "GitHub rejected that token. Check the token and try again."
+            case let .tokenValidation(message):
+                return message
+            case let .api(statusCode, message):
+                return "GitHub API error \(statusCode): \(message)"
+            default:
+                break
+            }
+        }
+
+        if source == .githubCLI {
+            return """
+            GitHub CLI is available, but its token cannot be used with Octobar. \
+            Provide a GitHub token with access to notifications and pull request search.
+            """
+        }
+
+        return "That token could not be validated for Octobar."
     }
 
     private func notifyIfNeeded() {
@@ -271,7 +330,10 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(raw, forKey: readStateStoreKey)
     }
 
-    private static func loadReadState(from defaults: UserDefaults, key: String) -> [String: Date] {
+    private static func loadReadState(
+        from defaults: UserDefaults,
+        key: String
+    ) -> [String: Date] {
         guard let raw = defaults.dictionary(forKey: key) as? [String: Double] else {
             return [:]
         }

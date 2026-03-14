@@ -35,9 +35,16 @@ Use a GitHub personal access token (classic or fine-grained) with read access to
 - Actions
 - Notifications
 
-The token is stored in macOS Keychain (`dev.octobar.app` service).
+If `gh` is installed and authenticated, Octobar will try `gh auth token`
+first and validate it before using it.
 
-If no token is already stored, Octobar will also try importing one automatically from GitHub CLI via `gh auth token` when `gh` is installed and authenticated.
+You can also enter a custom token in Settings. Custom tokens are
+session-only and are not written to Keychain.
+
+Because Octobar reads GitHub notifications, the token must work with the
+Notifications API. GitHub's documentation says the "List notifications
+for the authenticated user" endpoint does not work with fine-grained
+personal access tokens.
 
 ## Notes
 

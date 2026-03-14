@@ -9,5 +9,7 @@ struct OctobarApp: App {
         Settings {
             SettingsView(model: model)
         }
+        .defaultSize(width: 760, height: 520)
+        .windowResizability(.contentSize)
     }
 }

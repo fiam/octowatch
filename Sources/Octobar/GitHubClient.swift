@@ -2,15 +2,21 @@ import Foundation
 
 enum GitHubClientError: LocalizedError {
     case invalidResponse
+    case invalidCredentials
     case api(statusCode: Int, message: String)
+    case tokenValidation(message: String)
     case unsupportedRepositoryName(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidResponse:
             return "GitHub API returned an invalid response."
+        case .invalidCredentials:
+            return "GitHub credentials were rejected."
         case let .api(statusCode, message):
             return "GitHub API error \(statusCode): \(message)"
+        case let .tokenValidation(message):
+            return message
         case let .unsupportedRepositoryName(name):
             return "Unsupported repository name format: \(name)"
         }
@@ -36,6 +42,54 @@ struct GitHubClient {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         self.decoder = decoder
+    }
+
+    func validateToken(token: String) async throws -> String {
+        let user: CurrentUser = try await request(path: "/user", token: token)
+
+        do {
+            let _: [NotificationThread] = try await request(
+                path: "/notifications",
+                queryItems: [
+                    URLQueryItem(name: "all", value: "false"),
+                    URLQueryItem(name: "participating", value: "true"),
+                    URLQueryItem(name: "per_page", value: "1")
+                ],
+                token: token
+            )
+        } catch {
+            throw mapTokenValidationError(
+                error,
+                fallback: """
+                This token cannot access GitHub notifications. Octobar needs a token \
+                that works with the notifications API.
+                """
+            )
+        }
+
+        do {
+            let _: SearchIssuesResponse = try await request(
+                path: "/search/issues",
+                queryItems: [
+                    URLQueryItem(
+                        name: "q",
+                        value: "is:open is:pr assignee:\(user.login) archived:false"
+                    ),
+                    URLQueryItem(name: "per_page", value: "1")
+                ],
+                token: token
+            )
+        } catch {
+            throw mapTokenValidationError(
+                error,
+                fallback: """
+                This token cannot search pull requests assigned to you. Octobar needs \
+                access to GitHub search for pull requests.
+                """
+            )
+        }
+
+        return user.login
     }
 
     func fetchSnapshot(token: String, preferredLogin: String?) async throws -> GitHubSnapshot {
@@ -527,9 +581,19 @@ struct GitHubClient {
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
         request.setValue("Octobar", forHTTPHeaderField: "User-Agent")
 
+        let data = try await perform(request)
+
+        return try decoder.decode(Response.self, from: data)
+    }
+
+    private func perform(_ request: URLRequest) async throws -> Data {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw GitHubClientError.invalidResponse
+        }
+
+        if http.statusCode == 401 {
+            throw GitHubClientError.invalidCredentials
         }
 
         guard (200..<300).contains(http.statusCode) else {
@@ -537,7 +601,43 @@ struct GitHubClient {
             throw GitHubClientError.api(statusCode: http.statusCode, message: message)
         }
 
-        return try decoder.decode(Response.self, from: data)
+        return data
+    }
+
+    private func mapTokenValidationError(
+        _ error: Error,
+        fallback: String
+    ) -> GitHubClientError {
+        if let clientError = error as? GitHubClientError {
+            switch clientError {
+            case .invalidCredentials:
+                return .invalidCredentials
+            case let .api(statusCode, message):
+                let lowercasedMessage = message.lowercased()
+                if lowercasedMessage.contains("fine-grained") ||
+                    lowercasedMessage.contains("notifications")
+                {
+                    return .tokenValidation(
+                        message: """
+                        This token cannot access GitHub notifications. Fine-grained \
+                        personal access tokens do not support that API.
+                        """
+                    )
+                }
+
+                if statusCode == 403 || statusCode == 404 {
+                    return .tokenValidation(message: fallback)
+                }
+
+                return .tokenValidation(message: "GitHub rejected this token: \(message)")
+            case let .tokenValidation(message):
+                return .tokenValidation(message: message)
+            default:
+                return .tokenValidation(message: fallback)
+            }
+        }
+
+        return .tokenValidation(message: fallback)
     }
 
     private func repositoryFullName(from apiRepositoryURL: URL) -> String? {

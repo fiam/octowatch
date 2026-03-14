@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         configurePopover()
         configureStatusItem()
+        observeAppEvents()
         observeModelChanges()
         observeWindowLifecycle()
     }
@@ -61,6 +62,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in
                 self?.updateStatusItemButton()
             }
+    }
+
+    private func observeAppEvents() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleOpenSettingsRequested(_:)),
+            name: .openSettingsRequested,
+            object: nil
+        )
     }
 
     private func observeWindowLifecycle() {
@@ -161,11 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc
     private func openSettingsFromContextMenu() {
-        NSApp.setActivationPolicy(.regular)
-        DispatchQueue.main.async { [weak self] in
-            NotificationCenter.default.post(name: .openSettingsRequested, object: nil)
-            self?.focusSettingsWindowWhenAvailable()
-        }
+        openSettingsWindow()
     }
 
     @objc
@@ -180,6 +186,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    @objc
+    private func handleOpenSettingsRequested(_ notification: Notification) {
+        openSettingsWindow()
     }
 
     @objc
@@ -214,6 +225,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return window.styleMask.contains(.titled)
+    }
+
+    private func openSettingsWindow() {
+        if popover.isShown {
+            popover.performClose(nil)
+        }
+
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async { [weak self] in
+            NotificationCenter.default.post(name: .performSettingsOpen, object: nil)
+            self?.focusSettingsWindowWhenAvailable()
+        }
     }
 
     private func focusSettingsWindowWhenAvailable(retries: Int = 12) {

@@ -29,7 +29,7 @@ struct MenuBarContentView: View {
         }
         .padding(12)
         .frame(width: 420)
-        .onReceive(NotificationCenter.default.publisher(for: .openSettingsRequested)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .performSettingsOpen)) { _ in
             openSettings()
         }
     }
@@ -79,7 +79,7 @@ struct MenuBarContentView: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
-                Text("Open Settings to add your GitHub token.")
+                Text("Open Settings to connect GitHub.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -87,7 +87,7 @@ struct MenuBarContentView: View {
     }
 
     private var settingsButton: some View {
-        SettingsLink {
+        Button(action: requestSettings) {
             Image(systemName: "gearshape")
                 .font(.system(size: 13, weight: .semibold))
         }
@@ -159,14 +159,18 @@ struct MenuBarContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("No attention queue yet.")
                 .font(.callout.weight(.semibold))
-            Text("Add a token in Settings. Octobar can auto-import one via `gh auth token`.")
+            Text("Open Settings to validate GitHub CLI or provide a personal access token.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            SettingsLink {
+            Button(action: requestSettings) {
                 Text("Open Settings")
             }
         }
+    }
+
+    private func requestSettings() {
+        NotificationCenter.default.post(name: .openSettingsRequested, object: nil)
     }
 
     private func iconColor(for itemType: AttentionItemType) -> Color {
