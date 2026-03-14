@@ -24,6 +24,25 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     let subtitle: String
     let timestamp: Date
     let url: URL
+    var isUnread: Bool
+
+    init(
+        id: String,
+        type: AttentionItemType,
+        title: String,
+        subtitle: String,
+        timestamp: Date,
+        url: URL,
+        isUnread: Bool = true
+    ) {
+        self.id = id
+        self.type = type
+        self.title = title
+        self.subtitle = subtitle
+        self.timestamp = timestamp
+        self.url = url
+        self.isUnread = isUnread
+    }
 }
 
 struct PullRequestSummary: Identifiable, Hashable, Sendable {
@@ -42,6 +61,7 @@ struct NotificationSummary: Identifiable, Hashable, Sendable {
     let repository: String
     let url: URL
     let updatedAt: Date
+    let unread: Bool
 }
 
 struct ActionRunSummary: Identifiable, Hashable, Sendable {

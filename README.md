@@ -10,6 +10,7 @@ Octobar is a SwiftUI menu bar app for macOS that polls GitHub with a personal ac
 
 The app polls every 60 seconds and shows local macOS notifications when new actionable items appear.
 In the menu, all actionable signals are shown as one attention queue with per-type icons.
+Items also have dot-style read/unread indicators, and opening an item marks it as read locally.
 
 ## Requirements
 

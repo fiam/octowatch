@@ -87,7 +87,8 @@ struct GitHubClient {
                 title: notification.title,
                 subtitle: "\(notification.repository) · \(humanized(reason: notification.reason))",
                 timestamp: notification.updatedAt,
-                url: notification.url
+                url: notification.url,
+                isUnread: notification.unread
             )
         }
 
@@ -197,7 +198,8 @@ struct GitHubClient {
                                 repositoryWebURL: thread.repository.htmlURL,
                                 subjectType: thread.subject.type
                             ),
-                            updatedAt: thread.updatedAt
+                            updatedAt: thread.updatedAt,
+                            unread: thread.unread
                         )
                     } catch {
                         return nil
@@ -665,6 +667,7 @@ private struct PullRequestStateResponse: Decodable {
 
 private struct NotificationThread: Decodable {
     let id: String
+    let unread: Bool
     let reason: String
     let updatedAt: Date
     let subject: Subject
@@ -672,6 +675,7 @@ private struct NotificationThread: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case id
+        case unread
         case reason
         case updatedAt = "updated_at"
         case subject

@@ -44,6 +44,7 @@ struct SettingsView: View {
             if model.hasToken {
                 Section("Current Queue") {
                     Text("Items requiring attention: \(model.actionableCount)")
+                    Text("Unread items: \(model.unreadCount)")
                 }
             }
 

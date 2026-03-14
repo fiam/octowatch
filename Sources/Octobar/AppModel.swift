@@ -12,6 +12,7 @@ final class AppModel: ObservableObject {
     @Published var pollingEnabled = true
 
     private let tokenAccount = "github-personal-access-token"
+    private let readStateStoreKey = "attention-item-read-state-v1"
     private let keychain = KeychainStore(service: "dev.octobar.app")
     private let client = GitHubClient()
     private let notifier = UserNotifier()
@@ -20,6 +21,7 @@ final class AppModel: ObservableObject {
     private var userLogin: String?
     private var pollingTask: Task<Void, Never>?
     private var knownItemIDs = Set<String>()
+    private var readStateByItemID: [String: Date] = [:]
     private let relativeDateFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
@@ -29,6 +31,7 @@ final class AppModel: ObservableObject {
     init() {
         token = keychain.read(account: tokenAccount)
         tokenInput = token ?? ""
+        readStateByItemID = Self.loadReadState(from: UserDefaults.standard, key: readStateStoreKey)
 
         Task {
             await notifier.requestAuthorization()
@@ -53,6 +56,10 @@ final class AppModel: ObservableObject {
 
     var actionableCount: Int {
         attentionItems.count
+    }
+
+    var unreadCount: Int {
+        attentionItems.filter { $0.isUnread }.count
     }
 
     var relativeLastUpdated: String {
@@ -118,6 +125,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func markItemAsRead(_ item: AttentionItem) {
+        updateReadState(for: item, isUnread: false)
+    }
+
+    func toggleReadState(for item: AttentionItem) {
+        updateReadState(for: item, isUnread: !item.isUnread)
+    }
+
     private func startPollingIfNeeded() {
         guard hasToken, pollingEnabled else {
             return
@@ -160,7 +175,7 @@ final class AppModel: ObservableObject {
         do {
             let snapshot = try await client.fetchSnapshot(token: token, preferredLogin: userLogin)
             userLogin = snapshot.login
-            attentionItems = snapshot.attentionItems
+            attentionItems = snapshot.attentionItems.map(applyingLocalReadState)
             lastUpdated = Date()
             lastError = nil
 
@@ -197,5 +212,46 @@ final class AppModel: ObservableObject {
         }
 
         knownItemIDs = currentIDs
+    }
+
+    private func applyingLocalReadState(to item: AttentionItem) -> AttentionItem {
+        var updated = item
+        let locallyUnread = isLocallyUnread(item)
+        updated.isUnread = item.isUnread && locallyUnread
+        return updated
+    }
+
+    private func isLocallyUnread(_ item: AttentionItem) -> Bool {
+        guard let readAt = readStateByItemID[item.id] else {
+            return true
+        }
+        return readAt < item.timestamp
+    }
+
+    private func updateReadState(for item: AttentionItem, isUnread: Bool) {
+        if isUnread {
+            readStateByItemID[item.id] = nil
+        } else {
+            readStateByItemID[item.id] = Date()
+        }
+
+        persistReadState()
+
+        if let index = attentionItems.firstIndex(where: { $0.id == item.id }) {
+            attentionItems[index].isUnread = isUnread
+        }
+    }
+
+    private func persistReadState() {
+        let raw = readStateByItemID.mapValues(\.timeIntervalSince1970)
+        UserDefaults.standard.set(raw, forKey: readStateStoreKey)
+    }
+
+    private static func loadReadState(from defaults: UserDefaults, key: String) -> [String: Date] {
+        guard let raw = defaults.dictionary(forKey: key) as? [String: Double] else {
+            return [:]
+        }
+
+        return raw.mapValues { Date(timeIntervalSince1970: $0) }
     }
 }

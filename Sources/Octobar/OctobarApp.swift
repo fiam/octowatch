@@ -10,8 +10,10 @@ struct OctobarApp: App {
         MenuBarExtra {
             MenuBarContentView(model: model)
         } label: {
-            if model.actionableCount > 0 {
-                Label("\(model.actionableCount)", systemImage: "bell.badge.fill")
+            if model.unreadCount > 0 {
+                Label("\(model.unreadCount)", systemImage: "bell.badge.fill")
+            } else if model.actionableCount > 0 {
+                Label("\(model.actionableCount)", systemImage: "bell")
             } else {
                 Label("Octobar", systemImage: "bell")
             }
