@@ -14,6 +14,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var lastError: String?
     @Published private(set) var isRefreshing = false
+    @Published private(set) var rateLimit: GitHubRateLimit?
 
     @Published var tokenInput = ""
     @Published private(set) var isResolvingInitialContent = true
@@ -110,6 +111,35 @@ final class AppModel: ObservableObject {
         [30, 60, 120, 300, 600, 900]
     }
 
+    var isRateLimitWarning: Bool {
+        rateLimit?.isLow == true || rateLimit?.isExhausted == true
+    }
+
+    func rateLimitSummary(relativeTo referenceDate: Date) -> String? {
+        guard let rateLimit else {
+            return nil
+        }
+
+        var segments = ["API \(rateLimit.remaining)/\(rateLimit.limit) left"]
+
+        if let resetAt = rateLimit.resetAt {
+            let resetDescription: String
+            if abs(resetAt.timeIntervalSince(referenceDate)) < 1 {
+                resetDescription = "resets now"
+            } else {
+                resetDescription = "resets \(relativeDateFormatter.localizedString(for: resetAt, relativeTo: referenceDate))"
+            }
+            segments.append(resetDescription)
+        }
+
+        if let pollIntervalHint = rateLimit.pollIntervalHintSeconds,
+            pollIntervalHint > pollIntervalSeconds {
+            segments.append("GitHub suggests \(pollIntervalHint)s polls")
+        }
+
+        return segments.joined(separator: " · ")
+    }
+
     func saveToken() async -> Bool {
         let cleaned = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -129,6 +159,7 @@ final class AppModel: ObservableObject {
         userLogin = nil
         lastUpdated = nil
         lastError = nil
+        rateLimit = nil
         knownItemIDs.removeAll()
 
         pollingTask?.cancel()
@@ -202,10 +233,12 @@ final class AppModel: ObservableObject {
                 return
             }
 
-            await self.refresh(force: true)
+            if !self.shouldDelayAutomaticRefresh(relativeTo: .now) {
+                await self.refresh(force: true)
+            }
 
             while !Task.isCancelled {
-                let interval = Double(self.pollIntervalSeconds)
+                let interval = Double(self.effectiveAutomaticPollInterval(relativeTo: .now))
                 try? await Task.sleep(for: .seconds(interval))
                 if Task.isCancelled {
                     return
@@ -227,12 +260,17 @@ final class AppModel: ObservableObject {
         isRefreshing = true
         defer { isRefreshing = false }
 
+        if !force, shouldDelayAutomaticRefresh(relativeTo: .now) {
+            return
+        }
+
         do {
             let snapshot = try await client.fetchSnapshot(
                 token: token,
                 preferredLogin: userLogin
             )
             userLogin = snapshot.login
+            rateLimit = snapshot.rateLimit
             attentionItems = AttentionItemVisibilityPolicy
                 .excludingIgnoredSubjects(
                     snapshot.attentionItems.map(applyingLocalReadState),
@@ -243,6 +281,10 @@ final class AppModel: ObservableObject {
 
             notifyIfNeeded()
         } catch {
+            if let clientError = error as? GitHubClientError,
+                case let .rateLimited(rateLimit) = clientError {
+                self.rateLimit = rateLimit
+            }
             lastError = error.localizedDescription
         }
 
@@ -300,6 +342,7 @@ final class AppModel: ObservableObject {
             tokenInput = source == .githubCLI ? "" : candidate
             knownItemIDs.removeAll()
             lastError = nil
+            rateLimit = nil
 
             startPollingIfNeeded()
             refreshNow()
@@ -318,6 +361,8 @@ final class AppModel: ObservableObject {
             switch clientError {
             case .invalidCredentials:
                 return "GitHub rejected that token. Check the token and try again."
+            case .rateLimited:
+                return "GitHub rate-limited the validation request. Try again in a few minutes."
             case let .tokenValidation(message):
                 return message
             case let .api(statusCode, message):
@@ -499,5 +544,20 @@ final class AppModel: ObservableObject {
         }
 
         return normalizedPollInterval(stored)
+    }
+
+    private func effectiveAutomaticPollInterval(relativeTo referenceDate: Date) -> Int {
+        rateLimit?.minimumAutomaticRefreshInterval(
+            userConfiguredSeconds: pollIntervalSeconds,
+            now: referenceDate
+        ) ?? pollIntervalSeconds
+    }
+
+    private func shouldDelayAutomaticRefresh(relativeTo referenceDate: Date) -> Bool {
+        guard let rateLimit, rateLimit.isExhausted, let resetAt = rateLimit.resetAt else {
+            return false
+        }
+
+        return resetAt.timeIntervalSince(referenceDate) > 1
     }
 }

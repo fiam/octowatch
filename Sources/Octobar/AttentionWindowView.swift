@@ -76,18 +76,49 @@ struct AttentionWindowView: View {
                 .frame(width: 150)
             }
 
-            ToolbarItem {
-                if model.isRefreshing {
-                    ProgressView()
-                        .controlSize(.small)
+            ToolbarItemGroup(placement: .navigation) {
+                Button(action: model.refreshNow) {
+                    ZStack {
+                        Image(systemName: "arrow.clockwise")
+                            .opacity(model.isRefreshing ? 0 : 1)
+
+                        if model.isRefreshing && !showsInitialLoadingState {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                    .frame(width: 18, height: 18)
                 }
+                .disabled(model.isRefreshing)
+                .help("Refresh")
             }
 
-            ToolbarItem {
-                Button(action: model.refreshNow) {
-                    Image(systemName: "arrow.clockwise")
+            if let selectedItem, model.hasToken {
+                ToolbarItemGroup {
+                    Button {
+                        openSelectedItem(selectedItem)
+                    } label: {
+                        Label("Open", systemImage: "safari")
+                    }
+                    .help("Open on GitHub")
+
+                    Button {
+                        model.toggleReadState(for: selectedItem)
+                    } label: {
+                        Label(
+                            selectedItem.isUnread ? "Mark Read" : "Mark Unread",
+                            systemImage: selectedItem.isUnread ? "circle" : "circle.fill"
+                        )
+                    }
+                    .help(selectedItem.isUnread ? "Mark Read" : "Mark Unread")
+
+                    Button {
+                        model.ignore(selectedItem)
+                    } label: {
+                        Label("Ignore", systemImage: "eye.slash")
+                    }
+                    .help(selectedItem.ignoreActionTitle)
                 }
-                .help("Refresh")
             }
 
             ToolbarItem {
@@ -178,6 +209,13 @@ struct AttentionWindowView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            if let rateLimitSummary = model.rateLimitSummary(relativeTo: referenceDate) {
+                Text(rateLimitSummary)
+                    .font(.caption)
+                    .foregroundStyle(model.isRateLimitWarning ? .orange : .secondary)
+                    .lineLimit(2)
+            }
+
             if let lastError = model.lastError {
                 Text(lastError)
                     .font(.caption)
@@ -203,17 +241,7 @@ struct AttentionWindowView: View {
                     relativeTimestamp: relativeFormatter.localizedString(
                         for: item.timestamp,
                         relativeTo: referenceDate
-                    ),
-                    onOpen: {
-                        model.markItemAsRead(item)
-                        openURL(item.url)
-                    },
-                    onToggleRead: {
-                        model.toggleReadState(for: item)
-                    },
-                    onIgnore: {
-                        model.ignore(item)
-                    }
+                    )
                 )
             } else {
                 emptyStateView
@@ -255,6 +283,11 @@ struct AttentionWindowView: View {
         }
 
         selectedItemID = displayedItems.first?.id
+    }
+
+    private func openSelectedItem(_ item: AttentionItem) {
+        model.markItemAsRead(item)
+        openURL(item.url)
     }
 }
 
@@ -303,9 +336,6 @@ private struct AttentionDetailView: View {
     let item: AttentionItem
     let absoluteTimestamp: String
     let relativeTimestamp: String
-    let onOpen: () -> Void
-    let onToggleRead: () -> Void
-    let onIgnore: () -> Void
 
     var body: some View {
         ScrollView {
@@ -359,17 +389,6 @@ private struct AttentionDetailView: View {
                         }
                     }
                     .font(.body)
-                }
-
-                HStack(spacing: 12) {
-                    Button("Open on GitHub", action: onOpen)
-                        .buttonStyle(.borderedProminent)
-
-                    Button(item.isUnread ? "Mark Read" : "Mark Unread", action: onToggleRead)
-                        .buttonStyle(.bordered)
-
-                    Button(item.ignoreActionTitle, action: onIgnore)
-                        .buttonStyle(.bordered)
                 }
             }
             .padding(32)

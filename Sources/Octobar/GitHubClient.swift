@@ -4,6 +4,7 @@ enum GitHubClientError: LocalizedError {
     case invalidResponse
     case invalidCredentials
     case api(statusCode: Int, message: String)
+    case rateLimited(GitHubRateLimit?)
     case tokenValidation(message: String)
     case unsupportedRepositoryName(String)
 
@@ -15,6 +16,8 @@ enum GitHubClientError: LocalizedError {
             return "GitHub credentials were rejected."
         case let .api(statusCode, message):
             return "GitHub API error \(statusCode): \(message)"
+        case .rateLimited:
+            return "GitHub API rate limit exceeded. Octowatch will retry after the reset window."
         case let .tokenValidation(message):
             return message
         case let .unsupportedRepositoryName(name):
@@ -27,7 +30,10 @@ struct GitHubClient {
     private let session: URLSession
     private let decoder: JSONDecoder
     private let baseURL = URL(string: "https://api.github.com")!
-    private let notificationThreadLimit = 12
+    private let notificationPageSize = 50
+    private let notificationPageLimit = 2
+    private let actionableNotificationLimit = 24
+    private let notificationEnrichmentLimit = 10
     private let workflowCandidateLimit = 8
     private let workflowRunLimit = 20
 
@@ -88,11 +94,28 @@ struct GitHubClient {
     }
 
     func fetchSnapshot(token: String, preferredLogin: String?) async throws -> GitHubSnapshot {
-        let login = try await resolveLogin(token: token, preferredLogin: preferredLogin)
+        let observer = GitHubRateLimitObserver()
+        let login = try await resolveLogin(
+            token: token,
+            preferredLogin: preferredLogin,
+            observer: observer
+        )
 
-        async let pullRequestsTask = fetchAssignedPullRequests(token: token, login: login)
-        async let notificationsTask = fetchActionableNotifications(token: token, login: login)
-        async let workflowRunsTask = fetchWatchedWorkflowRuns(token: token, login: login)
+        async let pullRequestsTask = fetchAssignedPullRequests(
+            token: token,
+            login: login,
+            observer: observer
+        )
+        async let notificationsTask = fetchActionableNotifications(
+            token: token,
+            login: login,
+            observer: observer
+        )
+        async let workflowRunsTask = fetchWatchedWorkflowRuns(
+            token: token,
+            login: login,
+            observer: observer
+        )
 
         let pullRequests = try await pullRequestsTask
         let notifications = try await notificationsTask
@@ -104,7 +127,11 @@ struct GitHubClient {
             actionRuns: workflowRuns
         )
 
-        return GitHubSnapshot(login: login, attentionItems: attentionItems)
+        return GitHubSnapshot(
+            login: login,
+            attentionItems: attentionItems,
+            rateLimit: await observer.snapshot()
+        )
     }
 
     private func buildAttentionItems(
@@ -155,16 +182,28 @@ struct GitHubClient {
             .sorted { $0.timestamp > $1.timestamp }
     }
 
-    private func resolveLogin(token: String, preferredLogin: String?) async throws -> String {
+    private func resolveLogin(
+        token: String,
+        preferredLogin: String?,
+        observer: GitHubRateLimitObserver
+    ) async throws -> String {
         if let preferredLogin, !preferredLogin.isEmpty {
             return preferredLogin
         }
 
-        let user: CurrentUser = try await request(path: "/user", token: token)
+        let user: CurrentUser = try await request(
+            path: "/user",
+            token: token,
+            observer: observer
+        )
         return user.login
     }
 
-    private func fetchAssignedPullRequests(token: String, login: String) async throws -> [PullRequestSummary] {
+    private func fetchAssignedPullRequests(
+        token: String,
+        login: String,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [PullRequestSummary] {
         let query = "is:open is:pr assignee:\(login) archived:false"
 
         let response: SearchIssuesResponse = try await request(
@@ -175,7 +214,8 @@ struct GitHubClient {
                 URLQueryItem(name: "order", value: "desc"),
                 URLQueryItem(name: "per_page", value: "20")
             ],
-            token: token
+            token: token,
+            observer: observer
         )
 
         return response.items.compactMap { issue in
@@ -198,18 +238,9 @@ struct GitHubClient {
 
     private func fetchActionableNotifications(
         token: String,
-        login: String
+        login: String,
+        observer: GitHubRateLimitObserver
     ) async throws -> [NotificationSummary] {
-        let threads: [NotificationThread] = try await request(
-            path: "/notifications",
-            queryItems: [
-                URLQueryItem(name: "all", value: "false"),
-                URLQueryItem(name: "participating", value: "true"),
-                URLQueryItem(name: "per_page", value: "\(notificationThreadLimit)")
-            ],
-            token: token
-        )
-
         let actionableReasons: Set<String> = [
             "assign",
             "author",
@@ -223,16 +254,26 @@ struct GitHubClient {
             "team_mention"
         ]
 
-        let candidateThreads = threads.filter { actionableReasons.contains($0.reason) }
+        let candidateThreads = try await fetchNotificationThreads(
+            token: token,
+            actionableReasons: actionableReasons,
+            observer: observer
+        )
+
+        let enrichedThreads = Array(candidateThreads.prefix(notificationEnrichmentLimit))
+        let fallbackThreads = Array(candidateThreads.dropFirst(notificationEnrichmentLimit))
+
+        let fallbackSummaries = fallbackThreads.map(buildFallbackNotificationSummary)
 
         return await withTaskGroup(of: NotificationSummary?.self) { group in
-            for thread in candidateThreads {
+            for thread in enrichedThreads {
                 group.addTask {
                     do {
                         return try await buildNotificationSummary(
                             token: token,
                             login: login,
-                            thread: thread
+                            thread: thread,
+                            observer: observer
                         )
                     } catch {
                         return nil
@@ -240,7 +281,7 @@ struct GitHubClient {
                 }
             }
 
-            var items: [NotificationSummary] = []
+            var items = fallbackSummaries
             for await item in group {
                 if let item {
                     items.append(item)
@@ -251,10 +292,44 @@ struct GitHubClient {
         }
     }
 
+    private func fetchNotificationThreads(
+        token: String,
+        actionableReasons: Set<String>,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [NotificationThread] {
+        var candidateThreads: [NotificationThread] = []
+
+        for page in 1...notificationPageLimit {
+            let threads: [NotificationThread] = try await request(
+                path: "/notifications",
+                queryItems: [
+                    URLQueryItem(name: "all", value: "false"),
+                    URLQueryItem(name: "participating", value: "true"),
+                    URLQueryItem(name: "per_page", value: "\(notificationPageSize)"),
+                    URLQueryItem(name: "page", value: "\(page)")
+                ],
+                token: token,
+                observer: observer
+            )
+
+            candidateThreads.append(
+                contentsOf: threads.filter { actionableReasons.contains($0.reason) }
+            )
+
+            if threads.count < notificationPageSize ||
+                candidateThreads.count >= actionableNotificationLimit {
+                break
+            }
+        }
+
+        return Array(candidateThreads.prefix(actionableNotificationLimit))
+    }
+
     private func buildNotificationSummary(
         token: String,
         login: String,
-        thread: NotificationThread
+        thread: NotificationThread,
+        observer: GitHubRateLimitObserver
     ) async throws -> NotificationSummary? {
         var actor: AttentionActor?
         var type = AttentionItemType.notificationType(
@@ -268,7 +343,11 @@ struct GitHubClient {
             ignoreKey = canonicalIgnoreURL(for: reference)?.absoluteString
 
             if reference.kind == .pullRequest {
-                let state = try await fetchPullRequestState(token: token, reference: reference)
+                let state = try await fetchPullRequestState(
+                    token: token,
+                    reference: reference,
+                    observer: observer
+                )
                 guard PullRequestAttentionPolicy.shouldIncludeActivity(
                     state: state.state,
                     merged: state.merged,
@@ -281,7 +360,8 @@ struct GitHubClient {
             if let timelineContext = try await fetchTimelineContext(
                 token: token,
                 reference: reference,
-                currentLogin: login
+                currentLogin: login,
+                observer: observer
             ) {
                 actor = timelineContext.actor
                 type = AttentionItemType.notificationType(
@@ -313,17 +393,48 @@ struct GitHubClient {
         )
     }
 
+    private func buildFallbackNotificationSummary(thread: NotificationThread) -> NotificationSummary {
+        let type = AttentionItemType.notificationType(
+            reason: thread.reason,
+            timelineEvent: nil,
+            reviewState: nil
+        )
+        let reference = discussionReference(from: thread.subject.url)
+        let ignoreKey = reference.flatMap { canonicalIgnoreURL(for: $0)?.absoluteString }
+        let repository = thread.repository.fullName
+        let url = subjectWebURL(
+            subjectURL: thread.subject.url,
+            repositoryWebURL: thread.repository.htmlURL,
+            subjectType: thread.subject.type
+        )
+
+        return NotificationSummary(
+            id: thread.id,
+            ignoreKey: ignoreKey ?? url.absoluteString,
+            type: type,
+            title: thread.subject.title,
+            subtitle: notificationSubtitle(type: type, repository: repository, actor: nil),
+            repository: repository,
+            url: url,
+            updatedAt: thread.updatedAt,
+            unread: thread.unread,
+            actor: nil
+        )
+    }
+
     private func fetchTimelineContext(
         token: String,
         reference: DiscussionReference,
-        currentLogin: String
+        currentLogin: String,
+        observer: GitHubRateLimitObserver
     ) async throws -> TimelineContext? {
         let timeline: [TimelineEntry] = try await request(
             path: "/repos/\(reference.owner)/\(reference.name)/issues/\(reference.number)/timeline",
             queryItems: [
                 URLQueryItem(name: "per_page", value: "20")
             ],
-            token: token
+            token: token,
+            observer: observer
         )
 
         let relevantEntries = timeline.compactMap { entry -> TimelineContext? in
@@ -407,19 +518,26 @@ struct GitHubClient {
 
     private func fetchPullRequestState(
         token: String,
-        reference: DiscussionReference
+        reference: DiscussionReference,
+        observer: GitHubRateLimitObserver
     ) async throws -> PullRequestStateResponse {
         try await request(
             path: "/repos/\(reference.owner)/\(reference.name)/pulls/\(reference.number)",
-            token: token
+            token: token,
+            observer: observer
         )
     }
 
     private func fetchWatchedWorkflowRuns(
         token: String,
-        login: String
+        login: String,
+        observer: GitHubRateLimitObserver
     ) async throws -> [ActionRunSummary] {
-        let candidates = try await fetchWorkflowWatchCandidates(token: token, login: login)
+        let candidates = try await fetchWorkflowWatchCandidates(
+            token: token,
+            login: login,
+            observer: observer
+        )
 
         return await withTaskGroup(of: [ActionRunSummary].self) { group in
             for candidate in candidates {
@@ -428,7 +546,8 @@ struct GitHubClient {
                         return try await fetchWorkflowRuns(
                             token: token,
                             login: login,
-                            candidate: candidate
+                            candidate: candidate,
+                            observer: observer
                         )
                     } catch {
                         return []
@@ -452,22 +571,26 @@ struct GitHubClient {
 
     private func fetchWorkflowWatchCandidates(
         token: String,
-        login: String
+        login: String,
+        observer: GitHubRateLimitObserver
     ) async throws -> [WorkflowWatchCandidate] {
         async let authoredTask = searchWorkflowWatchCandidates(
             token: token,
             query: "is:pr author:\(login) archived:false",
-            relationship: .authored
+            relationship: .authored,
+            observer: observer
         )
         async let approvedTask = searchWorkflowWatchCandidates(
             token: token,
             query: "is:pr reviewed-by:\(login) archived:false",
-            relationship: .approved
+            relationship: .approved,
+            observer: observer
         )
         async let mergedTask = searchWorkflowWatchCandidates(
             token: token,
             query: "is:pr is:merged merged-by:\(login) archived:false",
-            relationship: .merged
+            relationship: .merged,
+            observer: observer
         )
 
         let authored = try await authoredTask
@@ -497,7 +620,8 @@ struct GitHubClient {
     private func searchWorkflowWatchCandidates(
         token: String,
         query: String,
-        relationship: WorkflowWatchRelationship
+        relationship: WorkflowWatchRelationship,
+        observer: GitHubRateLimitObserver
     ) async throws -> [WorkflowWatchCandidate] {
         let response: SearchIssuesResponse = try await request(
             path: "/search/issues",
@@ -507,7 +631,8 @@ struct GitHubClient {
                 URLQueryItem(name: "order", value: "desc"),
                 URLQueryItem(name: "per_page", value: "\(workflowCandidateLimit)")
             ],
-            token: token
+            token: token,
+            observer: observer
         )
 
         return response.items.compactMap { issue in
@@ -526,12 +651,14 @@ struct GitHubClient {
     private func fetchWorkflowRuns(
         token: String,
         login: String,
-        candidate: WorkflowWatchCandidate
+        candidate: WorkflowWatchCandidate,
+        observer: GitHubRateLimitObserver
     ) async throws -> [ActionRunSummary] {
         let repositoryID = try parseRepositoryFullName(candidate.repository)
         let pullRequest: PullRequestDetails = try await request(
             path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/pulls/\(candidate.number)",
-            token: token
+            token: token,
+            observer: observer
         )
 
         if candidate.relationship == .approved {
@@ -539,7 +666,8 @@ struct GitHubClient {
                 token: token,
                 repository: candidate.repository,
                 number: candidate.number,
-                login: login
+                login: login,
+                observer: observer
             ) else {
                 return []
             }
@@ -566,7 +694,8 @@ struct GitHubClient {
         let runs = try await fetchWorkflowRunsForCommit(
             token: token,
             repository: candidate.repository,
-            commitSHA: commitSHA
+            commitSHA: commitSHA,
+            observer: observer
         )
 
         return runs.compactMap { run in
@@ -607,7 +736,8 @@ struct GitHubClient {
         token: String,
         repository: String,
         number: Int,
-        login: String
+        login: String,
+        observer: GitHubRateLimitObserver
     ) async throws -> Bool {
         let repositoryID = try parseRepositoryFullName(repository)
         let reviews: [PullRequestReview] = try await request(
@@ -615,7 +745,8 @@ struct GitHubClient {
             queryItems: [
                 URLQueryItem(name: "per_page", value: "100")
             ],
-            token: token
+            token: token,
+            observer: observer
         )
 
         return reviews.contains {
@@ -627,7 +758,8 @@ struct GitHubClient {
     private func fetchWorkflowRunsForCommit(
         token: String,
         repository: String,
-        commitSHA: String
+        commitSHA: String,
+        observer: GitHubRateLimitObserver
     ) async throws -> [WorkflowRun] {
         let repositoryID = try parseRepositoryFullName(repository)
         let response: WorkflowRunsResponse = try await request(
@@ -636,7 +768,8 @@ struct GitHubClient {
                 URLQueryItem(name: "head_sha", value: commitSHA),
                 URLQueryItem(name: "per_page", value: "\(workflowRunLimit)")
             ],
-            token: token
+            token: token,
+            observer: observer
         )
 
         return response.workflowRuns
@@ -703,7 +836,8 @@ struct GitHubClient {
     private func request<Response: Decodable>(
         path: String,
         queryItems: [URLQueryItem] = [],
-        token: String
+        token: String,
+        observer: GitHubRateLimitObserver? = nil
     ) async throws -> Response {
         var components = URLComponents(url: baseURL.appending(path: path), resolvingAgainstBaseURL: false)
         if !queryItems.isEmpty {
@@ -721,14 +855,22 @@ struct GitHubClient {
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
         request.setValue("Octowatch", forHTTPHeaderField: "User-Agent")
 
-        let data = try await perform(request)
+        let data = try await perform(request, observer: observer)
         return try decoder.decode(Response.self, from: data)
     }
 
-    private func perform(_ request: URLRequest) async throws -> Data {
+    private func perform(
+        _ request: URLRequest,
+        observer: GitHubRateLimitObserver? = nil
+    ) async throws -> Data {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw GitHubClientError.invalidResponse
+        }
+
+        let rateLimit = Self.parseRateLimit(from: http)
+        if let observer, let rateLimit {
+            await observer.record(rateLimit)
         }
 
         if http.statusCode == 401 {
@@ -737,6 +879,12 @@ struct GitHubClient {
 
         guard (200..<300).contains(http.statusCode) else {
             let message = (try? decoder.decode(GitHubAPIError.self, from: data).message) ?? "Unknown error"
+            if http.statusCode == 403 || http.statusCode == 429 {
+                let lowercasedMessage = message.lowercased()
+                if lowercasedMessage.contains("rate limit") || rateLimit?.isExhausted == true {
+                    throw GitHubClientError.rateLimited(rateLimit)
+                }
+            }
             throw GitHubClientError.api(statusCode: http.statusCode, message: message)
         }
 
@@ -769,6 +917,10 @@ struct GitHubClient {
                 }
 
                 return .tokenValidation(message: "GitHub rejected this token: \(message)")
+            case .rateLimited:
+                return .tokenValidation(
+                    message: "GitHub rate-limited the validation request. Try again in a few minutes."
+                )
             case let .tokenValidation(message):
                 return .tokenValidation(message: message)
             default:
@@ -827,6 +979,55 @@ struct GitHubClient {
         default:
             return repositoryWebURL
         }
+    }
+
+    private static func parseRateLimit(from response: HTTPURLResponse) -> GitHubRateLimit? {
+        guard
+            let limit = headerInt("X-RateLimit-Limit", in: response),
+            let remaining = headerInt("X-RateLimit-Remaining", in: response)
+        else {
+            return nil
+        }
+
+        let resetAt = headerInt("X-RateLimit-Reset", in: response)
+            .map { Date(timeIntervalSince1970: TimeInterval($0)) }
+
+        return GitHubRateLimit(
+            limit: limit,
+            remaining: remaining,
+            resetAt: resetAt,
+            pollIntervalHintSeconds: headerInt("X-Poll-Interval", in: response),
+            retryAfterSeconds: headerInt("Retry-After", in: response)
+        )
+    }
+
+    private static func headerInt(_ name: String, in response: HTTPURLResponse) -> Int? {
+        let candidates = [name, name.lowercased()]
+
+        for candidate in candidates {
+            if let stringValue = response.value(forHTTPHeaderField: candidate),
+                let value = Int(stringValue) {
+                return value
+            }
+        }
+
+        return nil
+    }
+}
+
+private actor GitHubRateLimitObserver {
+    private var current: GitHubRateLimit?
+
+    func record(_ sample: GitHubRateLimit) {
+        if let current {
+            self.current = current.merged(with: sample)
+        } else {
+            current = sample
+        }
+    }
+
+    func snapshot() -> GitHubRateLimit? {
+        current
     }
 }
 

@@ -162,4 +162,50 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(placeholder.title, "Pull Request #42")
         XCTAssertEqual(placeholder.subtitle, "acme/example")
     }
+
+    func testRateLimitUsesGitHubPollHintWhenHigherThanConfiguredInterval() {
+        let rateLimit = GitHubRateLimit(
+            limit: 5_000,
+            remaining: 4_200,
+            resetAt: Date().addingTimeInterval(3_600),
+            pollIntervalHintSeconds: 120,
+            retryAfterSeconds: nil
+        )
+
+        XCTAssertEqual(
+            rateLimit.minimumAutomaticRefreshInterval(userConfiguredSeconds: 60, now: Date()),
+            120
+        )
+    }
+
+    func testRateLimitBacksOffWhenBudgetIsLow() {
+        let rateLimit = GitHubRateLimit(
+            limit: 5_000,
+            remaining: 18,
+            resetAt: Date().addingTimeInterval(3_600),
+            pollIntervalHintSeconds: nil,
+            retryAfterSeconds: nil
+        )
+
+        XCTAssertEqual(
+            rateLimit.minimumAutomaticRefreshInterval(userConfiguredSeconds: 60, now: Date()),
+            900
+        )
+    }
+
+    func testRateLimitWaitsUntilResetWhenExhausted() {
+        let now = Date()
+        let rateLimit = GitHubRateLimit(
+            limit: 5_000,
+            remaining: 0,
+            resetAt: now.addingTimeInterval(420),
+            pollIntervalHintSeconds: 60,
+            retryAfterSeconds: nil
+        )
+
+        XCTAssertEqual(
+            rateLimit.minimumAutomaticRefreshInterval(userConfiguredSeconds: 30, now: now),
+            420
+        )
+    }
 }

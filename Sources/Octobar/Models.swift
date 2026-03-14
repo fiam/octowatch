@@ -285,9 +285,103 @@ struct ActionRunSummary: Identifiable, Hashable, Sendable {
     let actor: AttentionActor?
 }
 
+struct GitHubRateLimit: Hashable, Sendable {
+    let limit: Int
+    let remaining: Int
+    let resetAt: Date?
+    let pollIntervalHintSeconds: Int?
+    let retryAfterSeconds: Int?
+
+    var isExhausted: Bool {
+        remaining <= 0
+    }
+
+    var isLow: Bool {
+        remaining <= max(25, min(100, limit / 50))
+    }
+
+    func merged(with other: GitHubRateLimit) -> GitHubRateLimit {
+        let preferred = isMoreRestrictive(than: other) ? self : other
+
+        return GitHubRateLimit(
+            limit: preferred.limit,
+            remaining: preferred.remaining,
+            resetAt: preferred.resetAt ?? other.resetAt,
+            pollIntervalHintSeconds: mergedOptionalMax(
+                pollIntervalHintSeconds,
+                other.pollIntervalHintSeconds
+            ),
+            retryAfterSeconds: mergedOptionalMax(
+                retryAfterSeconds,
+                other.retryAfterSeconds
+            )
+        )
+    }
+
+    func minimumAutomaticRefreshInterval(
+        userConfiguredSeconds: Int,
+        now: Date = .now
+    ) -> Int {
+        var interval = max(userConfiguredSeconds, pollIntervalHintSeconds ?? 0)
+
+        if let retryAfterSeconds {
+            interval = max(interval, retryAfterSeconds)
+        }
+
+        if isExhausted, let resetAt {
+            interval = max(interval, Int(ceil(resetAt.timeIntervalSince(now))))
+        } else if remaining <= 25 {
+            interval = max(interval, 900)
+        } else if remaining <= 100 {
+            interval = max(interval, 300)
+        }
+
+        return max(interval, userConfiguredSeconds)
+    }
+
+    private func isMoreRestrictive(than other: GitHubRateLimit) -> Bool {
+        if isExhausted != other.isExhausted {
+            return isExhausted
+        }
+
+        if remaining != other.remaining {
+            return remaining < other.remaining
+        }
+
+        let lhsHint = max(pollIntervalHintSeconds ?? 0, retryAfterSeconds ?? 0)
+        let rhsHint = max(other.pollIntervalHintSeconds ?? 0, other.retryAfterSeconds ?? 0)
+        if lhsHint != rhsHint {
+            return lhsHint > rhsHint
+        }
+
+        switch (resetAt, other.resetAt) {
+        case let (.some(lhs), .some(rhs)):
+            return lhs > rhs
+        case (.some, .none):
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func mergedOptionalMax(_ lhs: Int?, _ rhs: Int?) -> Int? {
+        switch (lhs, rhs) {
+        case let (.some(lhs), .some(rhs)):
+            return max(lhs, rhs)
+        case let (.some(lhs), .none):
+            return lhs
+        case let (.none, .some(rhs)):
+            return rhs
+        case (.none, .none):
+            return nil
+        }
+    }
+}
+
 struct GitHubSnapshot: Sendable {
     let login: String
     let attentionItems: [AttentionItem]
+    let rateLimit: GitHubRateLimit?
 }
 
 struct IgnoredAttentionSubject: Identifiable, Hashable, Codable, Sendable {
