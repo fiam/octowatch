@@ -74,13 +74,21 @@ final class AppModel: ObservableObject {
     }
 
     var relativeLastUpdated: String {
+        relativeLastUpdated(relativeTo: Date())
+    }
+
+    func relativeLastUpdated(relativeTo referenceDate: Date) -> String {
         guard let lastUpdated else {
             return "Not refreshed yet"
         }
 
+        if abs(lastUpdated.timeIntervalSince(referenceDate)) < 1 {
+            return "Updated now"
+        }
+
         let relative = relativeDateFormatter.localizedString(
             for: lastUpdated,
-            relativeTo: Date()
+            relativeTo: referenceDate
         )
         return "Updated \(relative)"
     }

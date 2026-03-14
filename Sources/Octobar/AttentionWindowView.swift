@@ -38,10 +38,12 @@ struct AttentionWindowView: View {
     }()
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            detailPane
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            NavigationSplitView {
+                sidebar(relativeTo: context.date)
+            } detail: {
+                detailPane(relativeTo: context.date)
+            }
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 940, minHeight: 620)
@@ -107,7 +109,7 @@ struct AttentionWindowView: View {
         return displayedItems.first(where: { $0.id == selectedItemID })
     }
 
-    private var sidebar: some View {
+    private func sidebar(relativeTo referenceDate: Date) -> some View {
         Group {
             if !model.hasToken {
                 connectionRequiredView
@@ -119,21 +121,21 @@ struct AttentionWindowView: View {
                         item: item,
                         relativeTimestamp: relativeFormatter.localizedString(
                             for: item.timestamp,
-                            relativeTo: Date()
+                            relativeTo: referenceDate
                         )
                     )
                     .tag(item.id)
                 }
                 .listStyle(.sidebar)
                 .safeAreaInset(edge: .top) {
-                    sidebarHeader
+                    sidebarHeader(relativeTo: referenceDate)
                 }
             }
         }
         .navigationSplitViewColumnWidth(min: 320, ideal: 360)
     }
 
-    private var sidebarHeader: some View {
+    private func sidebarHeader(relativeTo referenceDate: Date) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Inbox")
                 .font(.title2.weight(.semibold))
@@ -142,7 +144,7 @@ struct AttentionWindowView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            Text(model.relativeLastUpdated)
+            Text(model.relativeLastUpdated(relativeTo: referenceDate))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -160,7 +162,7 @@ struct AttentionWindowView: View {
         .background(.bar)
     }
 
-    private var detailPane: some View {
+    private func detailPane(relativeTo referenceDate: Date) -> some View {
         Group {
             if !model.hasToken {
                 connectionRequiredView
@@ -170,7 +172,7 @@ struct AttentionWindowView: View {
                     absoluteTimestamp: timestampFormatter.string(from: item.timestamp),
                     relativeTimestamp: relativeFormatter.localizedString(
                         for: item.timestamp,
-                        relativeTo: Date()
+                        relativeTo: referenceDate
                     ),
                     onOpen: {
                         model.markItemAsRead(item)

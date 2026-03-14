@@ -13,23 +13,25 @@ struct MenuBarContentView: View {
     }()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(alignment: .leading, spacing: 10) {
+                header
 
-            if model.hasToken {
-                attentionList
-            } else {
-                tokenSetup
-            }
+                if model.hasToken {
+                    attentionList(relativeTo: context.date)
+                } else {
+                    tokenSetup
+                }
 
-            if let lastError = model.lastError {
-                Text(lastError)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
+                if let lastError = model.lastError {
+                    Text(lastError)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
             }
+            .padding(12)
+            .frame(width: 420)
         }
-        .padding(12)
-        .frame(width: 420)
         .onReceive(NotificationCenter.default.publisher(for: .performMainWindowOpen)) { _ in
             openWindow(id: AppSceneID.mainWindow)
         }
@@ -60,7 +62,7 @@ struct MenuBarContentView: View {
         .help("Open Octowatch")
     }
 
-    private var attentionList: some View {
+    private func attentionList(relativeTo referenceDate: Date) -> some View {
         Group {
             if model.attentionItems.isEmpty {
                 Text("Inbox is clear right now.")
@@ -108,7 +110,12 @@ struct MenuBarContentView: View {
                                         ActorAvatarView(actor: actor)
                                     }
 
-                                    Text(relativeFormatter.localizedString(for: item.timestamp, relativeTo: Date()))
+                                    Text(
+                                        relativeFormatter.localizedString(
+                                            for: item.timestamp,
+                                            relativeTo: referenceDate
+                                        )
+                                    )
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
                                         .fixedSize()
