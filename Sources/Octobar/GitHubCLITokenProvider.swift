@@ -1,6 +1,10 @@
 import Foundation
 
 enum GitHubCLITokenProvider {
+    static var isInstalled: Bool {
+        !ghExecutables().isEmpty
+    }
+
     static func fetchToken() async -> String? {
         await Task.detached(priority: .utility) {
             fetchTokenSync()

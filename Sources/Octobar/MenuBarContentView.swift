@@ -1,11 +1,10 @@
-import AppKit
 import SwiftUI
 
 struct MenuBarContentView: View {
     @ObservedObject var model: AppModel
+    @Environment(\.openSettings) private var openSettings
     @Environment(\.openURL) private var openURL
 
-    @State private var showTokenEditor = false
     private let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
@@ -14,8 +13,9 @@ struct MenuBarContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            header
+
             if model.hasToken {
-                queueHeader
                 attentionList
             } else {
                 tokenSetup
@@ -26,43 +26,73 @@ struct MenuBarContentView: View {
                     .font(.caption2)
                     .foregroundStyle(.red)
             }
-
-            Divider()
-            footer
         }
         .padding(12)
         .frame(width: 420)
+        .onReceive(NotificationCenter.default.publisher(for: .openSettingsRequested)) { _ in
+            openSettings()
+        }
     }
 
-    private var queueHeader: some View {
-        HStack(spacing: 8) {
-            Text("\(model.actionableCount)")
-                .font(.title3.bold())
-                .monospacedDigit()
-
-            Text(model.actionableCount == 1 ? "item needs attention" : "items need attention")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            Spacer()
-
-            if model.unreadCount > 0 {
-                HStack(spacing: 4) {
-                    Image(systemName: "circle.fill")
-                        .font(.system(size: 6))
-                        .foregroundStyle(.blue)
-                    Text("\(model.unreadCount)")
-                        .font(.caption)
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                if model.hasToken {
+                    Text("\(model.actionableCount)")
+                        .font(.title3.bold())
                         .monospacedDigit()
+
+                    Text(model.actionableCount == 1 ? "item needs attention" : "items need attention")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    if model.unreadCount > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "circle.fill")
+                                .font(.system(size: 6))
+                                .foregroundStyle(.blue)
+                            Text("\(model.unreadCount)")
+                                .font(.caption)
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    Text("GitHub token required")
+                        .font(.subheadline.weight(.medium))
+                }
+
+                Spacer()
+
+                if model.isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                settingsButton
+            }
+
+            if model.hasToken {
+                TimelineView(.periodic(from: .now, by: 30)) { _ in
+                    Text(model.relativeLastUpdated)
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-            }
-
-            if model.isRefreshing {
-                ProgressView()
-                    .controlSize(.small)
+            } else {
+                Text("Open Settings to add your GitHub token.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var settingsButton: some View {
+        SettingsLink {
+            Image(systemName: "gearshape")
+                .font(.system(size: 13, weight: .semibold))
+        }
+        .buttonStyle(.plain)
+        .help("Settings")
     }
 
     private var attentionList: some View {
@@ -126,81 +156,15 @@ struct MenuBarContentView: View {
     }
 
     private var tokenSetup: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Add a GitHub personal access token to start polling your attention queue.")
+        VStack(alignment: .leading, spacing: 6) {
+            Text("No attention queue yet.")
+                .font(.callout.weight(.semibold))
+            Text("Add a token in Settings. Octobar can auto-import one via `gh auth token`.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            SecureField("ghp_...", text: $model.tokenInput)
-                .textFieldStyle(.roundedBorder)
-
-            Button("Save Token") {
-                model.saveToken()
-            }
-
-            Text("If gh is authenticated, Octobar can import token automatically via `gh auth token`.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Toggle(
-                    "Poll every 60s",
-                    isOn: Binding(
-                        get: { model.pollingEnabled },
-                        set: { model.setPollingEnabled($0) }
-                    )
-                )
-                .disabled(!model.hasToken)
-
-                Spacer()
-
-                TimelineView(.periodic(from: .now, by: 30)) { _ in
-                    Text(model.relativeLastUpdated)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            HStack {
-                Button("Refresh") {
-                    model.refreshNow()
-                }
-                .disabled(!model.hasToken)
-
-                Button(showTokenEditor ? "Hide Token" : "Edit Token") {
-                    showTokenEditor.toggle()
-                }
-                .disabled(!model.hasToken)
-
-                Spacer()
-
-                Link("Notifications", destination: URL(string: "https://github.com/notifications")!)
-                    .font(.caption)
-
-                Button("Quit") {
-                    NSApplication.shared.terminate(nil)
-                }
-            }
-
-            if model.hasToken, showTokenEditor {
-                SecureField("Update token", text: $model.tokenInput)
-                    .textFieldStyle(.roundedBorder)
-
-                HStack {
-                    Button("Save") {
-                        model.saveToken()
-                    }
-
-                    Button("Clear") {
-                        model.clearToken()
-                    }
-
-                    Spacer()
-                }
+            SettingsLink {
+                Text("Open Settings")
             }
         }
     }

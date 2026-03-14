@@ -3,17 +3,20 @@ import SwiftUI
 
 @MainActor
 final class AppModel: ObservableObject {
+    static let shared = AppModel()
+
     @Published private(set) var attentionItems: [AttentionItem] = []
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var lastError: String?
     @Published private(set) var isRefreshing = false
 
     @Published var tokenInput = ""
-    @Published var pollingEnabled = true
+    @Published private(set) var gitHubCLIAvailable = false
+    @Published private(set) var usingGitHubCLIToken = false
+    @Published private(set) var pollIntervalSeconds = 60
 
-    private let tokenAccount = "github-personal-access-token"
     private let readStateStoreKey = "attention-item-read-state-v1"
-    private let keychain = KeychainStore(service: "dev.octobar.app")
+    private let pollIntervalStoreKey = "poll-interval-seconds-v1"
     private let client = GitHubClient()
     private let notifier = UserNotifier()
 
@@ -29,20 +32,16 @@ final class AppModel: ObservableObject {
     }()
 
     init() {
-        token = keychain.read(account: tokenAccount)
-        tokenInput = token ?? ""
+        gitHubCLIAvailable = GitHubCLITokenProvider.isInstalled
+        pollIntervalSeconds = Self.loadPollInterval(from: UserDefaults.standard, key: pollIntervalStoreKey)
         readStateByItemID = Self.loadReadState(from: UserDefaults.standard, key: readStateStoreKey)
 
         Task {
             await notifier.requestAuthorization()
         }
 
-        if hasToken {
-            startPollingIfNeeded()
-        } else {
-            Task { [weak self] in
-                await self?.importTokenFromGitHubCLIIfAvailable()
-            }
+        Task { [weak self] in
+            await self?.bootstrapToken()
         }
     }
 
@@ -71,6 +70,10 @@ final class AppModel: ObservableObject {
         return "Updated \(relative)"
     }
 
+    var pollIntervalOptions: [Int] {
+        [30, 60, 120, 300, 600, 900]
+    }
+
     func saveToken() {
         let cleaned = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -79,12 +82,8 @@ final class AppModel: ObservableObject {
             return
         }
 
-        guard keychain.save(value: cleaned, account: tokenAccount) else {
-            lastError = "Failed to save token in Keychain."
-            return
-        }
-
         token = cleaned
+        usingGitHubCLIToken = false
         knownItemIDs.removeAll()
         lastError = nil
 
@@ -93,10 +92,9 @@ final class AppModel: ObservableObject {
     }
 
     func clearToken() {
-        _ = keychain.delete(account: tokenAccount)
-
         token = nil
         tokenInput = ""
+        usingGitHubCLIToken = false
         attentionItems = []
         userLogin = nil
         lastUpdated = nil
@@ -107,15 +105,23 @@ final class AppModel: ObservableObject {
         pollingTask = nil
     }
 
-    func setPollingEnabled(_ enabled: Bool) {
-        pollingEnabled = enabled
+    func reloadTokenFromGitHubCLI() {
+        Task { [weak self] in
+            await self?.importTokenFromGitHubCLIIfAvailable(force: true)
+        }
+    }
 
-        if enabled {
+    func setPollIntervalSeconds(_ seconds: Int) {
+        let normalized = Self.normalizedPollInterval(seconds)
+        guard pollIntervalSeconds != normalized else {
+            return
+        }
+
+        pollIntervalSeconds = normalized
+        UserDefaults.standard.set(normalized, forKey: pollIntervalStoreKey)
+
+        if hasToken {
             startPollingIfNeeded()
-            refreshNow()
-        } else {
-            pollingTask?.cancel()
-            pollingTask = nil
         }
     }
 
@@ -134,7 +140,7 @@ final class AppModel: ObservableObject {
     }
 
     private func startPollingIfNeeded() {
-        guard hasToken, pollingEnabled else {
+        guard hasToken else {
             return
         }
 
@@ -147,7 +153,8 @@ final class AppModel: ObservableObject {
             await self.refresh(force: true)
 
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(60))
+                let interval = Double(self.pollIntervalSeconds)
+                try? await Task.sleep(for: .seconds(interval))
                 if Task.isCancelled {
                     return
                 }
@@ -158,10 +165,6 @@ final class AppModel: ObservableObject {
 
     private func refresh(force: Bool) async {
         guard hasToken else {
-            return
-        }
-
-        guard pollingEnabled || force else {
             return
         }
 
@@ -185,17 +188,38 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func importTokenFromGitHubCLIIfAvailable() async {
-        guard !hasToken else {
+    private func bootstrapToken() async {
+        await importTokenFromGitHubCLIIfAvailable(force: false)
+
+        if hasToken {
+            startPollingIfNeeded()
+        }
+    }
+
+    private func importTokenFromGitHubCLIIfAvailable(force: Bool) async {
+        guard gitHubCLIAvailable else {
+            return
+        }
+
+        if !force, hasToken {
             return
         }
 
         guard let cliToken = await GitHubCLITokenProvider.fetchToken() else {
+            if force {
+                lastError = "Could not load token from `gh auth token`."
+            }
             return
         }
 
-        tokenInput = cliToken
-        saveToken()
+        token = cliToken
+        tokenInput = ""
+        usingGitHubCLIToken = true
+        knownItemIDs.removeAll()
+        lastError = nil
+
+        startPollingIfNeeded()
+        refreshNow()
     }
 
     private func notifyIfNeeded() {
@@ -253,5 +277,23 @@ final class AppModel: ObservableObject {
         }
 
         return raw.mapValues { Date(timeIntervalSince1970: $0) }
+    }
+
+    private static func normalizedPollInterval(_ seconds: Int) -> Int {
+        let available = [30, 60, 120, 300, 600, 900]
+        if available.contains(seconds) {
+            return seconds
+        }
+
+        return 60
+    }
+
+    private static func loadPollInterval(from defaults: UserDefaults, key: String) -> Int {
+        let stored = defaults.integer(forKey: key)
+        if stored == 0 {
+            return 60
+        }
+
+        return normalizedPollInterval(stored)
     }
 }

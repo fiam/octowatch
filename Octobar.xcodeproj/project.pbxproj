@@ -7,7 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		2C1410B61CAE1592A4C450E4 /* AppEvents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6D1E733253571AE4E024EFC /* AppEvents.swift */; };
 		4BB090257CC0199427115916 /* GitHubCLITokenProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BC552F43770D5BFAC833FAD /* GitHubCLITokenProvider.swift */; };
+		5071EC18C014C61F8ACB30AE /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C22D0B6E42FD058AAEA66C2B /* Assets.xcassets */; };
 		5443BC8EAD2812C9C3D12E76 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31A252828A52BA5E17F5920E /* Models.swift */; };
 		7B8B617103F1517E4F214970 /* MenuBarContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B0ACE59509378D66E0E942 /* MenuBarContentView.swift */; };
 		89BE6B308281D77845E5EE65 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50D11BE24DC83FBD3D4635B7 /* AppDelegate.swift */; };
@@ -29,6 +31,8 @@
 		8BC552F43770D5BFAC833FAD /* GitHubCLITokenProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubCLITokenProvider.swift; sourceTree = "<group>"; };
 		A9B0ACE59509378D66E0E942 /* MenuBarContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarContentView.swift; sourceTree = "<group>"; };
 		ADAB66DDC53ED0991FECB280 /* GitHubClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubClient.swift; sourceTree = "<group>"; };
+		C22D0B6E42FD058AAEA66C2B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		D6D1E733253571AE4E024EFC /* AppEvents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEvents.swift; sourceTree = "<group>"; };
 		DA536A90E069D6834E4342D5 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		F3026C9C2E8BB2D9E383D810 /* OctobarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OctobarApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -62,7 +66,9 @@
 			isa = PBXGroup;
 			children = (
 				50D11BE24DC83FBD3D4635B7 /* AppDelegate.swift */,
+				D6D1E733253571AE4E024EFC /* AppEvents.swift */,
 				DA536A90E069D6834E4342D5 /* AppModel.swift */,
+				C22D0B6E42FD058AAEA66C2B /* Assets.xcassets */,
 				ADAB66DDC53ED0991FECB280 /* GitHubClient.swift */,
 				8BC552F43770D5BFAC833FAD /* GitHubCLITokenProvider.swift */,
 				774836DEA4733813D3C7EB51 /* KeychainStore.swift */,
@@ -83,6 +89,7 @@
 			buildConfigurationList = 424BE7EE9CB1048C67A8CCAC /* Build configuration list for PBXNativeTarget "Octobar" */;
 			buildPhases = (
 				CC0DFB64B30B9190C5B74A2F /* Sources */,
+				6F6E4163ECE598654605475E /* Resources */,
 			);
 			buildRules = (
 			);
@@ -128,12 +135,24 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		6F6E4163ECE598654605475E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5071EC18C014C61F8ACB30AE /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		CC0DFB64B30B9190C5B74A2F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				89BE6B308281D77845E5EE65 /* AppDelegate.swift in Sources */,
+				2C1410B61CAE1592A4C450E4 /* AppEvents.swift in Sources */,
 				A8AA077185880B25F39A3841 /* AppModel.swift in Sources */,
 				4BB090257CC0199427115916 /* GitHubCLITokenProvider.swift in Sources */,
 				A3B60B5869252589079CD7BC /* GitHubClient.swift in Sources */,
