@@ -19,6 +19,7 @@ targets:
       base:
         PRODUCT_NAME: Octobar
         INFOPLIST_FILE: Octobar/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
 schemes:
