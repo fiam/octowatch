@@ -115,6 +115,7 @@ struct GitHubClient {
         let pullRequestItems = pullRequests.map { pullRequest in
             AttentionItem(
                 id: "pr:\(pullRequest.id)",
+                ignoreKey: pullRequest.ignoreKey,
                 type: .assignedPullRequest,
                 title: pullRequest.title,
                 subtitle: pullRequest.subtitle,
@@ -126,6 +127,7 @@ struct GitHubClient {
         let notificationItems = notifications.map { notification in
             AttentionItem(
                 id: "notif:\(notification.id)",
+                ignoreKey: notification.ignoreKey,
                 type: notification.type,
                 title: notification.title,
                 subtitle: notification.subtitle,
@@ -139,6 +141,7 @@ struct GitHubClient {
         let actionRunItems = actionRuns.map { run in
             AttentionItem(
                 id: "run:\(run.id)",
+                ignoreKey: run.ignoreKey,
                 type: run.type,
                 title: run.title,
                 subtitle: run.subtitle,
@@ -182,6 +185,7 @@ struct GitHubClient {
 
             return PullRequestSummary(
                 id: issue.id,
+                ignoreKey: issue.htmlURL.absoluteString,
                 number: issue.number,
                 title: issue.title,
                 subtitle: "#\(issue.number) · \(repository)",
@@ -258,8 +262,11 @@ struct GitHubClient {
             timelineEvent: nil,
             reviewState: nil
         )
+        var ignoreKey: String?
 
         if let reference = discussionReference(from: thread.subject.url) {
+            ignoreKey = canonicalIgnoreURL(for: reference)?.absoluteString
+
             if reference.kind == .pullRequest {
                 let state = try await fetchPullRequestState(token: token, reference: reference)
                 guard PullRequestAttentionPolicy.shouldIncludeActivity(
@@ -294,6 +301,7 @@ struct GitHubClient {
 
         return NotificationSummary(
             id: thread.id,
+            ignoreKey: ignoreKey ?? url.absoluteString,
             type: type,
             title: thread.subject.title,
             subtitle: notificationSubtitle(type: type, repository: repository, actor: actor),
@@ -580,6 +588,10 @@ struct GitHubClient {
 
             return ActionRunSummary(
                 id: "\(candidate.repository)-\(run.id)",
+                ignoreKey: pullRequestWebURL(
+                    repository: candidate.repository,
+                    number: candidate.number
+                ).absoluteString,
                 type: type,
                 title: summaryTitle,
                 subtitle: summarySubtitle,
@@ -650,6 +662,29 @@ struct GitHubClient {
         }
 
         return AttentionActor(login: user.login, avatarURL: user.avatarURL)
+    }
+
+    private func canonicalIgnoreURL(for reference: DiscussionReference) -> URL? {
+        switch reference.kind {
+        case .pullRequest:
+            return pullRequestWebURL(
+                repository: "\(reference.owner)/\(reference.name)",
+                number: reference.number
+            )
+        case .issue:
+            return issueWebURL(
+                repository: "\(reference.owner)/\(reference.name)",
+                number: reference.number
+            )
+        }
+    }
+
+    private func pullRequestWebURL(repository: String, number: Int) -> URL {
+        URL(string: "https://github.com/\(repository)/pull/\(number)")!
+    }
+
+    private func issueWebURL(repository: String, number: Int) -> URL {
+        URL(string: "https://github.com/\(repository)/issues/\(number)")!
     }
 
     private func parseRepositoryFullName(_ repository: String) throws -> RepositoryIdentifier {

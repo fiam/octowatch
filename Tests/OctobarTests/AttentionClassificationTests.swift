@@ -110,4 +110,56 @@ final class AttentionClassificationTests: XCTestCase {
             )
         )
     }
+
+    func testIgnoringSubjectRemovesAllMatchingAttentionItems() {
+        let ignoredKey = "https://github.com/acme/example/pull/42"
+        let keptKey = "https://github.com/acme/example/pull/43"
+        let now = Date()
+
+        let ignoredPullRequest = AttentionItem(
+            id: "pr:1",
+            ignoreKey: ignoredKey,
+            type: .assignedPullRequest,
+            title: "Ignored PR",
+            subtitle: "#42 · acme/example",
+            timestamp: now,
+            url: URL(string: "https://github.com/acme/example/pull/42")!
+        )
+        let ignoredWorkflow = AttentionItem(
+            id: "run:1",
+            ignoreKey: ignoredKey,
+            type: .workflowFailed,
+            title: "Ignored workflow",
+            subtitle: "acme/example · PR #42 · Workflow failed",
+            timestamp: now,
+            url: URL(string: "https://github.com/acme/example/actions/runs/1")!
+        )
+        let keptPullRequest = AttentionItem(
+            id: "pr:2",
+            ignoreKey: keptKey,
+            type: .assignedPullRequest,
+            title: "Kept PR",
+            subtitle: "#43 · acme/example",
+            timestamp: now,
+            url: URL(string: "https://github.com/acme/example/pull/43")!
+        )
+
+        let filtered = AttentionItemVisibilityPolicy.excludingIgnoredSubjects(
+            [ignoredPullRequest, ignoredWorkflow, keptPullRequest],
+            ignoredKeys: [ignoredKey]
+        )
+
+        XCTAssertEqual(filtered, [keptPullRequest])
+    }
+
+    func testLegacyIgnoreKeyPlaceholderMigratesToCanonicalURL() {
+        let placeholder = IgnoredAttentionSubject.placeholder(for: "pr:acme/example#42")
+
+        XCTAssertEqual(
+            placeholder.ignoreKey,
+            "https://github.com/acme/example/pull/42"
+        )
+        XCTAssertEqual(placeholder.title, "Pull Request #42")
+        XCTAssertEqual(placeholder.subtitle, "acme/example")
+    }
 }

@@ -197,6 +197,7 @@ struct AttentionActor: Hashable, Sendable {
 
 struct AttentionItem: Identifiable, Hashable, Sendable {
     let id: String
+    let ignoreKey: String
     let type: AttentionItemType
     let title: String
     let subtitle: String
@@ -207,6 +208,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
 
     init(
         id: String,
+        ignoreKey: String,
         type: AttentionItemType,
         title: String,
         subtitle: String,
@@ -216,6 +218,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         isUnread: Bool = true
     ) {
         self.id = id
+        self.ignoreKey = ignoreKey
         self.type = type
         self.title = title
         self.subtitle = subtitle
@@ -232,10 +235,23 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
 
         return "\(actor.login) \(type.actorVerb)"
     }
+
+    var ignoreActionTitle: String {
+        if ignoreKey.contains("/pull/") {
+            return "Ignore Pull Request"
+        }
+
+        if ignoreKey.contains("/issues/") {
+            return "Ignore Issue"
+        }
+
+        return "Ignore Item"
+    }
 }
 
 struct PullRequestSummary: Identifiable, Hashable, Sendable {
     let id: Int
+    let ignoreKey: String
     let number: Int
     let title: String
     let subtitle: String
@@ -246,6 +262,7 @@ struct PullRequestSummary: Identifiable, Hashable, Sendable {
 
 struct NotificationSummary: Identifiable, Hashable, Sendable {
     let id: String
+    let ignoreKey: String
     let type: AttentionItemType
     let title: String
     let subtitle: String
@@ -258,6 +275,7 @@ struct NotificationSummary: Identifiable, Hashable, Sendable {
 
 struct ActionRunSummary: Identifiable, Hashable, Sendable {
     let id: String
+    let ignoreKey: String
     let type: AttentionItemType
     let title: String
     let subtitle: String
@@ -270,6 +288,123 @@ struct ActionRunSummary: Identifiable, Hashable, Sendable {
 struct GitHubSnapshot: Sendable {
     let login: String
     let attentionItems: [AttentionItem]
+}
+
+struct IgnoredAttentionSubject: Identifiable, Hashable, Codable, Sendable {
+    let ignoreKey: String
+    let title: String
+    let subtitle: String
+    let url: URL
+    let ignoredAt: Date
+
+    var id: String { ignoreKey }
+
+    static func placeholder(for ignoreKey: String, ignoredAt: Date = .now) -> IgnoredAttentionSubject {
+        if let url = URL(string: ignoreKey),
+            let parsed = placeholder(fromCanonicalURL: url, ignoredAt: ignoredAt) {
+            return parsed
+        }
+
+        if ignoreKey.hasPrefix("issue:") {
+            let value = String(ignoreKey.dropFirst(6))
+            let components = value.split(separator: "#", maxSplits: 1).map(String.init)
+            if components.count == 2 {
+                let url = URL(string: "https://github.com/\(components[0])/issues/\(components[1])")!
+                return IgnoredAttentionSubject(
+                    ignoreKey: url.absoluteString,
+                    title: "Issue #\(components[1])",
+                    subtitle: components[0],
+                    url: url,
+                    ignoredAt: ignoredAt
+                )
+            }
+        }
+
+        if ignoreKey.hasPrefix("pr:") {
+            let value = String(ignoreKey.dropFirst(3))
+            let components = value.split(separator: "#", maxSplits: 1).map(String.init)
+            if components.count == 2 {
+                let url = URL(string: "https://github.com/\(components[0])/pull/\(components[1])")!
+                return IgnoredAttentionSubject(
+                    ignoreKey: url.absoluteString,
+                    title: "Pull Request #\(components[1])",
+                    subtitle: components[0],
+                    url: url,
+                    ignoredAt: ignoredAt
+                )
+            }
+        }
+
+        if ignoreKey.hasPrefix("url:"),
+            let url = URL(string: String(ignoreKey.dropFirst(4))),
+            let parsed = placeholder(fromCanonicalURL: url, ignoredAt: ignoredAt) {
+            return parsed
+        }
+
+        if let url = URL(string: ignoreKey) {
+            return IgnoredAttentionSubject(
+                ignoreKey: url.absoluteString,
+                title: "Ignored Item",
+                subtitle: url.host ?? "GitHub",
+                url: url,
+                ignoredAt: ignoredAt
+            )
+        }
+
+        return IgnoredAttentionSubject(
+            ignoreKey: ignoreKey,
+            title: "Ignored Item",
+            subtitle: "GitHub",
+            url: URL(string: "https://github.com")!,
+            ignoredAt: ignoredAt
+        )
+    }
+
+    private static func placeholder(
+        fromCanonicalURL url: URL,
+        ignoredAt: Date
+    ) -> IgnoredAttentionSubject? {
+        let components = url.pathComponents
+
+        if let pullIndex = components.firstIndex(of: "pull"),
+            pullIndex >= 2,
+            pullIndex + 1 < components.count {
+            let repository = "\(components[pullIndex - 2])/\(components[pullIndex - 1])"
+            let number = components[pullIndex + 1]
+            return IgnoredAttentionSubject(
+                ignoreKey: url.absoluteString,
+                title: "Pull Request #\(number)",
+                subtitle: repository,
+                url: url,
+                ignoredAt: ignoredAt
+            )
+        }
+
+        if let issueIndex = components.firstIndex(of: "issues"),
+            issueIndex >= 2,
+            issueIndex + 1 < components.count {
+            let repository = "\(components[issueIndex - 2])/\(components[issueIndex - 1])"
+            let number = components[issueIndex + 1]
+            return IgnoredAttentionSubject(
+                ignoreKey: url.absoluteString,
+                title: "Issue #\(number)",
+                subtitle: repository,
+                url: url,
+                ignoredAt: ignoredAt
+            )
+        }
+
+        return nil
+    }
+}
+
+enum AttentionItemVisibilityPolicy {
+    static func excludingIgnoredSubjects(
+        _ items: [AttentionItem],
+        ignoredKeys: Set<String>
+    ) -> [AttentionItem] {
+        items.filter { !ignoredKeys.contains($0.ignoreKey) }
+    }
 }
 
 enum PullRequestAttentionPolicy {

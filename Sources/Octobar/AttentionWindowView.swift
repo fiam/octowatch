@@ -210,6 +210,9 @@ struct AttentionWindowView: View {
                     },
                     onToggleRead: {
                         model.toggleReadState(for: item)
+                    },
+                    onIgnore: {
+                        model.ignore(item)
                     }
                 )
             } else {
@@ -302,6 +305,7 @@ private struct AttentionDetailView: View {
     let relativeTimestamp: String
     let onOpen: () -> Void
     let onToggleRead: () -> Void
+    let onIgnore: () -> Void
 
     var body: some View {
         ScrollView {
@@ -362,6 +366,9 @@ private struct AttentionDetailView: View {
                         .buttonStyle(.borderedProminent)
 
                     Button(item.isUnread ? "Mark Read" : "Mark Unread", action: onToggleRead)
+                        .buttonStyle(.bordered)
+
+                    Button(item.ignoreActionTitle, action: onIgnore)
                         .buttonStyle(.bordered)
                 }
             }

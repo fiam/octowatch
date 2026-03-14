@@ -20,9 +20,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var gitHubCLIAvailable = false
     @Published private(set) var usingGitHubCLIToken = false
     @Published private(set) var isValidatingToken = false
+    @Published private(set) var ignoredItems: [IgnoredAttentionSubject] = []
     @Published private(set) var pollIntervalSeconds = 60
 
     private let readStateStoreKey = "attention-item-read-state-v1"
+    private let ignoredSubjectStoreKey = "ignored-attention-subjects-v2"
+    private let legacyIgnoredSubjectStoreKey = "ignored-attention-subjects-v1"
     private let pollIntervalStoreKey = "poll-interval-seconds-v1"
     private let client = GitHubClient()
     private let notifier = UserNotifier()
@@ -31,6 +34,7 @@ final class AppModel: ObservableObject {
     private var userLogin: String?
     private var pollingTask: Task<Void, Never>?
     private var knownItemIDs = Set<String>()
+    private var ignoredItemsByKey = [String: IgnoredAttentionSubject]()
     private var readStateByItemID: [String: Date] = [:]
     private let relativeDateFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -48,6 +52,14 @@ final class AppModel: ObservableObject {
             from: UserDefaults.standard,
             key: readStateStoreKey
         )
+        ignoredItemsByKey = Self.loadIgnoredItems(
+            from: UserDefaults.standard,
+            key: ignoredSubjectStoreKey
+        ) ?? Self.loadLegacyIgnoredItems(
+            from: UserDefaults.standard,
+            key: legacyIgnoredSubjectStoreKey
+        )
+        syncIgnoredItems()
 
         Task {
             await notifier.requestAuthorization()
@@ -159,6 +171,26 @@ final class AppModel: ObservableObject {
         updateReadState(for: item, isUnread: !item.isUnread)
     }
 
+    func ignore(_ item: AttentionItem) {
+        let summary = preferredIgnoredSummary(for: item)
+        ignoredItemsByKey[item.ignoreKey] = summary
+        syncIgnoredItems()
+        persistIgnoredItems()
+
+        attentionItems.removeAll { $0.ignoreKey == item.ignoreKey }
+        knownItemIDs = Set(attentionItems.map(\.id))
+    }
+
+    func unignore(_ ignoredItem: IgnoredAttentionSubject) {
+        ignoredItemsByKey[ignoredItem.ignoreKey] = nil
+        syncIgnoredItems()
+        persistIgnoredItems()
+
+        if hasToken {
+            refreshNow()
+        }
+    }
+
     private func startPollingIfNeeded() {
         guard hasToken else {
             return
@@ -201,7 +233,11 @@ final class AppModel: ObservableObject {
                 preferredLogin: userLogin
             )
             userLogin = snapshot.login
-            attentionItems = snapshot.attentionItems.map(applyingLocalReadState)
+            attentionItems = AttentionItemVisibilityPolicy
+                .excludingIgnoredSubjects(
+                    snapshot.attentionItems.map(applyingLocalReadState),
+                    ignoredKeys: Set(ignoredItemsByKey.keys)
+                )
             lastUpdated = Date()
             lastError = nil
 
@@ -349,6 +385,26 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(raw, forKey: readStateStoreKey)
     }
 
+    private func persistIgnoredItems() {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let payload = ignoredItems.sorted { $0.ignoredAt > $1.ignoredAt }
+
+        if let data = try? encoder.encode(payload) {
+            UserDefaults.standard.set(data, forKey: ignoredSubjectStoreKey)
+            UserDefaults.standard.removeObject(forKey: legacyIgnoredSubjectStoreKey)
+        }
+    }
+
+    private func syncIgnoredItems() {
+        ignoredItems = ignoredItemsByKey.values.sorted { lhs, rhs in
+            if lhs.ignoredAt == rhs.ignoredAt {
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+            return lhs.ignoredAt > rhs.ignoredAt
+        }
+    }
+
     private static func loadReadState(
         from defaults: UserDefaults,
         key: String
@@ -358,6 +414,73 @@ final class AppModel: ObservableObject {
         }
 
         return raw.mapValues { Date(timeIntervalSince1970: $0) }
+    }
+
+    private static func loadIgnoredItems(
+        from defaults: UserDefaults,
+        key: String
+    ) -> [String: IgnoredAttentionSubject]? {
+        guard let data = defaults.data(forKey: key) else {
+            return nil
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        guard let items = try? decoder.decode([IgnoredAttentionSubject].self, from: data) else {
+            return nil
+        }
+
+        return Dictionary(uniqueKeysWithValues: items.map { ($0.ignoreKey, $0) })
+    }
+
+    private static func loadLegacyIgnoredItems(
+        from defaults: UserDefaults,
+        key: String
+    ) -> [String: IgnoredAttentionSubject] {
+        let keys = defaults.stringArray(forKey: key) ?? []
+        let items = keys.map { IgnoredAttentionSubject.placeholder(for: $0) }
+        return Dictionary(uniqueKeysWithValues: items.map { ($0.ignoreKey, $0) })
+    }
+
+    private func preferredIgnoredSummary(for item: AttentionItem) -> IgnoredAttentionSubject {
+        let representative = attentionItems
+            .filter { $0.ignoreKey == item.ignoreKey }
+            .max { lhs, rhs in
+                let lhsScore = ignoreSummaryPriority(for: lhs)
+                let rhsScore = ignoreSummaryPriority(for: rhs)
+
+                if lhsScore == rhsScore {
+                    return lhs.timestamp < rhs.timestamp
+                }
+
+                return lhsScore < rhsScore
+            } ?? item
+
+        return IgnoredAttentionSubject(
+            ignoreKey: representative.ignoreKey,
+            title: representative.title,
+            subtitle: representative.subtitle,
+            url: representative.url,
+            ignoredAt: Date()
+        )
+    }
+
+    private func ignoreSummaryPriority(for item: AttentionItem) -> Int {
+        switch item.type {
+        case .assignedPullRequest:
+            return 4
+        case .reviewRequested,
+            .reviewApproved,
+            .reviewChangesRequested,
+            .reviewComment,
+            .comment,
+            .mention,
+            .pullRequestStateChanged:
+            return 3
+        case .workflowFailed, .workflowApprovalRequired, .ciActivity:
+            return 2
+        }
     }
 
     private static func normalizedPollInterval(_ seconds: Int) -> Int {

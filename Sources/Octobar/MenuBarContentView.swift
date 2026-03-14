@@ -119,6 +119,17 @@ struct MenuBarContentView: View {
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
                                         .fixedSize()
+
+                                    Button {
+                                        model.ignore(item)
+                                    } label: {
+                                        Image(systemName: "eye.slash")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .frame(width: 18, height: 18)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.secondary)
+                                    .help(item.ignoreActionTitle)
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)

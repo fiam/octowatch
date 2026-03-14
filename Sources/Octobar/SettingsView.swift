@@ -7,8 +7,15 @@ struct SettingsView: View {
     }
 
     @ObservedObject var model: AppModel
+    @Environment(\.openURL) private var openURL
     @FocusState private var tokenFieldFocused: Bool
     @State private var selectedTokenSource: TokenSource = .personalAccessToken
+
+    private let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
 
     var body: some View {
         ZStack {
@@ -19,6 +26,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     tokenCard
                     pollingCard
+                    ignoredItemsCard
                 }
                 .padding(28)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -144,6 +152,60 @@ struct SettingsView: View {
         }
     }
 
+    private var ignoredItemsCard: some View {
+        settingsCard {
+            cardIntro(
+                title: "Ignored Items",
+                message: ignoredItemsSummary
+            ) {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(.secondary.opacity(0.16))
+                    .frame(width: 46, height: 46)
+                    .overlay {
+                        Image(systemName: "eye.slash")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+            }
+
+            Divider()
+                .padding(.horizontal, 20)
+
+            if model.ignoredItems.isEmpty {
+                settingsRow(
+                    title: "No ignored items",
+                    subtitle: "Ignored pull requests and issues will appear here so you can restore them later."
+                ) {
+                    EmptyView()
+                }
+            } else {
+                ForEach(Array(model.ignoredItems.enumerated()), id: \.element.id) { index, ignoredItem in
+                    if index > 0 {
+                        Divider()
+                            .padding(.leading, 20)
+                    }
+
+                    settingsRow(
+                        title: ignoredItem.title,
+                        subtitle: ignoredItemSubtitle(for: ignoredItem)
+                    ) {
+                        HStack(spacing: 10) {
+                            Button("Open") {
+                                openURL(ignoredItem.url)
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button("Unignore") {
+                                model.unignore(ignoredItem)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private var customTokenEditor: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Personal Access Token")
@@ -204,6 +266,17 @@ struct SettingsView: View {
         return "GitHub CLI is not installed, so use a personal access token."
     }
 
+    private var ignoredItemsSummary: String {
+        if model.ignoredItems.isEmpty {
+            return "Restore pull requests or issues you previously decided to hide."
+        }
+
+        let count = model.ignoredItems.count
+        return count == 1
+            ? "1 item is currently hidden from the inbox."
+            : "\(count) items are currently hidden from the inbox."
+    }
+
     private var tokenSourceSelection: Binding<TokenSource> {
         Binding(
             get: {
@@ -257,6 +330,14 @@ struct SettingsView: View {
         }
 
         return "\(minutes) minutes"
+    }
+
+    private func ignoredItemSubtitle(for ignoredItem: IgnoredAttentionSubject) -> String {
+        let relative = relativeFormatter.localizedString(
+            for: ignoredItem.ignoredAt,
+            relativeTo: Date()
+        )
+        return "\(ignoredItem.subtitle) · Ignored \(relative)"
     }
 
     private func settingsCard<Content: View>(
