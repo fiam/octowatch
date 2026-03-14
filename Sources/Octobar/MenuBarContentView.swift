@@ -3,6 +3,7 @@ import SwiftUI
 struct MenuBarContentView: View {
     @ObservedObject var model: AppModel
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
 
     private let relativeFormatter: RelativeDateTimeFormatter = {
@@ -29,6 +30,9 @@ struct MenuBarContentView: View {
         }
         .padding(12)
         .frame(width: 420)
+        .onReceive(NotificationCenter.default.publisher(for: .performMainWindowOpen)) { _ in
+            openWindow(id: AppSceneID.mainWindow)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .performSettingsOpen)) { _ in
             openSettings()
         }
@@ -70,6 +74,7 @@ struct MenuBarContentView: View {
                 }
 
                 settingsButton
+                windowButton
             }
 
             if model.hasToken {
@@ -93,6 +98,15 @@ struct MenuBarContentView: View {
         }
         .buttonStyle(.plain)
         .help("Settings")
+    }
+
+    private var windowButton: some View {
+        Button(action: requestMainWindow) {
+            Image(systemName: "macwindow")
+                .font(.system(size: 13, weight: .semibold))
+        }
+        .buttonStyle(.plain)
+        .help("Open Octowatch")
     }
 
     private var attentionList: some View {
@@ -175,6 +189,10 @@ struct MenuBarContentView: View {
 
     private func requestSettings() {
         NotificationCenter.default.post(name: .openSettingsRequested, object: nil)
+    }
+
+    private func requestMainWindow() {
+        NotificationCenter.default.post(name: .openMainWindowRequested, object: nil)
     }
 
     @ViewBuilder

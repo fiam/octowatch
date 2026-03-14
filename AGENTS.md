@@ -4,14 +4,16 @@
 This file captures project-specific guidance for coding agents working in `octobar`.
 
 ## Project Summary
-- App: macOS menu bar app built with Swift + SwiftUI.
+- App: macOS app with a status item, main window, and settings, built
+  with Swift + SwiftUI.
 - Goal: surface GitHub work items that need attention.
 - Runtime model: GitHub API polling (default every 60s), no GitHub App required.
 
 ## Source Of Truth
 - Use `xcodegen` for Xcode project generation.
 - Treat `project.yml` as canonical project config.
-- Do not hand-edit `Octobar.xcodeproj/project.pbxproj` unless explicitly requested.
+- Do not commit generated `.xcodeproj` contents.
+- Do not hand-edit `Octowatch.xcodeproj/project.pbxproj` unless explicitly requested.
 - For UI work, follow Apple's Human Interface Guidelines:
   https://developer.apple.com/design/human-interface-guidelines
 - Prefer standard macOS controls, settings window conventions, spacing,
@@ -26,14 +28,15 @@ This file captures project-specific guidance for coding agents working in `octob
 - Run with SwiftPM:
   - `swift run`
 - Build with Xcode CLI:
-  - `xcodebuild -project Octobar.xcodeproj -scheme Octobar -configuration Debug -sdk macosx build`
+  - `xcodebuild -project Octowatch.xcodeproj -scheme Octowatch -configuration Debug -sdk macosx build`
 
 ## Key Files
 - `project.yml`: Xcode project definition.
-- `Octobar/Info.plist`: app metadata (`LSUIElement=true` for menu bar behavior).
+- `Octobar/Info.plist`: app metadata.
 - `Sources/Octobar/AppModel.swift`: app state, polling loop, notifications.
 - `Sources/Octobar/GitHubClient.swift`: GitHub API integration and snapshot assembly.
 - `Sources/Octobar/MenuBarContentView.swift`: menu bar UI.
+- `Sources/Octobar/AttentionWindowView.swift`: detailed main window UI.
 - `Sources/Octobar/SettingsView.swift`: token and polling settings.
 - `Sources/Octobar/GitHubCLITokenProvider.swift`: runtime token loading from `gh`.
 

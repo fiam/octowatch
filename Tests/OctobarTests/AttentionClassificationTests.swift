@@ -1,5 +1,5 @@
 import XCTest
-@testable import Octobar
+@testable import Octowatch
 
 final class AttentionClassificationTests: XCTestCase {
     func testCommentReasonsMapToCommentAttention() {

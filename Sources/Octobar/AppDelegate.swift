@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let popover = NSPopover()
     private var modelChangeCancellable: AnyCancellable?
     private var lastStatusPresentation: StatusPresentation?
+    private weak var mainWindow: NSWindow?
     private weak var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -68,6 +69,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func observeAppEvents() {
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(handleOpenMainWindowRequested(_:)),
+            name: .openMainWindowRequested,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(handleOpenSettingsRequested(_:)),
             name: .openSettingsRequested,
             object: nil
@@ -111,7 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         let title = count.map { " \($0)" } ?? ""
-        let toolTip = count.map { "\($0) GitHub items need attention." } ?? "Octobar"
+        let toolTip = count.map { "\($0) GitHub items need attention." } ?? "Octowatch"
         let presentation = StatusPresentation(
             symbolName: symbolName,
             title: title,
@@ -125,7 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
         button.image = NSImage(
             systemSymbolName: symbolName,
-            accessibilityDescription: "Octobar"
+            accessibilityDescription: "Octowatch"
         )?.withSymbolConfiguration(symbolConfig)
         button.title = title
         button.toolTip = toolTip
@@ -155,6 +162,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         let menu = NSMenu()
 
+        let openItem = NSMenuItem(
+            title: "Open Octowatch",
+            action: #selector(openMainWindowFromContextMenu),
+            keyEquivalent: ""
+        )
+        openItem.target = self
+        menu.addItem(openItem)
+
         let settingsItem = NSMenuItem(
             title: "Settings…",
             action: #selector(openSettingsFromContextMenu),
@@ -164,7 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menu.addItem(settingsItem)
 
         let quitItem = NSMenuItem(
-            title: "Quit Octobar",
+            title: "Quit Octowatch",
             action: #selector(quitFromContextMenu),
             keyEquivalent: "q"
         )
@@ -172,6 +187,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menu.addItem(quitItem)
 
         NSMenu.popUpContextMenu(menu, with: event, for: button)
+    }
+
+    @objc
+    private func openMainWindowFromContextMenu() {
+        openMainWindow()
     }
 
     @objc
@@ -194,6 +214,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     @objc
+    private func handleOpenMainWindowRequested(_ notification: Notification) {
+        openMainWindow()
+    }
+
+    @objc
     private func handleOpenSettingsRequested(_ notification: Notification) {
         openSettingsWindow()
     }
@@ -202,32 +227,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func handleWindowDidBecomeKey(_ notification: Notification) {
         guard
             let window = notification.object as? NSWindow,
-            isSettingsWindow(window)
+            isSettingsWindow(window) || isMainWindow(window)
         else {
             return
         }
 
-        settingsWindow = window
+        if isSettingsWindow(window) {
+            settingsWindow = window
+        } else if isMainWindow(window) {
+            mainWindow = window
+        }
     }
 
     @objc
     private func handleWindowWillClose(_ notification: Notification) {
         guard
             let window = notification.object as? NSWindow,
-            window === settingsWindow
+            window === settingsWindow || window === mainWindow
         else {
             return
         }
 
-        settingsWindow = nil
+        if window === settingsWindow {
+            settingsWindow = nil
+        } else if window === mainWindow {
+            mainWindow = nil
+        }
     }
 
-    private func isSettingsWindow(_ window: NSWindow) -> Bool {
-        if window is NSPanel {
+    private func isMainWindow(_ window: NSWindow) -> Bool {
+        guard window.styleMask.contains(.titled) else {
             return false
         }
 
-        return window.styleMask.contains(.titled)
+        return !isSettingsWindow(window)
+    }
+
+    private func openMainWindow() {
+        if popover.isShown {
+            popover.performClose(nil)
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async { [weak self] in
+            NotificationCenter.default.post(name: .performMainWindowOpen, object: nil)
+            self?.focusMainWindowWhenAvailable()
+        }
+    }
+
+    private func focusMainWindowWhenAvailable(retries: Int = 12) {
+        if let window = findMainWindow() {
+            mainWindow = window
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        guard retries > 0 else {
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.focusMainWindowWhenAvailable(retries: retries - 1)
+        }
+    }
+
+    private func isSettingsWindow(_ window: NSWindow) -> Bool {
+        if window is NSPanel || !window.styleMask.contains(.titled) {
+            return false
+        }
+
+        return window.title.localizedCaseInsensitiveContains("settings")
     }
 
     private func openSettingsWindow() {
@@ -274,12 +345,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return NSApp.windows.first(where: isSettingsWindow)
     }
 
+    private func findMainWindow() -> NSWindow? {
+        if let mainWindow, mainWindow.isVisible {
+            return mainWindow
+        }
+
+        if let titledByName = NSApp.windows.first(where: {
+            isMainWindow($0) && $0.title.localizedCaseInsensitiveContains("octowatch")
+        }) {
+            return titledByName
+        }
+
+        return NSApp.windows.first(where: isMainWindow)
+    }
+
     func applicationShouldHandleReopen(
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
         if !flag {
-            openSettingsWindow()
+            openMainWindow()
             return false
         }
 

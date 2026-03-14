@@ -273,12 +273,12 @@ final class AppModel: ObservableObject {
 
         if source == .githubCLI {
             return """
-            GitHub CLI is available, but its token cannot be used with Octobar. \
+            GitHub CLI is available, but its token cannot be used with Octowatch. \
             Provide a GitHub token with access to notifications and pull request search.
             """
         }
 
-        return "That token could not be validated for Octobar."
+        return "That token could not be validated for Octowatch."
     }
 
     private func notifyIfNeeded() {

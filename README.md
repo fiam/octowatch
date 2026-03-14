@@ -1,6 +1,8 @@
-# Octobar
+# Octowatch
 
-Octobar is a SwiftUI menu bar app for macOS that polls GitHub with a personal access token and highlights work that likely needs your attention.
+Octowatch is a SwiftUI macOS app with a status item and a detailed
+attention window. It polls GitHub with a token and highlights work that
+likely needs your attention.
 
 ## What it tracks
 
@@ -25,7 +27,17 @@ swift build
 swift run
 ```
 
-The app launches as a menu bar utility.
+If you want to open the app in Xcode, generate the local project first:
+
+```bash
+xcodegen generate
+open Octowatch.xcodeproj
+```
+
+The generated `.xcodeproj` is local-only and is not committed.
+
+The app launches with a Dock icon, a status item, and a main attention
+window for more detailed triage.
 
 ## Token setup
 
@@ -35,13 +47,13 @@ Use a GitHub personal access token (classic or fine-grained) with read access to
 - Actions
 - Notifications
 
-If `gh` is installed and authenticated, Octobar will try `gh auth token`
+If `gh` is installed and authenticated, Octowatch will try `gh auth token`
 first and validate it before using it.
 
 You can also enter a custom token in Settings. Custom tokens are
 session-only and are not written to Keychain.
 
-Because Octobar reads GitHub notifications, the token must work with the
+Because Octowatch reads GitHub notifications, the token must work with the
 Notifications API. GitHub's documentation says the "List notifications
 for the authenticated user" endpoint does not work with fine-grained
 personal access tokens.
@@ -49,4 +61,6 @@ personal access tokens.
 ## Notes
 
 - This scaffold uses polling. GitHub push-style event delivery generally requires a GitHub App/webhook setup, which this project intentionally avoids.
-- Repository coverage for `action_required` workflow runs is derived from repos already present in your assigned PRs and actionable notifications.
+- Workflow watching covers PRs you authored, approved, or merged, with
+  recent closed activity kept for one day so post-merge failures still
+  surface.

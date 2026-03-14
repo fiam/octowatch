@@ -73,7 +73,7 @@ struct SettingsView: View {
             if selectedTokenSource == .githubCLI {
                 settingsRow(
                     title: "GitHub CLI",
-                    subtitle: "Octobar validates `gh auth token` before using it."
+                    subtitle: "Octowatch validates `gh auth token` before using it."
                 ) {
                     Button(model.usingGitHubCLIToken ? "Check Again" : "Use GitHub CLI") {
                         Task {
@@ -107,7 +107,7 @@ struct SettingsView: View {
         settingsCard {
             cardIntro(
                 title: "Refresh Interval",
-                message: "Choose how often Octobar refreshes GitHub activity."
+                message: "Choose how often Octowatch refreshes GitHub activity."
             ) {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(.orange.gradient)
@@ -149,7 +149,7 @@ struct SettingsView: View {
             Text("Personal Access Token")
                 .font(.headline)
 
-            Text("Octobar validates the token before it starts using it.")
+            Text("Octowatch validates the token before it starts using it.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
@@ -190,7 +190,7 @@ struct SettingsView: View {
         }
 
         if model.gitHubCLIAvailable {
-            return "Octobar tries GitHub CLI first and falls back to a personal access token when needed."
+            return "Octowatch tries GitHub CLI first and falls back to a personal access token when needed."
         }
 
         return "GitHub CLI was not found, so use a personal access token."

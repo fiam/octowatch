@@ -3,23 +3,25 @@
 import PackageDescription
 
 let package = Package(
-    name: "Octobar",
+    name: "Octowatch",
     platforms: [
         .macOS("26.0")
     ],
     products: [
-        .executable(name: "Octobar", targets: ["Octobar"])
+        .executable(name: "Octowatch", targets: ["Octowatch"])
     ],
     targets: [
         .executableTarget(
-            name: "Octobar",
+            name: "Octowatch",
+            path: "Sources/Octobar",
             resources: [
                 .process("Assets.xcassets")
             ]
         ),
         .testTarget(
-            name: "OctobarTests",
-            dependencies: ["Octobar"]
+            name: "OctowatchTests",
+            dependencies: ["Octowatch"],
+            path: "Tests/OctobarTests"
         )
     ]
 )

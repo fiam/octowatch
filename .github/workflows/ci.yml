@@ -26,8 +26,8 @@ jobs:
       - name: Run Xcode tests
         run: |
           xcodebuild \
-            -project Octobar.xcodeproj \
-            -scheme Octobar \
+            -project Octowatch.xcodeproj \
+            -scheme Octowatch \
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO \
             test

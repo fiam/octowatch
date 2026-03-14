@@ -56,7 +56,7 @@ struct GitHubClient {
             throw mapTokenValidationError(
                 error,
                 fallback: """
-                This token cannot access GitHub notifications. Octobar needs a token \
+                This token cannot access GitHub notifications. Octowatch needs a token \
                 that works with the notifications API.
                 """
             )
@@ -78,7 +78,7 @@ struct GitHubClient {
             throw mapTokenValidationError(
                 error,
                 fallback: """
-                This token cannot search pull requests assigned to you. Octobar needs \
+                This token cannot search pull requests assigned to you. Octowatch needs \
                 access to GitHub search for pull requests.
                 """
             )
@@ -684,7 +684,7 @@ struct GitHubClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
-        request.setValue("Octobar", forHTTPHeaderField: "User-Agent")
+        request.setValue("Octowatch", forHTTPHeaderField: "User-Agent")
 
         let data = try await perform(request)
         return try decoder.decode(Response.self, from: data)

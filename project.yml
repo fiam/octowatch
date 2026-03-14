@@ -1,4 +1,4 @@
-name: Octobar
+name: Octowatch
 options:
   createIntermediateGroups: true
 configs:
@@ -6,10 +6,10 @@ configs:
   Release: release
 settings:
   base:
-    PRODUCT_BUNDLE_IDENTIFIER: dev.octobar.app
+    PRODUCT_BUNDLE_IDENTIFIER: dev.octowatch.app
     SWIFT_VERSION: 6.0
 targets:
-  Octobar:
+  Octowatch:
     type: application
     platform: macOS
     deploymentTarget: "26.0"
@@ -17,26 +17,26 @@ targets:
       - path: Sources/Octobar
     settings:
       base:
-        PRODUCT_NAME: Octobar
+        PRODUCT_NAME: Octowatch
         INFOPLIST_FILE: Octobar/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
-  OctobarTests:
+  OctowatchTests:
     type: bundle.unit-test
     platform: macOS
     deploymentTarget: "26.0"
     sources:
       - path: Tests/OctobarTests
     dependencies:
-      - target: Octobar
+      - target: Octowatch
 schemes:
-  Octobar:
+  Octowatch:
     build:
       targets:
-        Octobar: all
+        Octowatch: all
     test:
       targets:
-        - name: OctobarTests
+        - name: OctowatchTests
     run:
       config: Debug
