@@ -135,7 +135,7 @@ struct AttentionWindowView: View {
 
     private var sidebarHeader: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Attention Queue")
+            Text("Inbox")
                 .font(.title2.weight(.semibold))
 
             Text("\(displayedItems.count) items · \(model.unreadCount) unread")
@@ -201,9 +201,9 @@ struct AttentionWindowView: View {
     }
 
     private var emptyStateView: some View {
-        let title = listFilter == .unread ? "No unread items" : "Nothing requiring attention"
+        let title = listFilter == .unread ? "No unread items" : "Inbox is clear"
         let description = listFilter == .unread
-            ? "Everything in the queue has been marked read."
+            ? "Everything in the inbox has been marked read."
             : "Octowatch is watching GitHub, but there is nothing actionable right now."
 
         return ContentUnavailableView {

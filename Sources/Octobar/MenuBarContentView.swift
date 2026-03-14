@@ -39,65 +39,16 @@ struct MenuBarContentView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                if model.hasToken {
-                    Text("\(model.actionableCount)")
-                        .font(.title3.bold())
-                        .monospacedDigit()
+        HStack(spacing: 8) {
+            Spacer()
 
-                    Text(model.actionableCount == 1 ? "item needs attention" : "items need attention")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-
-                    if model.unreadCount > 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: "circle.fill")
-                                .font(.system(size: 6))
-                                .foregroundStyle(.blue)
-                            Text("\(model.unreadCount)")
-                                .font(.caption)
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                } else {
-                    Text("GitHub token required")
-                        .font(.subheadline.weight(.medium))
-                }
-
-                Spacer()
-
-                if model.isRefreshing {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-
-                settingsButton
-                windowButton
+            if model.isRefreshing {
+                ProgressView()
+                    .controlSize(.small)
             }
 
-            if model.hasToken {
-                TimelineView(.periodic(from: .now, by: 30)) { _ in
-                    Text(model.relativeLastUpdated)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Text("Open Settings to connect GitHub.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            windowButton
         }
-    }
-
-    private var settingsButton: some View {
-        Button(action: requestSettings) {
-            Image(systemName: "gearshape")
-                .font(.system(size: 13, weight: .semibold))
-        }
-        .buttonStyle(.plain)
-        .help("Settings")
     }
 
     private var windowButton: some View {
@@ -112,7 +63,7 @@ struct MenuBarContentView: View {
     private var attentionList: some View {
         Group {
             if model.attentionItems.isEmpty {
-                Text("Nothing requiring attention right now.")
+                Text("Inbox is clear right now.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -175,7 +126,7 @@ struct MenuBarContentView: View {
 
     private var tokenSetup: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("No attention queue yet.")
+            Text("GitHub isn't connected yet.")
                 .font(.callout.weight(.semibold))
             Text("Open Settings to validate GitHub CLI or provide a personal access token.")
                 .font(.caption)
