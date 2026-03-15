@@ -59,24 +59,20 @@ struct AttentionWindowView: View {
         .frame(minWidth: 940, minHeight: 620)
         .onAppear {
             syncSelection()
-            updateAutoMarkReadSchedule()
         }
         .onDisappear {
             cancelAutoMarkReadTask()
         }
-        .onChange(of: selectedItemID) { _, _ in
-            updateAutoMarkReadSchedule()
-        }
         .onChange(of: model.attentionItems) { _, _ in
             syncSelection()
-            updateAutoMarkReadSchedule()
         }
         .onChange(of: listFilter) { _, _ in
             syncSelection()
-            updateAutoMarkReadSchedule()
         }
         .onChange(of: model.autoMarkReadSetting) { _, _ in
-            updateAutoMarkReadSchedule()
+            if autoMarkReadTask != nil {
+                armAutoMarkReadForCurrentSelection()
+            }
         }
         .animation(.easeInOut(duration: 0.18), value: showsInitialLoadingState)
         .toolbar {
@@ -90,13 +86,16 @@ struct AttentionWindowView: View {
                     .help("Open on GitHub")
 
                     Button {
-                        model.toggleReadState(for: selectedItem)
+                        toggleReadState(for: selectedItem)
                     } label: {
                         Label(
                             selectedItem.isUnread ? "Mark Read" : "Mark Unread",
                             systemImage: selectedItem.isUnread ? "circle" : "circle.fill"
                         )
                     }
+                    .keyboardShortcut("u", modifiers: [.command, .shift])
+                    .accessibilityIdentifier("item-toggle-read-state")
+                    .accessibilityLabel(selectedItem.isUnread ? "Mark Read" : "Mark Unread")
                     .help(selectedItem.isUnread ? "Mark Read" : "Mark Unread")
 
                     Button {
@@ -157,6 +156,20 @@ struct AttentionWindowView: View {
         return displayedItems.first(where: { $0.id == selectedItemID })
     }
 
+    private var selectionBinding: Binding<AttentionItem.ID?> {
+        Binding(
+            get: { selectedItemID },
+            set: { newValue in
+                let selectionChanged = selectedItemID != newValue
+                selectedItemID = newValue
+
+                if selectionChanged {
+                    armAutoMarkReadForCurrentSelection()
+                }
+            }
+        )
+    }
+
     private func sidebar(relativeTo referenceDate: Date) -> some View {
         VStack(spacing: 0) {
             if model.hasToken {
@@ -169,16 +182,17 @@ struct AttentionWindowView: View {
                 } else if displayedItems.isEmpty {
                     emptyStateView
                 } else {
-                    List(displayedItems, selection: $selectedItemID) { item in
+                    List(displayedItems, selection: selectionBinding) { item in
                         AttentionSidebarRow(
                             item: item,
                             relativeTimestamp: relativeFormatter.localizedString(
                                 for: item.timestamp,
-                                relativeTo: referenceDate
+                            relativeTo: referenceDate
                             )
                         )
                         .tag(item.id)
                     }
+                    .accessibilityIdentifier("inbox-list")
                     .listStyle(.sidebar)
                 }
             }
@@ -325,20 +339,32 @@ struct AttentionWindowView: View {
     }
 
     private func syncSelection() {
-        if let selectedItem, displayedItems.contains(where: { $0.id == selectedItem.id }) {
-            selectedItemID = selectedItem.id
-            return
+        let previousSelectionID = selectedItemID
+
+        if let currentSelectionID = selectedItemID,
+            displayedItems.contains(where: { $0.id == currentSelectionID }) {
+            selectedItemID = currentSelectionID
+        } else {
+            selectedItemID = displayedItems.first?.id
         }
 
-        selectedItemID = displayedItems.first?.id
+        if previousSelectionID != selectedItemID {
+            cancelAutoMarkReadTask()
+        }
     }
 
     private func openSelectedItem(_ item: AttentionItem) {
+        cancelAutoMarkReadTask()
         model.markItemAsRead(item)
         openURL(item.url)
     }
 
-    private func updateAutoMarkReadSchedule() {
+    private func toggleReadState(for item: AttentionItem) {
+        cancelAutoMarkReadTask()
+        model.toggleReadState(for: item)
+    }
+
+    private func armAutoMarkReadForCurrentSelection() {
         cancelAutoMarkReadTask()
 
         guard let item = selectedItem,
@@ -391,6 +417,8 @@ private struct AttentionSidebarRow: View {
                 Text(item.title)
                     .font(.headline)
                     .lineLimit(2)
+                    .accessibilityIdentifier("sidebar-item-title-\(item.id)")
+                    .accessibilityValue(item.isUnread ? "unread" : "read")
 
                 Text(item.subtitle)
                     .font(.subheadline)

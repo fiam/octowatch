@@ -28,6 +28,21 @@ targets:
     deploymentTarget: "26.0"
     sources:
       - path: Tests/OctobarTests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: Octowatch
+  OctowatchUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Tests/OctowatchUITests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Octowatch
     dependencies:
       - target: Octowatch
 schemes:
@@ -38,5 +53,14 @@ schemes:
     test:
       targets:
         - name: OctowatchTests
+    run:
+      config: Debug
+  OctowatchUI:
+    build:
+      targets:
+        Octowatch: all
+    test:
+      targets:
+        - name: OctowatchUITests
     run:
       config: Debug

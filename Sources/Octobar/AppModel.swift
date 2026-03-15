@@ -68,6 +68,11 @@ final class AppModel: ObservableObject {
         )
         syncIgnoredItems()
 
+        if let launchFixture = LaunchFixture.load(from: ProcessInfo.processInfo.environment) {
+            applyLaunchFixture(launchFixture)
+            return
+        }
+
         Task {
             await notifier.requestAuthorization()
         }
@@ -589,5 +594,82 @@ final class AppModel: ObservableObject {
         }
 
         return resetAt.timeIntervalSince(referenceDate) > 1
+    }
+
+    private func applyLaunchFixture(_ fixture: LaunchFixture) {
+        token = "ui-test-token"
+        tokenInput = ""
+        userLogin = fixture.login
+        attentionItems = fixture.attentionItems
+        lastUpdated = fixture.lastUpdated
+        lastError = nil
+        isResolvingInitialContent = false
+        gitHubCLIAvailable = false
+        usingGitHubCLIToken = false
+        isValidatingToken = false
+        rateLimit = nil
+        knownItemIDs = Set(fixture.attentionItems.map(\.id))
+        ignoredItemsByKey = [:]
+        ignoredItems = []
+        readStateByItemID = [:]
+        autoMarkReadSetting = fixture.autoMarkReadSetting
+    }
+}
+
+private struct LaunchFixture {
+    let login: String
+    let attentionItems: [AttentionItem]
+    let autoMarkReadSetting: AutoMarkReadSetting
+    let lastUpdated: Date
+
+    static func load(from environment: [String: String]) -> LaunchFixture? {
+        switch environment["OCTOWATCH_UI_TEST_FIXTURE"] {
+        case "auto-mark-read":
+            return autoMarkReadFixture
+        default:
+            return nil
+        }
+    }
+
+    private static var autoMarkReadFixture: LaunchFixture {
+        let now = Date()
+        let repository = "example/octowatch"
+
+        let primaryItem = AttentionItem(
+            id: "fixture-primary",
+            ignoreKey: "https://github.com/\(repository)/pull/1",
+            type: .reviewRequested,
+            title: "Primary fixture item",
+            subtitle: "\(repository) · Review requested",
+            timestamp: now.addingTimeInterval(-300),
+            url: URL(string: "https://github.com/\(repository)/pull/1")!,
+            actor: AttentionActor(
+                login: "octowatch-fixture",
+                avatarURL: URL(string: "https://avatars.githubusercontent.com/u/9919?v=4")
+            ),
+            isUnread: false
+        )
+
+        let secondaryItem = AttentionItem(
+            id: "fixture-secondary",
+            ignoreKey: "https://github.com/\(repository)/pull/2",
+            type: .comment,
+            title: "Secondary fixture item",
+            subtitle: "\(repository) · New comment",
+            timestamp: now.addingTimeInterval(-180),
+            url: URL(string: "https://github.com/\(repository)/pull/2")!,
+            actor: AttentionActor(
+                login: "octowatch-helper",
+                avatarURL: URL(string: "https://avatars.githubusercontent.com/u/1342004?v=4")
+            ),
+            isUnread: true
+        )
+
+        return LaunchFixture(
+            login: "octowatch-ui-test",
+            attentionItems: [primaryItem, secondaryItem],
+            autoMarkReadSetting: .oneSecond,
+            lastUpdated: now
+        )
     }
 }
