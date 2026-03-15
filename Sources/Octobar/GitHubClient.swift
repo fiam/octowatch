@@ -146,8 +146,10 @@ struct GitHubClient {
                 type: .assignedPullRequest,
                 title: pullRequest.title,
                 subtitle: pullRequest.subtitle,
+                repository: pullRequest.repository,
                 timestamp: pullRequest.updatedAt,
-                url: pullRequest.url
+                url: pullRequest.url,
+                detail: detail(for: pullRequest)
             )
         }
 
@@ -158,9 +160,11 @@ struct GitHubClient {
                 type: notification.type,
                 title: notification.title,
                 subtitle: notification.subtitle,
+                repository: notification.repository,
                 timestamp: notification.updatedAt,
                 url: notification.url,
                 actor: notification.actor,
+                detail: detail(for: notification),
                 isUnread: notification.unread
             )
         }
@@ -172,14 +176,194 @@ struct GitHubClient {
                 type: run.type,
                 title: run.title,
                 subtitle: run.subtitle,
+                repository: run.repository,
                 timestamp: run.createdAt,
                 url: run.url,
-                actor: run.actor
+                actor: run.actor,
+                detail: detail(for: run)
             )
         }
 
         return (pullRequestItems + notificationItems + actionRunItems)
             .sorted { $0.timestamp > $1.timestamp }
+    }
+
+    private func detail(for pullRequest: PullRequestSummary) -> AttentionDetail {
+        AttentionDetail(
+            why: AttentionWhy(
+                summary: "This pull request is assigned to you directly.",
+                detail: "Review it, move it forward, or decide whether to ignore it."
+            ),
+            evidence: [
+                AttentionEvidence(
+                    id: "subject",
+                    title: "Pull request",
+                    detail: "#\(pullRequest.number) · \(pullRequest.title)",
+                    iconName: "arrow.triangle.pull",
+                    url: pullRequest.url
+                ),
+                AttentionEvidence(
+                    id: "repository",
+                    title: "Repository",
+                    detail: pullRequest.repository,
+                    iconName: "shippingbox",
+                    url: repositoryWebURL(repository: pullRequest.repository)
+                ),
+                AttentionEvidence(
+                    id: "status",
+                    title: "Current status",
+                    detail: "Open and waiting in your inbox.",
+                    iconName: "person.crop.circle.badge.checkmark"
+                )
+            ],
+            actions: [
+                AttentionAction(
+                    id: "open-pr",
+                    title: "Open Pull Request",
+                    iconName: "arrow.up.right.square",
+                    url: pullRequest.url,
+                    isPrimary: true
+                ),
+                AttentionAction(
+                    id: "open-repo",
+                    title: "Open Repository",
+                    iconName: "shippingbox",
+                    url: repositoryWebURL(repository: pullRequest.repository)
+                )
+            ],
+            acknowledgement: "Use the toolbar to mark this read or ignore it."
+        )
+    }
+
+    private func detail(for notification: NotificationSummary) -> AttentionDetail {
+        var evidence = [
+            AttentionEvidence(
+                id: "repository",
+                title: "Repository",
+                detail: notification.repository,
+                iconName: "shippingbox",
+                url: repositoryWebURL(repository: notification.repository)
+            )
+        ]
+
+        if let actor = notification.actor {
+            evidence.append(
+                AttentionEvidence(
+                    id: "actor",
+                    title: "Triggered by",
+                    detail: actor.login,
+                    iconName: "person.crop.circle",
+                    url: actor.isBotAccount ? nil : actor.profileURL
+                )
+            )
+        }
+
+        var actions = [
+            AttentionAction(
+                id: "open-subject",
+                title: openActionTitle(for: notification.url),
+                iconName: "arrow.up.right.square",
+                url: notification.url,
+                isPrimary: true
+            )
+        ]
+
+        if let actor = notification.actor, !actor.isBotAccount {
+            actions.append(
+                AttentionAction(
+                    id: "open-actor",
+                    title: "Open \(actor.login)",
+                    iconName: "person.crop.circle",
+                    url: actor.profileURL
+                )
+            )
+        }
+
+        return AttentionDetail(
+            why: AttentionWhy(
+                summary: whySummary(for: notification.type, actor: notification.actor),
+                detail: "Octowatch surfaced the latest GitHub activity that changed this thread."
+            ),
+            evidence: evidence,
+            actions: actions,
+            acknowledgement: "Use the toolbar to mark this read or ignore it."
+        )
+    }
+
+    private func detail(for run: ActionRunSummary) -> AttentionDetail {
+        let pullRequestURL = URL(string: run.ignoreKey)
+
+        var evidence = [
+            AttentionEvidence(
+                id: "run",
+                title: "Workflow run",
+                detail: run.title,
+                iconName: run.type.iconName,
+                url: run.url
+            ),
+            AttentionEvidence(
+                id: "repository",
+                title: "Repository",
+                detail: run.repository,
+                iconName: "shippingbox",
+                url: repositoryWebURL(repository: run.repository)
+            )
+        ]
+
+        if let pullRequestURL {
+            evidence.append(
+                AttentionEvidence(
+                    id: "subject",
+                    title: "Related pull request",
+                    detail: subjectLabel(for: pullRequestURL),
+                    iconName: "arrow.triangle.pull",
+                    url: pullRequestURL
+                )
+            )
+        }
+
+        if let actor = run.actor {
+            evidence.append(
+                AttentionEvidence(
+                    id: "actor",
+                    title: "Triggered by",
+                    detail: actor.login,
+                    iconName: "person.crop.circle",
+                    url: actor.isBotAccount ? nil : actor.profileURL
+                )
+            )
+        }
+
+        var actions = [
+            AttentionAction(
+                id: "open-run",
+                title: "Open Workflow Run",
+                iconName: "bolt",
+                url: run.url,
+                isPrimary: true
+            )
+        ]
+
+        if let pullRequestURL {
+            actions.append(
+                AttentionAction(
+                    id: "open-pr",
+                    title: "Open Pull Request",
+                    iconName: "arrow.triangle.pull",
+                    url: pullRequestURL
+                )
+            )
+        }
+
+        return AttentionDetail(
+            why: AttentionWhy(
+                summary: whySummary(for: run.type, actor: run.actor),
+                detail: "This workflow activity was attached to a pull request Octowatch is already watching."
+            ),
+            evidence: evidence,
+            actions: actions,
+            acknowledgement: "Use the toolbar to mark this read or ignore it."
+        )
     }
 
     private func resolveLogin(
@@ -789,6 +973,57 @@ struct GitHubClient {
         return "\(repository) · \(prLabel) · \(type.accessibilityLabel)"
     }
 
+    private func whySummary(
+        for type: AttentionItemType,
+        actor: AttentionActor?
+    ) -> String {
+        if let actor {
+            return "\(actor.login) \(type.actorVerb)."
+        }
+
+        switch type {
+        case .assignedPullRequest:
+            return "This pull request is assigned to you."
+        case .comment:
+            return "There is new discussion on a thread you are following."
+        case .mention:
+            return "Someone mentioned you in a GitHub discussion."
+        case .reviewRequested:
+            return "A pull request is waiting for your review."
+        case .reviewApproved:
+            return "A pull request you are tracking was approved."
+        case .reviewChangesRequested:
+            return "A pull request you are tracking has requested changes."
+        case .reviewComment:
+            return "A pull request you are tracking has new review feedback."
+        case .pullRequestStateChanged:
+            return "A pull request you are tracking changed state."
+        case .ciActivity:
+            return "GitHub Actions reported activity that needs attention."
+        case .workflowFailed:
+            return "A watched workflow run failed."
+        case .workflowApprovalRequired:
+            return "A watched workflow run is waiting for approval."
+        }
+    }
+
+    private func openActionTitle(for url: URL) -> String {
+        let path = url.path
+        if path.contains("/pull/") {
+            return "Open Pull Request"
+        }
+        if path.contains("/issues/") {
+            return "Open Issue"
+        }
+        if path.contains("/actions/runs/") {
+            return "Open Workflow Run"
+        }
+        if path.contains("/commit/") {
+            return "Open Commit"
+        }
+        return "Open on GitHub"
+    }
+
     private func attentionActor(from user: GitHubUser?) -> AttentionActor? {
         guard let user else {
             return nil
@@ -818,6 +1053,30 @@ struct GitHubClient {
 
     private func issueWebURL(repository: String, number: Int) -> URL {
         URL(string: "https://github.com/\(repository)/issues/\(number)")!
+    }
+
+    private func repositoryWebURL(repository: String) -> URL {
+        URL(string: "https://github.com/\(repository)")!
+    }
+
+    private func subjectLabel(for url: URL) -> String {
+        let components = url.pathComponents
+
+        if let pullIndex = components.firstIndex(of: "pull"),
+            pullIndex >= 2,
+            pullIndex + 1 < components.count {
+            let repository = "\(components[pullIndex - 2])/\(components[pullIndex - 1])"
+            return "\(repository) · PR #\(components[pullIndex + 1])"
+        }
+
+        if let issueIndex = components.firstIndex(of: "issues"),
+            issueIndex >= 2,
+            issueIndex + 1 < components.count {
+            let repository = "\(components[issueIndex - 2])/\(components[issueIndex - 1])"
+            return "\(repository) · Issue #\(components[issueIndex + 1])"
+        }
+
+        return url.absoluteString
     }
 
     private func parseRepositoryFullName(_ repository: String) throws -> RepositoryIdentifier {

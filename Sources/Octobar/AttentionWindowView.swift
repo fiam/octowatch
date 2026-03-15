@@ -301,8 +301,8 @@ struct AttentionWindowView: View {
                         for: item.timestamp,
                         relativeTo: referenceDate
                     ),
-                    onOpenItem: {
-                        openSelectedItem(item)
+                    onOpenURL: { url in
+                        openRelatedURL(url, for: item)
                     }
                 )
             } else {
@@ -354,9 +354,13 @@ struct AttentionWindowView: View {
     }
 
     private func openSelectedItem(_ item: AttentionItem) {
+        openRelatedURL(item.url, for: item)
+    }
+
+    private func openRelatedURL(_ url: URL, for item: AttentionItem) {
         cancelAutoMarkReadTask()
         model.markItemAsRead(item)
-        openURL(item.url)
+        openURL(url)
     }
 
     private func toggleReadState(for item: AttentionItem) {
@@ -444,7 +448,13 @@ private struct AttentionDetailView: View {
     let item: AttentionItem
     let absoluteTimestamp: String
     let relativeTimestamp: String
-    let onOpenItem: () -> Void
+    let onOpenURL: (URL) -> Void
+
+    private var visibleEvidence: [AttentionEvidence] {
+        item.detail.evidence.filter { evidence in
+            evidence.id != "actor" && evidence.id != "repository"
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -454,7 +464,9 @@ private struct AttentionDetailView: View {
 
                     DetailTitleLinkButton(
                         title: item.title,
-                        action: onOpenItem
+                        action: {
+                            onOpenURL(item.url)
+                        }
                     )
 
                     HStack(alignment: .center, spacing: 10) {
@@ -472,30 +484,55 @@ private struct AttentionDetailView: View {
                                     .font(.subheadline.weight(.medium))
                                     .foregroundStyle(.primary)
                             } else {
-                                Link(actor.login, destination: actor.profileURL)
+                                Button(actor.login) {
+                                    onOpenURL(actor.profileURL)
+                                }
                                     .font(.subheadline.weight(.medium))
+                                    .buttonStyle(.plain)
                                     .foregroundStyle(.tint)
                             }
+
+                            Text("·")
+                                .font(.subheadline)
+                                .foregroundStyle(.tertiary)
+                        }
+
+                        Text(relativeTimestamp)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .help(absoluteTimestamp)
+                    }
+
+                    if let repository = item.repository {
+                        if let repositoryURL = item.repositoryURL {
+                            Button {
+                                onOpenURL(repositoryURL)
+                            } label: {
+                                Text(repository)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Open repository on GitHub")
+                        } else {
+                            Text(repository)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
 
-                DetailCard(title: "Context") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        LabeledContent("Summary") {
-                            Text(item.subtitle)
-                                .multilineTextAlignment(.trailing)
-                        }
-
-                        LabeledContent("When") {
-                            VStack(alignment: .trailing, spacing: 2) {
-                                Text(relativeTimestamp)
-                                Text(absoluteTimestamp)
-                                    .foregroundStyle(.secondary)
+                if !visibleEvidence.isEmpty {
+                    DetailCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(visibleEvidence) { evidence in
+                                DetailEvidenceRow(
+                                    evidence: evidence,
+                                    onOpenURL: onOpenURL
+                                )
                             }
                         }
                     }
-                    .font(.body)
                 }
             }
             .padding(32)
@@ -553,19 +590,56 @@ private struct DetailTitleLinkButton: View {
     }
 }
 
+private struct DetailEvidenceRow: View {
+    let evidence: AttentionEvidence
+    let onOpenURL: (URL) -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: evidence.iconName)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 20, height: 20)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(evidence.title)
+                    .font(.subheadline.weight(.semibold))
+
+                if let detail = evidence.detail {
+                    Text(detail)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer(minLength: 12)
+
+            if let url = evidence.url {
+                Button("Open") {
+                    onOpenURL(url)
+                }
+                .buttonStyle(.link)
+            }
+        }
+    }
+}
+
 private struct DetailCard<Content: View>: View {
-    let title: String
+    let title: String?
     @ViewBuilder let content: Content
 
-    init(title: String, @ViewBuilder content: () -> Content) {
+    init(title: String? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
         self.content = content()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(title)
-                .font(.headline)
+            if let title {
+                Text(title)
+                    .font(.headline)
+            }
 
             content
         }

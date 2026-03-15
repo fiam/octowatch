@@ -203,15 +203,73 @@ struct AttentionActor: Hashable, Sendable {
     }
 }
 
+struct AttentionWhy: Hashable, Sendable {
+    let summary: String
+    let detail: String?
+}
+
+struct AttentionEvidence: Identifiable, Hashable, Sendable {
+    let id: String
+    let title: String
+    let detail: String?
+    let iconName: String
+    let url: URL?
+
+    init(
+        id: String,
+        title: String,
+        detail: String? = nil,
+        iconName: String,
+        url: URL? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.detail = detail
+        self.iconName = iconName
+        self.url = url
+    }
+}
+
+struct AttentionAction: Identifiable, Hashable, Sendable {
+    let id: String
+    let title: String
+    let iconName: String
+    let url: URL
+    let isPrimary: Bool
+
+    init(
+        id: String,
+        title: String,
+        iconName: String,
+        url: URL,
+        isPrimary: Bool = false
+    ) {
+        self.id = id
+        self.title = title
+        self.iconName = iconName
+        self.url = url
+        self.isPrimary = isPrimary
+    }
+}
+
+struct AttentionDetail: Hashable, Sendable {
+    let why: AttentionWhy
+    let evidence: [AttentionEvidence]
+    let actions: [AttentionAction]
+    let acknowledgement: String?
+}
+
 struct AttentionItem: Identifiable, Hashable, Sendable {
     let id: String
     let ignoreKey: String
     let type: AttentionItemType
     let title: String
     let subtitle: String
+    let repository: String?
     let timestamp: Date
     let url: URL
     let actor: AttentionActor?
+    let detail: AttentionDetail
     var isUnread: Bool
 
     init(
@@ -220,9 +278,11 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         type: AttentionItemType,
         title: String,
         subtitle: String,
+        repository: String? = nil,
         timestamp: Date,
         url: URL,
         actor: AttentionActor? = nil,
+        detail: AttentionDetail? = nil,
         isUnread: Bool = true
     ) {
         self.id = id
@@ -230,9 +290,16 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         self.type = type
         self.title = title
         self.subtitle = subtitle
+        self.repository = repository
         self.timestamp = timestamp
         self.url = url
         self.actor = actor
+        self.detail = detail ?? Self.defaultDetail(
+            type: type,
+            subtitle: subtitle,
+            url: url,
+            actor: actor
+        )
         self.isUnread = isUnread
     }
 
@@ -254,6 +321,105 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         }
 
         return "Ignore Item"
+    }
+
+    var repositoryURL: URL? {
+        guard let repository else {
+            return nil
+        }
+
+        return URL(string: "https://github.com/\(repository)")
+    }
+
+    private static func defaultDetail(
+        type: AttentionItemType,
+        subtitle: String,
+        url: URL,
+        actor: AttentionActor?
+    ) -> AttentionDetail {
+        let why = AttentionWhy(
+            summary: defaultWhySummary(for: type),
+            detail: subtitle
+        )
+
+        var evidence = [AttentionEvidence]()
+        if !subtitle.isEmpty {
+            evidence.append(
+                AttentionEvidence(
+                    id: "context",
+                    title: "Current context",
+                    detail: subtitle,
+                    iconName: "info.circle"
+                )
+            )
+        }
+
+        if let actor {
+            evidence.append(
+                AttentionEvidence(
+                    id: "actor",
+                    title: "Triggered by",
+                    detail: actor.login,
+                    iconName: "person.crop.circle",
+                    url: actor.isBotAccount ? nil : actor.profileURL
+                )
+            )
+        }
+
+        var actions = [
+            AttentionAction(
+                id: "open",
+                title: "Open on GitHub",
+                iconName: "arrow.up.right.square",
+                url: url,
+                isPrimary: true
+            )
+        ]
+
+        if let actor, !actor.isBotAccount {
+            actions.append(
+                AttentionAction(
+                    id: "actor-profile",
+                    title: "Open \(actor.login)",
+                    iconName: "person.crop.circle",
+                    url: actor.profileURL
+                )
+            )
+        }
+
+        return AttentionDetail(
+            why: why,
+            evidence: evidence,
+            actions: actions,
+            acknowledgement: "Use the toolbar to mark this read or ignore it."
+        )
+    }
+
+    private static func defaultWhySummary(for type: AttentionItemType) -> String {
+        switch type {
+        case .assignedPullRequest:
+            return "This pull request is assigned to you."
+        case .comment:
+            return "There is new discussion on work you are following."
+        case .mention:
+            return "Someone mentioned you in a GitHub discussion."
+        case .reviewRequested:
+            return "A pull request is waiting for your review."
+        case .reviewApproved:
+            return "A pull request you are tracking was approved."
+        case .reviewChangesRequested:
+            return "A pull request you are tracking now has requested changes."
+        case .reviewComment:
+            return "A pull request you are tracking has new review feedback."
+        case .pullRequestStateChanged:
+            return "A pull request you are tracking changed state."
+        case .ciActivity:
+            return "GitHub Actions activity needs attention."
+        case .workflowFailed:
+            return "A workflow run failed and likely needs intervention."
+        case .workflowApprovalRequired:
+            return "A workflow run is waiting for approval before it can continue."
+        }
     }
 }
 
