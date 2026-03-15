@@ -285,6 +285,50 @@ struct ActionRunSummary: Identifiable, Hashable, Sendable {
     let actor: AttentionActor?
 }
 
+enum AutoMarkReadSetting: Int, CaseIterable, Hashable, Sendable {
+    case never = 0
+    case oneSecond = 1
+    case threeSeconds = 3
+    case fiveSeconds = 5
+    case tenSeconds = 10
+
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .never:
+            return "Never"
+        case .oneSecond:
+            return "1 second"
+        case .threeSeconds:
+            return "3 seconds"
+        case .fiveSeconds:
+            return "5 seconds"
+        case .tenSeconds:
+            return "10 seconds"
+        }
+    }
+
+    var delay: Duration? {
+        switch self {
+        case .never:
+            return nil
+        case .oneSecond:
+            return .seconds(1)
+        case .threeSeconds:
+            return .seconds(3)
+        case .fiveSeconds:
+            return .seconds(5)
+        case .tenSeconds:
+            return .seconds(10)
+        }
+    }
+
+    static func normalized(rawValue: Int) -> AutoMarkReadSetting {
+        AutoMarkReadSetting(rawValue: rawValue) ?? .threeSeconds
+    }
+}
+
 struct GitHubRateLimit: Hashable, Sendable {
     let limit: Int
     let remaining: Int

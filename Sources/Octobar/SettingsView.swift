@@ -26,6 +26,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     tokenCard
                     pollingCard
+                    inboxCard
                     ignoredItemsCard
                 }
                 .padding(28)
@@ -202,6 +203,47 @@ struct SettingsView: View {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private var inboxCard: some View {
+        settingsCard {
+            cardIntro(
+                title: "Inbox",
+                message: "Choose how quickly selected items are marked as read."
+            ) {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(.blue.gradient)
+                    .frame(width: 46, height: 46)
+                    .overlay {
+                        Image(systemName: "checkmark.circle.badge.clock")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+            }
+
+            Divider()
+                .padding(.horizontal, 20)
+
+            settingsRow(
+                title: "Auto-Mark as Read",
+                subtitle: "Marks an item read after it stays selected for the chosen delay."
+            ) {
+                Picker(
+                    "Auto-Mark as Read",
+                    selection: Binding(
+                        get: { model.autoMarkReadSetting },
+                        set: { model.setAutoMarkReadSetting($0) }
+                    )
+                ) {
+                    ForEach(model.autoMarkReadOptions, id: \.self) { setting in
+                        Text(setting.label).tag(setting)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 140)
+                .labelsHidden()
             }
         }
     }

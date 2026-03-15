@@ -23,11 +23,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var isValidatingToken = false
     @Published private(set) var ignoredItems: [IgnoredAttentionSubject] = []
     @Published private(set) var pollIntervalSeconds = 60
+    @Published private(set) var autoMarkReadSetting: AutoMarkReadSetting = .threeSeconds
 
     private let readStateStoreKey = "attention-item-read-state-v1"
     private let ignoredSubjectStoreKey = "ignored-attention-subjects-v2"
     private let legacyIgnoredSubjectStoreKey = "ignored-attention-subjects-v1"
     private let pollIntervalStoreKey = "poll-interval-seconds-v1"
+    private let autoMarkReadStoreKey = "auto-mark-read-setting-v1"
     private let client = GitHubClient()
     private let notifier = UserNotifier()
 
@@ -48,6 +50,10 @@ final class AppModel: ObservableObject {
         pollIntervalSeconds = Self.loadPollInterval(
             from: UserDefaults.standard,
             key: pollIntervalStoreKey
+        )
+        autoMarkReadSetting = Self.loadAutoMarkReadSetting(
+            from: UserDefaults.standard,
+            key: autoMarkReadStoreKey
         )
         readStateByItemID = Self.loadReadState(
             from: UserDefaults.standard,
@@ -109,6 +115,14 @@ final class AppModel: ObservableObject {
 
     var pollIntervalOptions: [Int] {
         [30, 60, 120, 300, 600, 900]
+    }
+
+    var autoMarkReadOptions: [AutoMarkReadSetting] {
+        AutoMarkReadSetting.allCases
+    }
+
+    var autoMarkReadDelay: Duration? {
+        autoMarkReadSetting.delay
     }
 
     var isRateLimitWarning: Bool {
@@ -182,6 +196,15 @@ final class AppModel: ObservableObject {
         if hasToken {
             startPollingIfNeeded()
         }
+    }
+
+    func setAutoMarkReadSetting(_ setting: AutoMarkReadSetting) {
+        guard autoMarkReadSetting != setting else {
+            return
+        }
+
+        autoMarkReadSetting = setting
+        UserDefaults.standard.set(setting.rawValue, forKey: autoMarkReadStoreKey)
     }
 
     func refreshNow() {
@@ -544,6 +567,13 @@ final class AppModel: ObservableObject {
         }
 
         return normalizedPollInterval(stored)
+    }
+
+    private static func loadAutoMarkReadSetting(
+        from defaults: UserDefaults,
+        key: String
+    ) -> AutoMarkReadSetting {
+        AutoMarkReadSetting.normalized(rawValue: defaults.object(forKey: key) as? Int ?? 3)
     }
 
     private func effectiveAutomaticPollInterval(relativeTo referenceDate: Date) -> Int {

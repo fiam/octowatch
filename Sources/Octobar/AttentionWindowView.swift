@@ -23,6 +23,7 @@ struct AttentionWindowView: View {
 
     @State private var selectedItemID: AttentionItem.ID?
     @State private var listFilter: ListFilter = .all
+    @State private var autoMarkReadTask: Task<Void, Never>?
 
     private let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -57,12 +58,24 @@ struct AttentionWindowView: View {
         .frame(minWidth: 940, minHeight: 620)
         .onAppear {
             syncSelection()
+            updateAutoMarkReadSchedule()
+        }
+        .onDisappear {
+            cancelAutoMarkReadTask()
+        }
+        .onChange(of: selectedItemID) { _, _ in
+            updateAutoMarkReadSchedule()
         }
         .onChange(of: model.attentionItems) { _, _ in
             syncSelection()
+            updateAutoMarkReadSchedule()
         }
         .onChange(of: listFilter) { _, _ in
             syncSelection()
+            updateAutoMarkReadSchedule()
+        }
+        .onChange(of: model.autoMarkReadSetting) { _, _ in
+            updateAutoMarkReadSchedule()
         }
         .animation(.easeInOut(duration: 0.18), value: showsInitialLoadingState)
         .toolbar {
@@ -319,6 +332,39 @@ struct AttentionWindowView: View {
     private func openSelectedItem(_ item: AttentionItem) {
         model.markItemAsRead(item)
         openURL(item.url)
+    }
+
+    private func updateAutoMarkReadSchedule() {
+        cancelAutoMarkReadTask()
+
+        guard let item = selectedItem,
+            item.isUnread,
+            let autoMarkReadDelay = model.autoMarkReadDelay else {
+            return
+        }
+
+        let expectedID = item.id
+        autoMarkReadTask = Task {
+            try? await Task.sleep(for: autoMarkReadDelay)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            await MainActor.run {
+                guard let currentItem = selectedItem,
+                    currentItem.id == expectedID,
+                    currentItem.isUnread else {
+                    return
+                }
+
+                model.markItemAsRead(currentItem)
+            }
+        }
+    }
+
+    private func cancelAutoMarkReadTask() {
+        autoMarkReadTask?.cancel()
+        autoMarkReadTask = nil
     }
 }
 

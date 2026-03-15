@@ -208,4 +208,13 @@ final class AttentionClassificationTests: XCTestCase {
             420
         )
     }
+
+    func testAutoMarkReadSettingMapsToExpectedDelay() {
+        XCTAssertNil(AutoMarkReadSetting.never.delay)
+        XCTAssertEqual(AutoMarkReadSetting.oneSecond.delay, .seconds(1))
+        XCTAssertEqual(AutoMarkReadSetting.threeSeconds.delay, .seconds(3))
+        XCTAssertEqual(AutoMarkReadSetting.fiveSeconds.delay, .seconds(5))
+        XCTAssertEqual(AutoMarkReadSetting.tenSeconds.delay, .seconds(10))
+        XCTAssertEqual(AutoMarkReadSetting.normalized(rawValue: 999), .threeSeconds)
+    }
 }
