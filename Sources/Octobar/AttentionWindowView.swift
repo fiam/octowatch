@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct AttentionWindowView: View {
@@ -423,16 +424,10 @@ private struct AttentionDetailView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     EventBadge(type: item.type, size: 40)
 
-                    Button(action: onOpenItem) {
-                        Text(item.title)
-                            .font(.largeTitle.weight(.semibold))
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.primary)
-                    .help("Open on GitHub")
+                    DetailTitleLinkButton(
+                        title: item.title,
+                        action: onOpenItem
+                    )
 
                     HStack(alignment: .center, spacing: 10) {
                         AttentionTypePill(type: item.type)
@@ -477,6 +472,55 @@ private struct AttentionDetailView: View {
             }
             .padding(32)
             .frame(maxWidth: 760, alignment: .leading)
+        }
+    }
+}
+
+private struct DetailTitleLinkButton: View {
+    let title: String
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(title)
+                    .font(.largeTitle.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Image(systemName: "arrow.up.right.square")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+            }
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open on GitHub")
+        .onHover(perform: updateHoverState)
+        .onDisappear {
+            if isHovering {
+                NSCursor.pop()
+                isHovering = false
+            }
+        }
+        .animation(.easeInOut(duration: 0.12), value: isHovering)
+    }
+
+    private func updateHoverState(_ hovering: Bool) {
+        guard hovering != isHovering else {
+            return
+        }
+
+        isHovering = hovering
+
+        if hovering {
+            NSCursor.pointingHand.push()
+        } else {
+            NSCursor.pop()
         }
     }
 }
