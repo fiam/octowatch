@@ -377,20 +377,19 @@ private struct AttentionSidebarRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
+            Circle()
+                .fill(.blue)
+                .frame(width: 8, height: 8)
+                .opacity(item.isUnread ? 1 : 0)
+                .padding(.top, 6)
+                .frame(width: 10)
+
             EventBadge(type: item.type)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(item.title)
-                        .font(.headline)
-                        .lineLimit(2)
-
-                    if item.isUnread {
-                        Circle()
-                            .fill(.blue)
-                            .frame(width: 7, height: 7)
-                    }
-                }
+                Text(item.title)
+                    .font(.headline)
+                    .lineLimit(2)
 
                 Text(item.subtitle)
                     .font(.subheadline)
