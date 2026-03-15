@@ -296,6 +296,38 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testSmallBucketRateLimitDoesNotForceFifteenMinuteBackoff() {
+        let now = Date()
+        let rateLimit = GitHubRateLimit(
+            limit: 30,
+            remaining: 20,
+            resetAt: now.addingTimeInterval(40),
+            pollIntervalHintSeconds: nil,
+            retryAfterSeconds: nil
+        )
+
+        XCTAssertEqual(
+            rateLimit.minimumAutomaticRefreshInterval(userConfiguredSeconds: 60, now: now),
+            60
+        )
+    }
+
+    func testSmallBucketRateLimitWaitsForResetOnlyWhenNearlyExhausted() {
+        let now = Date()
+        let rateLimit = GitHubRateLimit(
+            limit: 30,
+            remaining: 5,
+            resetAt: now.addingTimeInterval(45),
+            pollIntervalHintSeconds: nil,
+            retryAfterSeconds: nil
+        )
+
+        XCTAssertEqual(
+            rateLimit.minimumAutomaticRefreshInterval(userConfiguredSeconds: 30, now: now),
+            45
+        )
+    }
+
     func testAutoMarkReadSettingMapsToExpectedDelay() {
         XCTAssertNil(AutoMarkReadSetting.never.delay)
         XCTAssertEqual(AutoMarkReadSetting.oneSecond.delay, .seconds(1))
@@ -383,5 +415,234 @@ final class AttentionClassificationTests: XCTestCase {
                 hasChangesRequested: false
             )
         )
+    }
+
+    func testAssignedPullRequestDoesNotDuplicateHeaderStateWithBadges() {
+        let badges = PullRequestContextBadge.badges(
+            for: .assignedPullRequest,
+            author: AttentionActor(
+                login: "renovate-custom-app",
+                avatarURL: nil,
+                isBot: true
+            )
+        )
+
+        XCTAssertTrue(badges.isEmpty)
+    }
+
+    func testTeamReviewRequestedDoesNotDuplicateHeaderStateWithBadges() {
+        let badges = PullRequestContextBadge.badges(
+            for: .teamReviewRequested,
+            author: AttentionActor(
+                login: "dependabot[bot]",
+                avatarURL: nil,
+                isBot: true
+            )
+        )
+
+        XCTAssertTrue(badges.isEmpty)
+    }
+
+    func testReadyToMergeDoesNotAddSeparateCreatedByYouBadge() {
+        let badges = PullRequestContextBadge.badges(
+            for: .readyToMerge,
+            author: AttentionActor(
+                login: "alberto",
+                avatarURL: nil,
+                isBot: false
+            )
+        )
+
+        XCTAssertTrue(badges.isEmpty)
+    }
+
+    func testReadyToMergeHeaderFactsUseApprovalLanguage() {
+        let facts = PullRequestHeaderFact.build(
+            sourceType: .readyToMerge,
+            author: nil,
+            assigner: nil,
+            latestApprover: AttentionActor(login: "nicksieger", avatarURL: nil, isBot: false),
+            approvalCount: 3
+        )
+
+        XCTAssertEqual(facts.count, 1)
+        XCTAssertEqual(facts.first?.label, "approved by")
+        XCTAssertEqual(facts.first?.overflowLabel, "and 2 more people")
+    }
+
+    func testAssignedPullRequestHeaderFactsIncludeAuthorAndAssigner() {
+        let facts = PullRequestHeaderFact.build(
+            sourceType: .assignedPullRequest,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            assigner: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
+            latestApprover: nil,
+            approvalCount: 0
+        )
+
+        XCTAssertEqual(facts.map(\.label), ["created by", "assigned by"])
+        XCTAssertEqual(facts.map(\.actor.login), ["renovate-custom-app", "fiam"])
+    }
+
+    func testAuthoredPullRequestActionsIncludeMergeAndView() {
+        let actions = AttentionAction.pullRequestActions(
+            reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 639),
+            sourceType: .readyToMerge,
+            mode: .authored,
+            reviewDecision: "APPROVED",
+            mergeable: "MERGEABLE",
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 8,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            hasNewCommits: false
+        )
+
+        XCTAssertEqual(actions.map(\.id), ["merge", "view-pr", "open-files", "open-checks"])
+        XCTAssertEqual(actions.first?.isPrimary, true)
+        XCTAssertEqual(actions.dropFirst().first?.isPrimary, false)
+    }
+
+    func testAssignedPullRequestActionsUseViewAsPrimary() {
+        let actions = AttentionAction.pullRequestActions(
+            reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 638),
+            sourceType: .assignedPullRequest,
+            mode: .generic,
+            reviewDecision: nil,
+            mergeable: nil,
+            checkSummary: .empty,
+            hasNewCommits: false
+        )
+
+        XCTAssertEqual(actions.map(\.id), ["view-pr", "open-files"])
+        XCTAssertEqual(actions.first?.title, "View on GitHub")
+        XCTAssertEqual(actions.first?.isPrimary, true)
+    }
+
+    func testBotAssignedReviewMergeActionEnablesApproveAndMergeWhenClean() {
+        let action = PullRequestReviewMergeAction.makeBotAssignedAction(
+            sourceType: .assignedPullRequest,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "REVIEW_REQUIRED",
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 12,
+                skippedCount: 2,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.title, "Approve and Merge")
+        XCTAssertEqual(action?.requiresApproval, true)
+        XCTAssertEqual(action?.isEnabled, true)
+        XCTAssertNil(action?.disabledReason)
+    }
+
+    func testBotAssignedReviewMergeActionDisablesOnFailures() {
+        let action = PullRequestReviewMergeAction.makeBotAssignedAction(
+            sourceType: .assignedPullRequest,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "REVIEW_REQUIRED",
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 8,
+                skippedCount: 3,
+                failedCount: 2,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.isEnabled, false)
+        XCTAssertEqual(action?.disabledReason, "Some checks are failing.")
+    }
+
+    func testPullRequestStatusSummaryShowsReadyToApproveAndMerge() {
+        let action = PullRequestReviewMergeAction.makeBotAssignedAction(
+            sourceType: .assignedPullRequest,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "REVIEW_REQUIRED",
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 12,
+                skippedCount: 2,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        let summary = PullRequestStatusSummary.build(
+            mode: .generic,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 12,
+                skippedCount: 2,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0,
+            reviewMergeAction: action
+        )
+
+        XCTAssertEqual(summary?.title, "Ready to approve and merge")
+        XCTAssertEqual(summary?.detail, "12 passed · 2 skipped")
+        XCTAssertEqual(summary?.accent, .success)
+    }
+
+    func testPullRequestStatusSummaryShowsFailedChecks() {
+        let summary = PullRequestStatusSummary.build(
+            mode: .generic,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 9,
+                skippedCount: 3,
+                failedCount: 2,
+                pendingCount: 0
+            ),
+            openThreadCount: 0,
+            reviewMergeAction: nil
+        )
+
+        XCTAssertEqual(summary?.title, "2 checks failed")
+        XCTAssertEqual(summary?.detail, "2 failed · 9 passed · 3 skipped")
+        XCTAssertEqual(summary?.accent, .failure)
+    }
+
+    func testAttentionItemParsesPullRequestReferenceFromCanonicalURL() {
+        let item = AttentionItem(
+            id: "pr:1",
+            ignoreKey: "https://github.com/acme/example/pull/42",
+            type: .assignedPullRequest,
+            title: "Example",
+            subtitle: "acme/example · Review requested",
+            repository: "acme/example",
+            timestamp: Date(),
+            url: URL(string: "https://github.com/acme/example/pull/42")!
+        )
+
+        XCTAssertEqual(
+            item.pullRequestReference,
+            PullRequestReference(owner: "acme", name: "example", number: 42)
+        )
+    }
+
+    func testAttentionItemDoesNotParseIssueAsPullRequestReference() {
+        let item = AttentionItem(
+            id: "issue:1",
+            ignoreKey: "https://github.com/acme/example/issues/42",
+            type: .mention,
+            title: "Example issue",
+            subtitle: "acme/example · Mentioned you",
+            repository: "acme/example",
+            timestamp: Date(),
+            url: URL(string: "https://github.com/acme/example/issues/42")!
+        )
+
+        XCTAssertNil(item.pullRequestReference)
     }
 }

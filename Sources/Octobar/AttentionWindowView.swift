@@ -25,6 +25,8 @@ struct AttentionWindowView: View {
     @State private var selectedItemID: AttentionItem.ID?
     @State private var listFilter: ListFilter = .all
     @State private var autoMarkReadTask: Task<Void, Never>?
+    @State private var pullRequestFocusState: PullRequestFocusLoadState = .idle
+    @State private var reviewMergeState: PullRequestReviewMergeState = .idle
 
     private let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -75,6 +77,9 @@ struct AttentionWindowView: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: showsInitialLoadingState)
+        .task(id: pullRequestFocusTaskID) {
+            await loadPullRequestFocusForSelection()
+        }
         .toolbar {
             if let selectedItem, model.hasToken {
                 ToolbarItemGroup {
@@ -83,6 +88,7 @@ struct AttentionWindowView: View {
                     } label: {
                         Label("Open", systemImage: "safari")
                     }
+                    .appInteractiveHover()
                     .help("Open on GitHub")
 
                     Button {
@@ -93,6 +99,7 @@ struct AttentionWindowView: View {
                             systemImage: selectedItem.isUnread ? "circle" : "circle.fill"
                         )
                     }
+                    .appInteractiveHover()
                     .keyboardShortcut("u", modifiers: [.command, .shift])
                     .accessibilityIdentifier("item-toggle-read-state")
                     .accessibilityLabel(selectedItem.isUnread ? "Mark Read" : "Mark Unread")
@@ -103,6 +110,7 @@ struct AttentionWindowView: View {
                     } label: {
                         Label("Ignore", systemImage: "eye.slash")
                     }
+                    .appInteractiveHover()
                     .help(selectedItem.ignoreActionTitle)
                 }
             }
@@ -113,6 +121,7 @@ struct AttentionWindowView: View {
                 } label: {
                     Image(systemName: "gearshape")
                 }
+                .appInteractiveHover()
                 .help("Settings")
             }
         }
@@ -156,6 +165,14 @@ struct AttentionWindowView: View {
         return displayedItems.first(where: { $0.id == selectedItemID })
     }
 
+    private var pullRequestFocusTaskID: String? {
+        guard let item = selectedItem, item.pullRequestReference != nil else {
+            return nil
+        }
+
+        return "\(item.ignoreKey)#\(item.timestamp.timeIntervalSince1970)"
+    }
+
     private var selectionBinding: Binding<AttentionItem.ID?> {
         Binding(
             get: { selectedItemID },
@@ -163,10 +180,12 @@ struct AttentionWindowView: View {
                 let selectionChanged = selectedItemID != newValue
                 selectedItemID = newValue
 
-                if selectionChanged {
-                    armAutoMarkReadForCurrentSelection()
+                    if selectionChanged {
+                        pullRequestFocusState = .idle
+                        reviewMergeState = .idle
+                        armAutoMarkReadForCurrentSelection()
+                    }
                 }
-            }
         )
     }
 
@@ -225,6 +244,7 @@ struct AttentionWindowView: View {
                 }
                 .disabled(model.isRefreshing)
                 .buttonStyle(.borderless)
+                .appInteractiveHover(backgroundOpacity: 0.08, cornerRadius: 8)
                 .help("Refresh")
             }
 
@@ -285,6 +305,7 @@ struct AttentionWindowView: View {
             )
         }
         .buttonStyle(.plain)
+        .appInteractiveHover(backgroundOpacity: listFilter == .unread ? 0 : 0.08, cornerRadius: 999)
         .help(listFilter == .unread ? "Show all items" : "Show unread items")
         .accessibilityLabel(listFilter == .unread ? "Showing unread items" : "Showing all items")
     }
@@ -301,8 +322,21 @@ struct AttentionWindowView: View {
                         for: item.timestamp,
                         relativeTo: referenceDate
                     ),
+                    referenceDate: referenceDate,
+                    pullRequestFocusState: pullRequestFocusState,
+                    reviewMergeState: reviewMergeState,
                     onOpenURL: { url in
                         openRelatedURL(url, for: item)
+                    },
+                    onPerformReviewMerge: {
+                        Task {
+                            await performReviewMergeForSelection()
+                        }
+                    },
+                    onRetryPullRequestFocus: {
+                        Task {
+                            await loadPullRequestFocusForSelection(force: true)
+                        }
                     }
                 )
             } else {
@@ -322,6 +356,7 @@ struct AttentionWindowView: View {
             Button("Open Settings") {
                 openSettings()
             }
+            .appInteractiveHover()
         }
     }
 
@@ -350,6 +385,8 @@ struct AttentionWindowView: View {
 
         if previousSelectionID != selectedItemID {
             cancelAutoMarkReadTask()
+            pullRequestFocusState = .idle
+            reviewMergeState = .idle
         }
     }
 
@@ -396,10 +433,89 @@ struct AttentionWindowView: View {
         }
     }
 
+    private func performReviewMergeForSelection() async {
+        guard
+            let item = selectedItem,
+            case let .loaded(focus) = pullRequestFocusState,
+            let reviewMergeAction = focus.reviewMergeAction
+        else {
+            return
+        }
+
+        await MainActor.run {
+            reviewMergeState = .running
+        }
+
+        do {
+            try await model.approveAndMergePullRequest(
+                for: item,
+                requiresApproval: reviewMergeAction.requiresApproval
+            )
+            await MainActor.run {
+                reviewMergeState = .idle
+            }
+            await loadPullRequestFocusForSelection(force: true)
+        } catch {
+            await MainActor.run {
+                reviewMergeState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
     private func cancelAutoMarkReadTask() {
         autoMarkReadTask?.cancel()
         autoMarkReadTask = nil
     }
+
+    private func loadPullRequestFocusForSelection(force: Bool = false) async {
+        guard let item = selectedItem, item.pullRequestReference != nil, model.hasToken else {
+            await MainActor.run {
+                pullRequestFocusState = .idle
+            }
+            return
+        }
+
+        let expectedItemID = item.id
+        await MainActor.run {
+            pullRequestFocusState = .loading
+        }
+
+        do {
+            let focus = try await model.fetchPullRequestFocus(for: item, force: force)
+            await MainActor.run {
+                guard selectedItem?.id == expectedItemID else {
+                    return
+                }
+
+                if let focus {
+                    pullRequestFocusState = .loaded(focus)
+                } else {
+                    pullRequestFocusState = .idle
+                }
+            }
+        } catch {
+            await MainActor.run {
+                guard selectedItem?.id == expectedItemID else {
+                    return
+                }
+
+                pullRequestFocusState = .failed(error.localizedDescription)
+            }
+        }
+    }
+}
+
+private enum PullRequestFocusLoadState: Equatable {
+    case idle
+    case loading
+    case loaded(PullRequestFocus)
+    case failed(String)
+}
+
+private enum PullRequestReviewMergeState: Equatable {
+    case idle
+    case running
+    case failed(String)
 }
 
 private struct AttentionSidebarRow: View {
@@ -448,7 +564,12 @@ private struct AttentionDetailView: View {
     let item: AttentionItem
     let absoluteTimestamp: String
     let relativeTimestamp: String
+    let referenceDate: Date
+    let pullRequestFocusState: PullRequestFocusLoadState
+    let reviewMergeState: PullRequestReviewMergeState
     let onOpenURL: (URL) -> Void
+    let onPerformReviewMerge: () -> Void
+    let onRetryPullRequestFocus: () -> Void
 
     private var visibleEvidence: [AttentionEvidence] {
         item.detail.evidence.filter { evidence in
@@ -456,51 +577,38 @@ private struct AttentionDetailView: View {
         }
     }
 
+    private var loadedPullRequestFocus: PullRequestFocus? {
+        guard case let .loaded(focus) = pullRequestFocusState else {
+            return nil
+        }
+
+        return focus
+    }
+
+    private var headerPillTitleOverride: String? {
+        switch item.type {
+        case .assignedPullRequest:
+            return "Assigned to you"
+        case .readyToMerge:
+            return "Your PR was approved"
+        default:
+            return nil
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 12) {
-                    EventBadge(type: item.type, size: 40)
+                    HStack(alignment: .top, spacing: 18) {
+                        EventBadge(type: item.type, size: 40)
 
-                    DetailTitleLinkButton(
-                        title: item.title,
-                        action: {
-                            onOpenURL(item.url)
-                        }
-                    )
-
-                    HStack(alignment: .center, spacing: 10) {
-                        AttentionTypePill(type: item.type)
-
-                        if let actor = item.actor {
-                            Text("by")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-
-                            DetailActorAvatar(actor: actor, size: 20)
-
-                            if actor.isBotAccount {
-                                Text(actor.login)
-                                    .font(.subheadline.weight(.medium))
-                                    .foregroundStyle(.primary)
-                            } else {
-                                Button(actor.login) {
-                                    onOpenURL(actor.profileURL)
-                                }
-                                    .font(.subheadline.weight(.medium))
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(.tint)
+                        DetailTitleLinkButton(
+                            title: item.title,
+                            action: {
+                                onOpenURL(item.url)
                             }
-
-                            Text("·")
-                                .font(.subheadline)
-                                .foregroundStyle(.tertiary)
-                        }
-
-                        Text(relativeTimestamp)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .help(absoluteTimestamp)
+                        )
                     }
 
                     if let repository = item.repository {
@@ -508,11 +616,18 @@ private struct AttentionDetailView: View {
                             Button {
                                 onOpenURL(repositoryURL)
                             } label: {
-                                Text(repository)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
+                                HStack(alignment: .center, spacing: 6) {
+                                    Text(repository)
+                                        .font(.subheadline)
+
+                                    Image(systemName: "arrow.up.right")
+                                        .font(.caption.weight(.semibold))
+                                }
+                                .foregroundStyle(.secondary)
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .appLinkHover()
                             .help("Open repository on GitHub")
                         } else {
                             Text(repository)
@@ -520,9 +635,64 @@ private struct AttentionDetailView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+
+                    if let focus = loadedPullRequestFocus {
+                        HStack(alignment: .center, spacing: 10) {
+                            AttentionTypePill(
+                                type: item.type,
+                                titleOverride: headerPillTitleOverride
+                            )
+
+                            ForEach(focus.headerFacts.indices, id: \.self) { index in
+                                Text("·")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.tertiary)
+
+                                PullRequestHeaderFactView(
+                                    fact: focus.headerFacts[index],
+                                    onOpenURL: onOpenURL
+                                )
+                            }
+
+                            Text("·")
+                                .font(.subheadline)
+                                .foregroundStyle(.tertiary)
+
+                            Text(relativeTimestamp)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .help(absoluteTimestamp)
+                        }
+                    } else {
+                        HStack(alignment: .center, spacing: 10) {
+                            AttentionTypePill(type: item.type, titleOverride: headerPillTitleOverride)
+
+                            if let actor = item.actor {
+                                Text(item.type == .readyToMerge ? "approved by" : "by")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+
+                                DetailActorAvatar(actor: actor, size: 20)
+
+                                ActorLinkLabel(
+                                    actor: actor,
+                                    onOpenURL: onOpenURL
+                                )
+                            }
+
+                            Text("·")
+                                .font(.subheadline)
+                                .foregroundStyle(.tertiary)
+
+                            Text(relativeTimestamp)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .help(absoluteTimestamp)
+                        }
+                    }
                 }
 
-                if !visibleEvidence.isEmpty {
+                if item.pullRequestReference == nil && !visibleEvidence.isEmpty {
                     DetailCard {
                         VStack(alignment: .leading, spacing: 14) {
                             ForEach(visibleEvidence) { evidence in
@@ -534,9 +704,59 @@ private struct AttentionDetailView: View {
                         }
                     }
                 }
+
+                pullRequestFocusContent
             }
             .padding(32)
-            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var pullRequestFocusContent: some View {
+        switch pullRequestFocusState {
+        case .idle:
+            EmptyView()
+        case .loading:
+            if item.pullRequestReference != nil {
+                DetailCard {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                            .controlSize(.small)
+
+                        Text("Loading pull request details…")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        case let .failed(message):
+            if item.pullRequestReference != nil {
+                DetailCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Could not load pull request details")
+                            .font(.headline)
+
+                        Text(message)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+
+                        Button("Retry") {
+                            onRetryPullRequestFocus()
+                        }
+                        .appInteractiveHover()
+                    }
+                }
+            }
+        case let .loaded(focus):
+            PullRequestFocusView(
+                focus: focus,
+                referenceDate: referenceDate,
+                reviewMergeState: reviewMergeState,
+                onOpenURL: onOpenURL,
+                onPerformReviewMerge: onPerformReviewMerge
+            )
         }
     }
 }
@@ -544,8 +764,6 @@ private struct AttentionDetailView: View {
 private struct DetailTitleLinkButton: View {
     let title: String
     let action: () -> Void
-
-    @State private var isHovering = false
 
     var body: some View {
         Button(action: action) {
@@ -564,29 +782,8 @@ private struct DetailTitleLinkButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .appLinkHover()
         .help("Open on GitHub")
-        .onHover(perform: updateHoverState)
-        .onDisappear {
-            if isHovering {
-                NSCursor.pop()
-                isHovering = false
-            }
-        }
-        .animation(.easeInOut(duration: 0.12), value: isHovering)
-    }
-
-    private func updateHoverState(_ hovering: Bool) {
-        guard hovering != isHovering else {
-            return
-        }
-
-        isHovering = hovering
-
-        if hovering {
-            NSCursor.pointingHand.push()
-        } else {
-            NSCursor.pop()
-        }
     }
 }
 
@@ -620,6 +817,7 @@ private struct DetailEvidenceRow: View {
                     onOpenURL(url)
                 }
                 .buttonStyle(.link)
+                .appLinkHover()
             }
         }
     }
@@ -656,6 +854,574 @@ private struct DetailCard<Content: View>: View {
     }
 }
 
+private struct PullRequestFocusView: View {
+    let focus: PullRequestFocus
+    let referenceDate: Date
+    let reviewMergeState: PullRequestReviewMergeState
+    let onOpenURL: (URL) -> Void
+    let onPerformReviewMerge: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if !focus.contextBadges.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(focus.contextBadges) { badge in
+                            PullRequestContextBadgeView(badge: badge)
+                        }
+                    }
+                }
+            }
+
+            if focus.reviewMergeAction != nil || !focus.actions.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        if let reviewMergeAction = focus.reviewMergeAction {
+                            Button {
+                                onPerformReviewMerge()
+                            } label: {
+                                if reviewMergeState == .running {
+                                    HStack(spacing: 8) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                        Text(
+                                            reviewMergeAction.requiresApproval
+                                                ? "Approving and Merging…"
+                                                : "Merging…"
+                                        )
+                                    }
+                                } else {
+                                    Label(
+                                        reviewMergeAction.title,
+                                        systemImage: reviewMergeAction.requiresApproval
+                                            ? "checkmark.circle.badge.questionmark"
+                                            : "checkmark.circle"
+                                    )
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(reviewMergeAction.isEnabled ? .green : nil)
+                            .disabled(reviewMergeState == .running || !reviewMergeAction.isEnabled)
+                            .appInteractiveHover()
+                        }
+
+                        ForEach(focus.actions) { action in
+                            if action.isPrimary {
+                                Button {
+                                    onOpenURL(action.url)
+                                } label: {
+                                    Label(action.title, systemImage: action.iconName)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(action.id == "merge" ? .green : nil)
+                                .appInteractiveHover()
+                            } else {
+                                Button {
+                                    onOpenURL(action.url)
+                                } label: {
+                                    Label(action.title, systemImage: action.iconName)
+                                }
+                                .buttonStyle(.bordered)
+                                .appInteractiveHover()
+                            }
+                        }
+                    }
+                }
+
+                if let reviewMergeAction = focus.reviewMergeAction {
+                    if case let .failed(message) = reviewMergeState {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    } else if let disabledReason = reviewMergeAction.disabledReason,
+                        !reviewMergeAction.isEnabled {
+                        Text(disabledReason)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            if let statusSummary = focus.statusSummary {
+                PullRequestStatusSummaryCard(summary: statusSummary)
+            }
+
+            if let descriptionHTML = focus.descriptionHTML {
+                DetailCard(title: "Description") {
+                    PullRequestDescriptionView(
+                        html: descriptionHTML,
+                        baseURL: focus.reference.pullRequestURL
+                    )
+                }
+            }
+
+            if focus.sections.isEmpty {
+                if focus.statusSummary == nil {
+                    DetailCard {
+                        HStack(alignment: .top, spacing: 14) {
+                            Image(systemName: emptyStateIconName)
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(emptyStateColor)
+                                .frame(width: 24, height: 24)
+                                .padding(.top, 2)
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(focus.emptyStateTitle)
+                                    .font(.headline)
+
+                                Text(focus.emptyStateDetail)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            } else {
+                ForEach(focus.sections) { section in
+                    DetailCard(title: section.title) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(section.items) { entry in
+                                PullRequestFocusEntryRow(
+                                    entry: entry,
+                                    referenceDate: referenceDate,
+                                    onOpenURL: onOpenURL
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var emptyStateIconName: String {
+        switch focus.mode {
+        case .authored:
+            return "checkmark.circle.fill"
+        case .participating, .generic:
+            return "checkmark.circle"
+        }
+    }
+
+    private var emptyStateColor: Color {
+        switch focus.mode {
+        case .authored:
+            return .green
+        case .participating, .generic:
+            return .secondary
+        }
+    }
+}
+
+private struct PullRequestContextBadgeView: View {
+    let badge: PullRequestContextBadge
+
+    var body: some View {
+        Label(badge.title, systemImage: badge.iconName)
+            .font(.subheadline.weight(.medium))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(accentColor.opacity(0.14))
+            )
+            .foregroundStyle(accentColor)
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(accentColor.opacity(0.2), lineWidth: 1)
+            )
+    }
+
+    private var accentColor: Color {
+        color(for: badge.accent)
+    }
+}
+
+private struct PullRequestHeaderFactView: View {
+    let fact: PullRequestHeaderFact
+    let onOpenURL: (URL) -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text(fact.label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            DetailActorAvatar(actor: fact.actor, size: 20)
+
+            ActorLinkLabel(
+                actor: fact.actor,
+                onOpenURL: onOpenURL
+            )
+
+            if let overflowLabel = fact.overflowLabel {
+                Text(overflowLabel)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct ActorLinkLabel: View {
+    let actor: AttentionActor
+    let onOpenURL: (URL) -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 6) {
+            Button(actor.login) {
+                onOpenURL(actor.profileURL)
+            }
+            .font(.subheadline.weight(.medium))
+            .buttonStyle(.plain)
+            .appLinkHover()
+            .foregroundStyle(actor.isBotAccount ? Color.primary : Color.accentColor)
+
+            if actor.isBotAccount {
+                BotAccountChip(login: actor.login)
+            }
+        }
+    }
+}
+
+private struct BotAccountChip: View {
+    let login: String
+
+    var body: some View {
+        Image(systemName: "cpu")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.secondary.opacity(0.14))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
+            )
+            .help("\(login) is a bot account")
+    }
+}
+
+private struct PullRequestStatusSummaryCard: View {
+    let summary: PullRequestStatusSummary
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: summary.iconName)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(accentColor)
+                .frame(width: 24, height: 24)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(summary.title)
+                    .font(.headline)
+
+                Text(summary.detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(accentColor.opacity(0.07))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(accentColor.opacity(0.2), lineWidth: 1)
+        )
+    }
+
+    private var accentColor: Color {
+        color(for: summary.accent)
+    }
+}
+
+private struct PullRequestDescriptionView: View {
+    let html: String
+    let baseURL: URL
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        RichHTMLTextView(
+            html: htmlDocument,
+            baseURL: baseURL
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var htmlDocument: String {
+        """
+        <!doctype html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>
+            :root {
+              color-scheme: \(colorScheme == .dark ? "dark" : "light");
+              --text: \(colorScheme == .dark ? "#f5f5f7" : "#1c1c1e");
+              --muted: \(colorScheme == .dark ? "#a1a1aa" : "#6b7280");
+              --link: \(colorScheme == .dark ? "#6cb6ff" : "#0969da");
+              --border: \(colorScheme == .dark ? "#3f3f46" : "#d0d7de");
+              --surface: \(colorScheme == .dark ? "#18181b" : "#f6f8fa");
+              --surface-strong: \(colorScheme == .dark ? "#27272a" : "#ffffff");
+              --warning-bg: \(colorScheme == .dark ? "#3a2a0c" : "#fff8c5");
+              --warning-border: \(colorScheme == .dark ? "#7c5e10" : "#d4a72c");
+            }
+            body {
+              margin: 0;
+              color: var(--text);
+              font: 14px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+              word-wrap: break-word;
+            }
+            p, ul, ol, pre, table, blockquote, hr, h1, h2, h3, h4, h5, h6 {
+              margin: 0 0 12px 0;
+            }
+            a {
+              color: var(--link);
+              text-decoration: none;
+            }
+            a:hover {
+              text-decoration: underline;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              background: var(--surface-strong);
+              border: 1px solid var(--border);
+              border-radius: 10px;
+              overflow: hidden;
+              display: table;
+            }
+            th, td {
+              padding: 8px 10px;
+              border: 1px solid var(--border);
+              text-align: left;
+              vertical-align: top;
+            }
+            code {
+              font: 12px/1.5 "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
+              background: var(--surface);
+              padding: 2px 5px;
+              border-radius: 6px;
+            }
+            pre {
+              padding: 12px;
+              border-radius: 10px;
+              background: var(--surface);
+              overflow-x: auto;
+            }
+            pre code {
+              padding: 0;
+              background: transparent;
+            }
+            hr {
+              border: 0;
+              border-top: 1px solid var(--border);
+            }
+            blockquote {
+              padding-left: 12px;
+              border-left: 3px solid var(--border);
+              color: var(--muted);
+            }
+            .markdown-alert {
+              padding: 12px 14px;
+              border-radius: 12px;
+              border: 1px solid var(--warning-border);
+              background: var(--warning-bg);
+              margin-bottom: 12px;
+            }
+            .markdown-alert-title {
+              margin: 0 0 6px 0;
+              font-weight: 700;
+            }
+            .markdown-alert svg {
+              display: none;
+            }
+            .contains-task-list {
+              padding-left: 0;
+              list-style: none;
+            }
+            .task-list-item-checkbox {
+              margin-right: 8px;
+            }
+            markdown-accessiblity-table {
+              display: block;
+              overflow-x: auto;
+            }
+          </style>
+        </head>
+        <body>
+        \(html)
+        </body>
+        </html>
+        """
+    }
+}
+
+private struct RichHTMLTextView: NSViewRepresentable {
+    let html: String
+    let baseURL: URL
+
+    func makeNSView(context: Context) -> SelfSizingTextView {
+        let textView = SelfSizingTextView(frame: .zero)
+        textView.drawsBackground = false
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.textContainerInset = NSSize(width: 0, height: 0)
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.widthTracksTextView = true
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.linkTextAttributes = [
+            .foregroundColor: NSColor.linkColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue
+        ]
+        return textView
+    }
+
+    func updateNSView(_ textView: SelfSizingTextView, context: Context) {
+        let attributed = (try? attributedHTML()) ?? NSAttributedString(string: "")
+        textView.textStorage?.setAttributedString(attributed)
+        textView.invalidateIntrinsicContentSize()
+    }
+
+    private func attributedHTML() throws -> NSAttributedString {
+        guard let data = html.data(using: .utf8) else {
+            return NSAttributedString(string: "")
+        }
+
+        return try NSAttributedString(
+            data: data,
+            options: [
+                .documentType: NSAttributedString.DocumentType.html,
+                .characterEncoding: String.Encoding.utf8.rawValue,
+                .baseURL: baseURL
+            ],
+            documentAttributes: nil
+        )
+    }
+}
+
+private final class SelfSizingTextView: NSTextView {
+    override var intrinsicContentSize: NSSize {
+        guard let layoutManager, let textContainer else {
+            return super.intrinsicContentSize
+        }
+
+        layoutManager.ensureLayout(for: textContainer)
+        let usedRect = layoutManager.usedRect(for: textContainer)
+        return NSSize(
+            width: NSView.noIntrinsicMetric,
+            height: ceil(usedRect.height + textContainerInset.height * 2)
+        )
+    }
+
+    override func layout() {
+        super.layout()
+        invalidateIntrinsicContentSize()
+    }
+}
+
+private func color(for accent: PullRequestFocusEntryAccent) -> Color {
+    switch accent {
+    case .neutral:
+        return .secondary
+    case .warning:
+        return .orange
+    case .failure:
+        return .red
+    case .success:
+        return .green
+    case .change:
+        return .teal
+    }
+}
+
+private struct PullRequestFocusEntryRow: View {
+    let entry: PullRequestFocusEntry
+    let referenceDate: Date
+    let onOpenURL: (URL) -> Void
+
+    private let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+
+    private let absoluteFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: entry.iconName)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(accentColor)
+                .frame(width: 20, height: 20)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(entry.title)
+                    .font(.subheadline.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let detail = entry.detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 8) {
+                    if let metadata = entry.metadata, !metadata.isEmpty {
+                        Text(metadata)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let timestamp = entry.timestamp {
+                        if entry.metadata != nil {
+                            Text("·")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+
+                        Text(relativeFormatter.localizedString(for: timestamp, relativeTo: referenceDate))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .help(absoluteFormatter.string(from: timestamp))
+                    }
+                }
+            }
+
+            Spacer(minLength: 12)
+
+            if let url = entry.url {
+                Button("Open") {
+                    onOpenURL(url)
+                }
+                .buttonStyle(.link)
+                .appInteractiveHover(scale: 0.992, opacity: 0.99)
+            }
+        }
+    }
+
+    private var accentColor: Color {
+        color(for: entry.accent)
+    }
+}
+
 private struct EventBadge: View {
     let type: AttentionItemType
     var size: CGFloat = 24
@@ -675,9 +1441,15 @@ private struct EventBadge: View {
 
 private struct AttentionTypePill: View {
     let type: AttentionItemType
+    let titleOverride: String?
+
+    init(type: AttentionItemType, titleOverride: String? = nil) {
+        self.type = type
+        self.titleOverride = titleOverride
+    }
 
     var body: some View {
-        Label(type.accessibilityLabel, systemImage: type.iconName)
+        Label(titleOverride ?? type.accessibilityLabel, systemImage: type.iconName)
             .font(.subheadline.weight(.medium))
             .padding(.horizontal, 10)
             .padding(.vertical, 6)

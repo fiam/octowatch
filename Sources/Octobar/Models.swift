@@ -249,13 +249,27 @@ enum AttentionItemType: String, Hashable, Sendable {
 struct AttentionActor: Hashable, Sendable {
     let login: String
     let avatarURL: URL?
+    private let profileURLOverride: URL?
+    private let isBotOverride: Bool?
+
+    init(login: String, avatarURL: URL?, profileURL: URL? = nil, isBot: Bool? = nil) {
+        self.login = login
+        self.avatarURL = avatarURL
+        self.profileURLOverride = profileURL
+        self.isBotOverride = isBot
+    }
 
     var isBotAccount: Bool {
-        login.lowercased().hasSuffix("[bot]")
+        if let isBotOverride {
+            return isBotOverride
+        }
+
+        let normalized = login.lowercased()
+        return normalized.hasSuffix("[bot]") || normalized.hasPrefix("app/")
     }
 
     var profileURL: URL {
-        URL(string: "https://github.com/\(login)")!
+        profileURLOverride ?? URL(string: "https://github.com/\(login)")!
     }
 }
 
@@ -318,6 +332,468 @@ struct AttentionDetail: Hashable, Sendable {
     let evidence: [AttentionEvidence]
     let actions: [AttentionAction]
     let acknowledgement: String?
+}
+
+struct PullRequestReference: Hashable, Sendable {
+    let owner: String
+    let name: String
+    let number: Int
+
+    var repository: String {
+        "\(owner)/\(name)"
+    }
+
+    var pullRequestURL: URL {
+        URL(string: "https://github.com/\(repository)/pull/\(number)")!
+    }
+
+    var filesURL: URL {
+        pullRequestURL.appending(path: "files")
+    }
+
+    var commitsURL: URL {
+        pullRequestURL.appending(path: "commits")
+    }
+
+    var checksURL: URL {
+        pullRequestURL.appending(path: "checks")
+    }
+}
+
+enum PullRequestFocusMode: String, Hashable, Sendable {
+    case authored
+    case participating
+    case generic
+
+    var summary: String {
+        switch self {
+        case .authored:
+            return "Prioritize unresolved conversations first, then failing checks."
+        case .participating:
+            return "Prioritize your open threads first, then changes since your review."
+        case .generic:
+            return "Showing the most actionable pull request signals available."
+        }
+    }
+}
+
+enum PullRequestFocusEntryAccent: String, Hashable, Sendable {
+    case neutral
+    case warning
+    case failure
+    case success
+    case change
+}
+
+struct PullRequestFocusEntry: Identifiable, Hashable, Sendable {
+    let id: String
+    let title: String
+    let detail: String?
+    let metadata: String?
+    let timestamp: Date?
+    let iconName: String
+    let accent: PullRequestFocusEntryAccent
+    let url: URL?
+}
+
+struct PullRequestFocusSection: Identifiable, Hashable, Sendable {
+    let id: String
+    let title: String
+    let items: [PullRequestFocusEntry]
+}
+
+struct PullRequestFocus: Hashable, Sendable {
+    let reference: PullRequestReference
+    let sourceType: AttentionItemType
+    let mode: PullRequestFocusMode
+    let author: AttentionActor?
+    let headerFacts: [PullRequestHeaderFact]
+    let contextBadges: [PullRequestContextBadge]
+    let descriptionHTML: String?
+    let statusSummary: PullRequestStatusSummary?
+    let sections: [PullRequestFocusSection]
+    let actions: [AttentionAction]
+    let reviewMergeAction: PullRequestReviewMergeAction?
+    let emptyStateTitle: String
+    let emptyStateDetail: String
+}
+
+struct PullRequestHeaderFact: Identifiable, Hashable, Sendable {
+    let id: String
+    let label: String
+    let actor: AttentionActor
+    let additionalActorCount: Int
+
+    var overflowLabel: String? {
+        guard additionalActorCount > 0 else {
+            return nil
+        }
+
+        let noun = additionalActorCount == 1 ? "person" : "people"
+        return "and \(additionalActorCount) more \(noun)"
+    }
+}
+
+struct PullRequestFocusResult: Sendable {
+    let focus: PullRequestFocus
+    let rateLimit: GitHubRateLimit?
+}
+
+struct PullRequestContextBadge: Identifiable, Hashable, Sendable {
+    let id: String
+    let title: String
+    let iconName: String
+    let accent: PullRequestFocusEntryAccent
+}
+
+struct PullRequestReviewMergeAction: Hashable, Sendable {
+    let title: String
+    let requiresApproval: Bool
+    let isEnabled: Bool
+    let disabledReason: String?
+}
+
+struct PullRequestStatusSummary: Hashable, Sendable {
+    let title: String
+    let detail: String
+    let iconName: String
+    let accent: PullRequestFocusEntryAccent
+}
+
+struct PullRequestCheckSummary: Hashable, Sendable {
+    let passedCount: Int
+    let skippedCount: Int
+    let failedCount: Int
+    let pendingCount: Int
+
+    static let empty = PullRequestCheckSummary(
+        passedCount: 0,
+        skippedCount: 0,
+        failedCount: 0,
+        pendingCount: 0
+    )
+
+    var totalCount: Int {
+        passedCount + skippedCount + failedCount + pendingCount
+    }
+
+    var hasFailures: Bool {
+        failedCount > 0
+    }
+
+    var hasPending: Bool {
+        pendingCount > 0
+    }
+
+    var isClear: Bool {
+        !hasFailures && !hasPending
+    }
+
+    var detail: String {
+        var segments = [String]()
+
+        if failedCount > 0 {
+            segments.append(Self.countLabel(failedCount, word: "failed"))
+        }
+        if pendingCount > 0 {
+            segments.append(Self.countLabel(pendingCount, word: "pending"))
+        }
+        if passedCount > 0 {
+            segments.append(Self.countLabel(passedCount, word: "passed"))
+        }
+        if skippedCount > 0 {
+            segments.append(Self.countLabel(skippedCount, word: "skipped"))
+        }
+
+        if segments.isEmpty {
+            return "No checks reported."
+        }
+
+        return segments.joined(separator: " · ")
+    }
+
+    private static func countLabel(_ count: Int, word: String) -> String {
+        "\(count) \(word)"
+    }
+}
+
+extension PullRequestContextBadge {
+    static func badges(
+        for sourceType: AttentionItemType,
+        author: AttentionActor?
+    ) -> [PullRequestContextBadge] {
+        []
+    }
+}
+
+extension PullRequestHeaderFact {
+    static func build(
+        sourceType: AttentionItemType,
+        author: AttentionActor?,
+        assigner: AttentionActor?,
+        latestApprover: AttentionActor?,
+        approvalCount: Int
+    ) -> [PullRequestHeaderFact] {
+        switch sourceType {
+        case .readyToMerge:
+            guard let latestApprover else {
+                return []
+            }
+
+            return [
+                PullRequestHeaderFact(
+                    id: "approved-by",
+                    label: "approved by",
+                    actor: latestApprover,
+                    additionalActorCount: max(0, approvalCount - 1)
+                )
+            ]
+
+        case .assignedPullRequest:
+            var facts = [PullRequestHeaderFact]()
+
+            if let author {
+                facts.append(
+                    PullRequestHeaderFact(
+                        id: "created-by",
+                        label: "created by",
+                        actor: author,
+                        additionalActorCount: 0
+                    )
+                )
+            }
+
+            if let assigner {
+                facts.append(
+                    PullRequestHeaderFact(
+                        id: "assigned-by",
+                        label: "assigned by",
+                        actor: assigner,
+                        additionalActorCount: 0
+                    )
+                )
+            }
+
+            return facts
+
+        default:
+            guard let author else {
+                return []
+            }
+
+            return [
+                PullRequestHeaderFact(
+                    id: "created-by",
+                    label: "created by",
+                    actor: author,
+                    additionalActorCount: 0
+                )
+            ]
+        }
+    }
+}
+
+extension PullRequestReviewMergeAction {
+    static func makeBotAssignedAction(
+        sourceType: AttentionItemType,
+        author: AttentionActor?,
+        mergeable: String?,
+        isDraft: Bool,
+        reviewDecision: String?,
+        checkSummary: PullRequestCheckSummary,
+        openThreadCount: Int
+    ) -> PullRequestReviewMergeAction? {
+        guard sourceType == .assignedPullRequest, author?.isBotAccount == true else {
+            return nil
+        }
+
+        let requiresApproval = reviewDecision?.caseInsensitiveCompare("APPROVED") != .orderedSame
+        let title = requiresApproval ? "Approve and Merge" : "Merge Pull Request"
+
+        if isDraft {
+            return PullRequestReviewMergeAction(
+                title: title,
+                requiresApproval: requiresApproval,
+                isEnabled: false,
+                disabledReason: "This pull request is still a draft."
+            )
+        }
+
+        if mergeable?.caseInsensitiveCompare("MERGEABLE") != .orderedSame {
+            return PullRequestReviewMergeAction(
+                title: title,
+                requiresApproval: requiresApproval,
+                isEnabled: false,
+                disabledReason: "GitHub does not consider this pull request mergeable yet."
+            )
+        }
+
+        if openThreadCount > 0 {
+            return PullRequestReviewMergeAction(
+                title: title,
+                requiresApproval: requiresApproval,
+                isEnabled: false,
+                disabledReason: "Resolve the open review conversations first."
+            )
+        }
+
+        if checkSummary.hasFailures {
+            return PullRequestReviewMergeAction(
+                title: title,
+                requiresApproval: requiresApproval,
+                isEnabled: false,
+                disabledReason: "Some checks are failing."
+            )
+        }
+
+        if checkSummary.hasPending {
+            return PullRequestReviewMergeAction(
+                title: title,
+                requiresApproval: requiresApproval,
+                isEnabled: false,
+                disabledReason: "Checks are still running."
+            )
+        }
+
+        return PullRequestReviewMergeAction(
+            title: title,
+            requiresApproval: requiresApproval,
+            isEnabled: true,
+            disabledReason: nil
+        )
+    }
+}
+
+extension AttentionAction {
+    static func pullRequestActions(
+        reference: PullRequestReference,
+        sourceType: AttentionItemType,
+        mode: PullRequestFocusMode,
+        reviewDecision: String?,
+        mergeable: String?,
+        checkSummary: PullRequestCheckSummary,
+        hasNewCommits: Bool
+    ) -> [AttentionAction] {
+        var actions = [AttentionAction]()
+        let canMergeOnGitHub = mode == .authored &&
+            reviewDecision?.caseInsensitiveCompare("APPROVED") == .orderedSame &&
+            mergeable?.caseInsensitiveCompare("MERGEABLE") == .orderedSame
+
+        if canMergeOnGitHub {
+            actions.append(
+                AttentionAction(
+                    id: "merge",
+                    title: "Merge on GitHub",
+                    iconName: "checkmark.circle",
+                    url: reference.pullRequestURL,
+                    isPrimary: true
+                )
+            )
+        }
+
+        actions.append(
+            AttentionAction(
+                id: "view-pr",
+                title: "View on GitHub",
+                iconName: "arrow.up.right.square",
+                url: reference.pullRequestURL,
+                isPrimary: !canMergeOnGitHub
+            )
+        )
+
+        actions.append(
+            AttentionAction(
+                id: "open-files",
+                title: "View Files",
+                iconName: "doc.text",
+                url: reference.filesURL
+            )
+        )
+
+        if checkSummary.totalCount > 0 || mode == .authored {
+            actions.append(
+                AttentionAction(
+                    id: "open-checks",
+                    title: "Open Checks",
+                    iconName: "checklist",
+                    url: reference.checksURL
+                )
+            )
+        }
+
+        if hasNewCommits {
+            actions.append(
+                AttentionAction(
+                    id: "open-commits",
+                    title: "View Commits",
+                    iconName: "clock.arrow.trianglehead.counterclockwise.rotate.90",
+                    url: reference.commitsURL
+                )
+            )
+        }
+
+        return actions
+    }
+}
+
+extension PullRequestStatusSummary {
+    static func build(
+        mode: PullRequestFocusMode,
+        checkSummary: PullRequestCheckSummary,
+        openThreadCount: Int,
+        reviewMergeAction: PullRequestReviewMergeAction?
+    ) -> PullRequestStatusSummary? {
+        if checkSummary.hasFailures {
+            return PullRequestStatusSummary(
+                title: checkSummary.failedCount == 1 ? "1 check failed" : "\(checkSummary.failedCount) checks failed",
+                detail: checkSummary.detail,
+                iconName: "xmark.octagon.fill",
+                accent: .failure
+            )
+        }
+
+        if checkSummary.hasPending {
+            return PullRequestStatusSummary(
+                title: "Checks still running",
+                detail: checkSummary.detail,
+                iconName: "clock.badge.exclamationmark",
+                accent: .warning
+            )
+        }
+
+        if let reviewMergeAction, reviewMergeAction.isEnabled {
+            return PullRequestStatusSummary(
+                title: reviewMergeAction.requiresApproval ? "Ready to approve and merge" : "Ready to merge",
+                detail: checkSummary.totalCount > 0
+                    ? checkSummary.detail
+                    : "There are no unresolved conversations or failing checks.",
+                iconName: "checkmark.circle.fill",
+                accent: .success
+            )
+        }
+
+        if mode == .authored && openThreadCount == 0 {
+            return PullRequestStatusSummary(
+                title: "Ready to merge",
+                detail: checkSummary.totalCount > 0
+                    ? checkSummary.detail
+                    : "There are no unresolved conversations or failing checks.",
+                iconName: "checkmark.circle.fill",
+                accent: .success
+            )
+        }
+
+        if checkSummary.totalCount > 0 && checkSummary.isClear {
+            return PullRequestStatusSummary(
+                title: "Checks look good",
+                detail: checkSummary.detail,
+                iconName: "checkmark.circle",
+                accent: .success
+            )
+        }
+
+        return nil
+    }
 }
 
 struct AttentionItem: Identifiable, Hashable, Sendable {
@@ -390,6 +866,11 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         }
 
         return URL(string: "https://github.com/\(repository)")
+    }
+
+    var pullRequestReference: PullRequestReference? {
+        Self.pullRequestReference(from: ignoreKey) ??
+            Self.pullRequestReference(from: url.absoluteString)
     }
 
     private static func defaultDetail(
@@ -491,6 +972,27 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         case .workflowApprovalRequired:
             return "A workflow run is waiting for approval before it can continue."
         }
+    }
+
+    private static func pullRequestReference(from value: String) -> PullRequestReference? {
+        guard let url = URL(string: value) else {
+            return nil
+        }
+
+        let components = url.pathComponents
+        guard components.count >= 5 else {
+            return nil
+        }
+
+        guard components[3] == "pull", let number = Int(components[4]) else {
+            return nil
+        }
+
+        return PullRequestReference(
+            owner: components[1],
+            name: components[2],
+            number: number
+        )
     }
 }
 
@@ -627,13 +1129,19 @@ struct GitHubRateLimit: Hashable, Sendable {
         now: Date = .now
     ) -> Int {
         var interval = max(userConfiguredSeconds, pollIntervalHintSeconds ?? 0)
+        let secondsUntilReset = resetAt.map { Int(ceil($0.timeIntervalSince(now))) }
 
         if let retryAfterSeconds {
             interval = max(interval, retryAfterSeconds)
         }
 
-        if isExhausted, let resetAt {
-            interval = max(interval, Int(ceil(resetAt.timeIntervalSince(now))))
+        if isExhausted, let secondsUntilReset {
+            interval = max(interval, secondsUntilReset)
+        } else if limit <= 100 {
+            let lowWatermark = max(1, limit / 5)
+            if remaining <= lowWatermark, let secondsUntilReset, secondsUntilReset > 0 {
+                interval = max(interval, secondsUntilReset)
+            }
         } else if remaining <= 25 {
             interval = max(interval, 900)
         } else if remaining <= 100 {

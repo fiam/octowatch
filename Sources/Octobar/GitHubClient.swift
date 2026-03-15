@@ -30,6 +30,7 @@ struct GitHubClient {
     private let session: URLSession
     private let decoder: JSONDecoder
     private let baseURL = URL(string: "https://api.github.com")!
+    private let graphQLURL = URL(string: "https://api.github.com/graphql")!
     private let notificationPageSize = 50
     private let steadyNotificationPageLimit = 2
     private let initialNotificationPageLimit = 5
@@ -47,6 +48,120 @@ struct GitHubClient {
         decoder.dateDecodingStrategy = .iso8601
         self.decoder = decoder
     }
+
+    private static let pullRequestFocusQuery = """
+    query PullRequestFocus($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+          title
+          bodyHTML
+          url
+          state
+          isDraft
+          reviewDecision
+          mergeable
+          viewerDidAuthor
+          headRefOid
+          author {
+            __typename
+            login
+            avatarUrl
+            url
+          }
+          timelineItems(last: 20, itemTypes: [ASSIGNED_EVENT]) {
+            nodes {
+              __typename
+              ... on AssignedEvent {
+                createdAt
+                actor {
+                  __typename
+                  login
+                  avatarUrl
+                  url
+                }
+                assignee {
+                  __typename
+                  ... on User {
+                    login
+                    avatarUrl
+                    url
+                  }
+                  ... on Bot {
+                    login
+                    avatarUrl
+                    url
+                  }
+                  ... on Mannequin {
+                    login
+                    avatarUrl
+                    url
+                  }
+                }
+              }
+            }
+          }
+          reviewThreads(first: 50) {
+            nodes {
+              id
+              isResolved
+              isOutdated
+              path
+              line
+              startLine
+              comments(first: 30) {
+                nodes {
+                  id
+                  body
+                  createdAt
+                  url
+                  outdated
+                  viewerDidAuthor
+                  author {
+                    __typename
+                    login
+                    avatarUrl
+                    url
+                  }
+                }
+              }
+            }
+          }
+          reviews(last: 50) {
+            nodes {
+              state
+              submittedAt
+              url
+              author {
+                __typename
+                login
+                avatarUrl
+                url
+              }
+            }
+          }
+          commits(last: 20) {
+            nodes {
+              commit {
+                oid
+                abbreviatedOid
+                messageHeadline
+                committedDate
+                url
+                author {
+                  user {
+                    __typename
+                    login
+                    avatarUrl
+                    url
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
 
     func validateToken(token: String) async throws -> String {
         let user: CurrentUser = try await request(path: "/user", token: token)
@@ -488,6 +603,199 @@ struct GitHubClient {
         )
     }
 
+    func fetchPullRequestFocus(
+        token: String,
+        login: String,
+        reference: PullRequestReference,
+        sourceType: AttentionItemType
+    ) async throws -> PullRequestFocusResult {
+        let observer = GitHubRateLimitObserver()
+        let response: PullRequestFocusQueryData = try await graphQLRequest(
+            query: Self.pullRequestFocusQuery,
+            variables: PullRequestFocusQueryVariables(
+                owner: reference.owner,
+                name: reference.name,
+                number: reference.number
+            ),
+            token: token,
+            observer: observer
+        )
+
+        guard let pullRequest = response.repository?.pullRequest else {
+            throw GitHubClientError.invalidResponse
+        }
+
+        let reviews = pullRequest.reviews.nodes.compactMap { $0 }
+        let threads = pullRequest.reviewThreads.nodes.compactMap { $0 }
+        let commits = pullRequest.commits.nodes.compactMap { $0?.commit }
+        let author = attentionActor(from: pullRequest.author)
+        let approvalSummary = latestApprovalSummary(
+            reviews: reviews,
+            excluding: login
+        )
+        let latestAssignment = pullRequest.timelineItems.nodes
+            .compactMap { $0 }
+            .filter {
+                guard let assignee = $0.assignee?.login else {
+                    return false
+                }
+
+                return assignee.caseInsensitiveCompare(login) == .orderedSame
+            }
+            .max { $0.createdAt < $1.createdAt }
+        let assigner = attentionActor(from: latestAssignment?.actor)
+        let headerFacts = PullRequestHeaderFact.build(
+            sourceType: sourceType,
+            author: author,
+            assigner: assigner,
+            latestApprover: approvalSummary.latestApprover,
+            approvalCount: approvalSummary.approvalCount
+        )
+        let contextBadges = PullRequestContextBadge.badges(
+            for: sourceType,
+            author: author
+        )
+        let latestViewerReview = reviews
+            .filter {
+                guard let reviewer = $0.author?.login else {
+                    return false
+                }
+
+                return reviewer.caseInsensitiveCompare(login) == .orderedSame &&
+                    $0.state.caseInsensitiveCompare("PENDING") != .orderedSame
+            }
+            .max { $0.submittedAt < $1.submittedAt }
+
+        let participatedThreads = threads.filter { thread in
+            thread.comments.nodes.compactMap { $0 }.contains(where: \.viewerDidAuthor)
+        }
+        let focusMode: PullRequestFocusMode
+        if pullRequest.viewerDidAuthor {
+            focusMode = .authored
+        } else if latestViewerReview != nil || !participatedThreads.isEmpty {
+            focusMode = .participating
+        } else {
+            focusMode = .generic
+        }
+
+        let relevantThreads: [PullRequestFocusThread]
+        switch focusMode {
+        case .authored, .generic:
+            relevantThreads = threads.compactMap(pullRequestFocusThread(from:))
+        case .participating:
+            relevantThreads = participatedThreads.compactMap(pullRequestFocusThread(from:))
+        }
+
+        let openThreads = relevantThreads.filter { !$0.isResolved && !$0.isOutdated }
+        let outdatedThreads = relevantThreads.filter { !$0.isResolved && $0.isOutdated }
+        let checkInsights = try await fetchCheckInsights(
+            token: token,
+            reference: reference,
+            headSHA: pullRequest.headRefOID,
+            observer: observer
+        )
+        let commitsSinceReview: [PullRequestFocusEntry]
+        if let latestViewerReview {
+            commitsSinceReview = focusCommitEntries(
+                from: commits.filter { $0.committedDate > latestViewerReview.submittedAt }
+            )
+        } else {
+            commitsSinceReview = []
+        }
+
+        let sections = buildPullRequestFocusSections(
+            mode: focusMode,
+            openThreads: openThreads,
+            outdatedThreads: outdatedThreads,
+            commitsSinceReview: commitsSinceReview,
+            failedChecks: checkInsights.failingEntries
+        )
+        let openThreadCount = openThreads.count + outdatedThreads.count
+        let reviewMergeAction = PullRequestReviewMergeAction.makeBotAssignedAction(
+            sourceType: sourceType,
+            author: author,
+            mergeable: pullRequest.mergeable,
+            isDraft: pullRequest.isDraft,
+            reviewDecision: pullRequest.reviewDecision,
+            checkSummary: checkInsights.summary,
+            openThreadCount: openThreadCount
+        )
+        let statusSummary = PullRequestStatusSummary.build(
+            mode: focusMode,
+            checkSummary: checkInsights.summary,
+            openThreadCount: openThreadCount,
+            reviewMergeAction: reviewMergeAction
+        )
+        let actions = AttentionAction.pullRequestActions(
+            reference: reference,
+            sourceType: sourceType,
+            mode: focusMode,
+            reviewDecision: pullRequest.reviewDecision,
+            mergeable: pullRequest.mergeable,
+            checkSummary: checkInsights.summary,
+            hasNewCommits: !commitsSinceReview.isEmpty
+        )
+
+        let focus = PullRequestFocus(
+            reference: reference,
+            sourceType: sourceType,
+            mode: focusMode,
+            author: author,
+            headerFacts: headerFacts,
+            contextBadges: contextBadges,
+            descriptionHTML: renderedPullRequestDescriptionHTML(pullRequest.bodyHTML),
+            statusSummary: statusSummary,
+            sections: sections,
+            actions: actions,
+            reviewMergeAction: reviewMergeAction,
+            emptyStateTitle: focusEmptyStateTitle(
+                for: focusMode,
+                reviewMergeAction: reviewMergeAction
+            ),
+            emptyStateDetail: focusEmptyStateDetail(
+                for: focusMode,
+                reviewMergeAction: reviewMergeAction
+            )
+        )
+
+        return PullRequestFocusResult(
+            focus: focus,
+            rateLimit: await observer.snapshot()
+        )
+    }
+
+    func approveAndMergePullRequest(
+        token: String,
+        reference: PullRequestReference,
+        approveFirst: Bool
+    ) async throws -> GitHubRateLimit? {
+        let observer = GitHubRateLimitObserver()
+
+        if approveFirst {
+            let _: PullRequestReviewSubmissionResponse = try await request(
+                method: "POST",
+                path: "/repos/\(reference.owner)/\(reference.name)/pulls/\(reference.number)/reviews",
+                body: PullRequestReviewSubmissionRequest(event: "APPROVE"),
+                token: token,
+                observer: observer
+            )
+        }
+
+        let mergeResponse: PullRequestMergeResponse = try await request(
+            method: "PUT",
+            path: "/repos/\(reference.owner)/\(reference.name)/pulls/\(reference.number)/merge",
+            body: PullRequestMergeRequest(),
+            token: token,
+            observer: observer
+        )
+
+        if !mergeResponse.merged {
+            throw GitHubClientError.api(statusCode: 200, message: mergeResponse.message)
+        }
+
+        return await observer.snapshot()
+    }
+
     private func resolveLogin(
         token: String,
         preferredLogin: String?,
@@ -557,6 +865,269 @@ struct GitHubClient {
         }
 
         return teams
+    }
+
+    private func buildPullRequestFocusSections(
+        mode: PullRequestFocusMode,
+        openThreads: [PullRequestFocusThread],
+        outdatedThreads: [PullRequestFocusThread],
+        commitsSinceReview: [PullRequestFocusEntry],
+        failedChecks: [PullRequestFocusEntry]
+    ) -> [PullRequestFocusSection] {
+        var sections = [PullRequestFocusSection]()
+        let sortedOpenThreads = openThreads.sorted { $0.latestActivityAt > $1.latestActivityAt }
+        let sortedOutdatedThreads = outdatedThreads.sorted { $0.latestActivityAt > $1.latestActivityAt }
+
+        if !sortedOpenThreads.isEmpty {
+            sections.append(
+                PullRequestFocusSection(
+                    id: "open-threads",
+                    title: mode == .participating ? "Your Open Conversations" : "Open Conversations",
+                    items: sortedOpenThreads.map(\.entry)
+                )
+            )
+        }
+
+        if !sortedOutdatedThreads.isEmpty {
+            sections.append(
+                PullRequestFocusSection(
+                    id: "outdated-threads",
+                    title: mode == .participating ? "Your Outdated Conversations" : "Outdated Conversations",
+                    items: sortedOutdatedThreads.map(\.entry)
+                )
+            )
+        }
+
+        if !commitsSinceReview.isEmpty {
+            sections.append(
+                PullRequestFocusSection(
+                    id: "changes-since-review",
+                    title: "Changes Since Your Review",
+                    items: commitsSinceReview
+                )
+            )
+        }
+
+        if !failedChecks.isEmpty {
+            sections.append(
+                PullRequestFocusSection(
+                    id: "failed-checks",
+                    title: "Failing Checks",
+                    items: failedChecks
+                )
+            )
+        }
+
+        return sections
+    }
+
+    private func focusEmptyStateTitle(
+        for mode: PullRequestFocusMode,
+        reviewMergeAction: PullRequestReviewMergeAction?
+    ) -> String {
+        if let reviewMergeAction, reviewMergeAction.isEnabled {
+            return reviewMergeAction.requiresApproval
+                ? "Ready to approve and merge"
+                : "Ready to merge"
+        }
+
+        switch mode {
+        case .authored:
+            return "Ready to merge"
+        case .participating:
+            return "No follow-up required right now"
+        case .generic:
+            return "No additional pull request signals"
+        }
+    }
+
+    private func focusEmptyStateDetail(
+        for mode: PullRequestFocusMode,
+        reviewMergeAction: PullRequestReviewMergeAction?
+    ) -> String {
+        if let reviewMergeAction, reviewMergeAction.isEnabled {
+            return reviewMergeAction.requiresApproval
+                ? "This bot PR is assigned to you, with no unresolved conversations or failing checks."
+                : "There are no unresolved conversations or failing checks."
+        }
+
+        switch mode {
+        case .authored:
+            return "There are no unresolved conversations or failing checks."
+        case .participating:
+            return "There are no open threads from you and no newer commits after your review."
+        case .generic:
+            return "Octowatch could not find any stronger PR-specific focus items here yet."
+        }
+    }
+
+    private func pullRequestFocusThread(
+        from thread: PullRequestFocusGraphQLReviewThread
+    ) -> PullRequestFocusThread? {
+        let comments = thread.comments.nodes.compactMap { $0 }
+        let latestComment = comments.max { $0.createdAt < $1.createdAt }
+        let locationTitle: String
+        if let path = thread.path {
+            if let line = thread.line ?? thread.startLine {
+                locationTitle = "\(path):\(line)"
+            } else {
+                locationTitle = path
+            }
+        } else {
+            locationTitle = "Conversation"
+        }
+
+        let entry = PullRequestFocusEntry(
+            id: thread.id,
+            title: locationTitle,
+            detail: latestComment.map { excerpt($0.body) } ?? "Thread is still unresolved.",
+            metadata: latestComment?.author?.login,
+            timestamp: latestComment?.createdAt,
+            iconName: thread.isOutdated ? "clock.arrow.trianglehead.counterclockwise.rotate.90" : "bubble.left.and.text.bubble.right",
+            accent: thread.isOutdated ? .warning : .neutral,
+            url: latestComment?.url
+        )
+
+        return PullRequestFocusThread(
+            isResolved: thread.isResolved,
+            isOutdated: thread.isOutdated,
+            latestActivityAt: latestComment?.createdAt ?? .distantPast,
+            entry: entry
+        )
+    }
+
+    private func focusCommitEntries(
+        from commits: [PullRequestFocusGraphQLCommit]
+    ) -> [PullRequestFocusEntry] {
+        commits
+            .sorted { $0.committedDate > $1.committedDate }
+            .map { commit in
+                PullRequestFocusEntry(
+                    id: "commit-\(commit.oid)",
+                    title: commit.messageHeadline,
+                    detail: commit.abbreviatedOID,
+                    metadata: commit.author?.user?.login,
+                    timestamp: commit.committedDate,
+                    iconName: "arrow.trianglehead.branch",
+                    accent: .change,
+                    url: commit.url
+                )
+            }
+    }
+
+    private func fetchCheckInsights(
+        token: String,
+        reference: PullRequestReference,
+        headSHA: String,
+        observer: GitHubRateLimitObserver
+    ) async throws -> PullRequestCheckInsights {
+        let response: CheckRunsResponse = try await request(
+            path: "/repos/\(reference.owner)/\(reference.name)/commits/\(headSHA)/check-runs",
+            queryItems: [
+                URLQueryItem(name: "per_page", value: "100")
+            ],
+            token: token,
+            observer: observer
+        )
+
+        let failingConclusions: Set<String> = [
+            "action_required",
+            "cancelled",
+            "failure",
+            "startup_failure",
+            "timed_out"
+        ]
+        let pendingStatuses: Set<String> = [
+            "queued",
+            "in_progress",
+            "waiting",
+            "pending",
+            "requested"
+        ]
+
+        var passedCount = 0
+        var skippedCount = 0
+        var failedCount = 0
+        var pendingCount = 0
+
+        let failingEntries = response.checkRuns
+            .filter { run in
+                let normalizedStatus = run.status.lowercased()
+                let normalizedConclusion = run.conclusion?.lowercased()
+
+                if pendingStatuses.contains(normalizedStatus) {
+                    pendingCount += 1
+                    return false
+                }
+
+                switch normalizedConclusion {
+                case "success":
+                    passedCount += 1
+                    return false
+                case "skipped", "neutral":
+                    skippedCount += 1
+                    return false
+                case let conclusion? where failingConclusions.contains(conclusion):
+                    failedCount += 1
+                    return true
+                default:
+                    if normalizedConclusion == nil {
+                        pendingCount += 1
+                    }
+                    return false
+                }
+            }
+            .sorted {
+                ($0.completedAt ?? $0.startedAt ?? .distantPast) >
+                    ($1.completedAt ?? $1.startedAt ?? .distantPast)
+            }
+            .map { run in
+                PullRequestFocusEntry(
+                    id: "check-\(run.id)",
+                    title: run.name,
+                    detail: run.conclusion?
+                        .replacingOccurrences(of: "_", with: " ")
+                        .capitalized,
+                    metadata: run.app?.slug,
+                    timestamp: run.completedAt ?? run.startedAt,
+                    iconName: "xmark.octagon",
+                    accent: .failure,
+                    url: run.htmlURL ?? run.detailsURL
+                )
+            }
+
+        return PullRequestCheckInsights(
+            summary: PullRequestCheckSummary(
+                passedCount: passedCount,
+                skippedCount: skippedCount,
+                failedCount: failedCount,
+                pendingCount: pendingCount
+            ),
+            failingEntries: failingEntries
+        )
+    }
+
+    private func renderedPullRequestDescriptionHTML(_ html: String) -> String? {
+        let trimmed = html.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private func excerpt(_ body: String) -> String {
+        let collapsed = body
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard collapsed.count > 140 else {
+            return collapsed
+        }
+
+        return String(collapsed.prefix(137)) + "..."
     }
 
     private func fetchAssignedPullRequests(
@@ -1714,6 +2285,43 @@ struct GitHubClient {
         )
     }
 
+    private func latestApprovalSummary(
+        reviews: [PullRequestFocusGraphQLReview],
+        excluding login: String
+    ) -> LatestApprovalSummary {
+        var latestByReviewer = [String: PullRequestFocusGraphQLReview]()
+
+        for review in reviews {
+            guard let reviewer = review.author?.login,
+                reviewer.caseInsensitiveCompare(login) != .orderedSame else {
+                continue
+            }
+
+            let key = reviewer.lowercased()
+            if let existing = latestByReviewer[key],
+                existing.submittedAt >= review.submittedAt {
+                continue
+            }
+            latestByReviewer[key] = review
+        }
+
+        let latestReviews = Array(latestByReviewer.values)
+        let approvals = latestReviews.filter {
+            $0.state.caseInsensitiveCompare("APPROVED") == .orderedSame
+        }
+        let latestApprover = approvals.max { lhs, rhs in
+            lhs.submittedAt < rhs.submittedAt
+        }.flatMap { attentionActor(from: $0.author) }
+
+        return LatestApprovalSummary(
+            approvalCount: approvals.count,
+            hasChangesRequested: latestReviews.contains {
+                $0.state.caseInsensitiveCompare("CHANGES_REQUESTED") == .orderedSame
+            },
+            latestApprover: latestApprover
+        )
+    }
+
     private func fetchWorkflowRunsForCommit(
         token: String,
         repository: String,
@@ -1814,7 +2422,24 @@ struct GitHubClient {
             return nil
         }
 
-        return AttentionActor(login: user.login, avatarURL: user.avatarURL)
+        return AttentionActor(
+            login: user.login,
+            avatarURL: user.avatarURL,
+            profileURL: user.htmlURL
+        )
+    }
+
+    private func attentionActor(from actor: PullRequestFocusGraphQLActor?) -> AttentionActor? {
+        guard let actor, !actor.login.isEmpty else {
+            return nil
+        }
+
+        return AttentionActor(
+            login: actor.login,
+            avatarURL: actor.avatarURL,
+            profileURL: actor.url,
+            isBot: actor.isBotAccount
+        )
     }
 
     private func attentionActor(from identity: TimelineIdentity?) -> AttentionActor? {
@@ -1822,7 +2447,11 @@ struct GitHubClient {
             return nil
         }
 
-        return AttentionActor(login: login, avatarURL: identity.avatarURL)
+        return AttentionActor(
+            login: login,
+            avatarURL: identity.avatarURL,
+            profileURL: identity.url
+        )
     }
 
     private func canonicalIgnoreURL(for reference: DiscussionReference) -> URL? {
@@ -1909,6 +2538,75 @@ struct GitHubClient {
 
         let data = try await perform(request, observer: observer)
         return try decoder.decode(Response.self, from: data)
+    }
+
+    private func request<Response: Decodable, Body: Encodable>(
+        method: String,
+        path: String,
+        queryItems: [URLQueryItem] = [],
+        body: Body,
+        token: String,
+        observer: GitHubRateLimitObserver? = nil
+    ) async throws -> Response {
+        var components = URLComponents(url: baseURL.appending(path: path), resolvingAgainstBaseURL: false)
+        if !queryItems.isEmpty {
+            components?.queryItems = queryItems
+        }
+
+        guard let url = components?.url else {
+            throw GitHubClientError.invalidResponse
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 30
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        request.setValue("Octowatch", forHTTPHeaderField: "User-Agent")
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let data = try await perform(request, observer: observer)
+        return try decoder.decode(Response.self, from: data)
+    }
+
+    private func graphQLRequest<Response: Decodable, Variables: Encodable>(
+        query: String,
+        variables: Variables,
+        token: String,
+        observer: GitHubRateLimitObserver? = nil
+    ) async throws -> Response {
+        var request = URLRequest(url: graphQLURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        request.setValue("Octowatch", forHTTPHeaderField: "User-Agent")
+        request.httpBody = try JSONEncoder().encode(
+            GraphQLRequest(
+                query: query,
+                variables: variables
+            )
+        )
+
+        let data = try await perform(request, observer: observer)
+        let response = try decoder.decode(GraphQLResponse<Response>.self, from: data)
+
+        if let errors = response.errors, !errors.isEmpty {
+            throw GitHubClientError.api(
+                statusCode: 200,
+                message: errors.map(\.message).joined(separator: " | ")
+            )
+        }
+
+        guard let graphQLData = response.data else {
+            throw GitHubClientError.invalidResponse
+        }
+
+        return graphQLData
     }
 
     private func perform(
@@ -2083,6 +2781,221 @@ private actor GitHubRateLimitObserver {
     }
 }
 
+private struct GraphQLRequest<Variables: Encodable>: Encodable {
+    let query: String
+    let variables: Variables
+}
+
+private struct GraphQLResponse<DataType: Decodable>: Decodable {
+    let data: DataType?
+    let errors: [GraphQLError]?
+}
+
+private struct GraphQLError: Decodable {
+    let message: String
+}
+
+private struct PullRequestFocusQueryVariables: Encodable {
+    let owner: String
+    let name: String
+    let number: Int
+}
+
+private struct PullRequestFocusQueryData: Decodable {
+    let repository: PullRequestFocusGraphQLRepository?
+}
+
+private struct PullRequestFocusGraphQLRepository: Decodable {
+    let pullRequest: PullRequestFocusGraphQLPullRequest?
+}
+
+private struct PullRequestFocusGraphQLPullRequest: Decodable {
+    let title: String
+    let bodyHTML: String
+    let url: URL
+    let state: String
+    let isDraft: Bool
+    let reviewDecision: String?
+    let mergeable: String?
+    let viewerDidAuthor: Bool
+    let headRefOID: String
+    let author: PullRequestFocusGraphQLActor?
+    let timelineItems: PullRequestFocusGraphQLConnection<PullRequestFocusGraphQLAssignedEvent>
+    let reviewThreads: PullRequestFocusGraphQLConnection<PullRequestFocusGraphQLReviewThread>
+    let reviews: PullRequestFocusGraphQLConnection<PullRequestFocusGraphQLReview>
+    let commits: PullRequestFocusGraphQLConnection<PullRequestFocusGraphQLCommitNode>
+
+    enum CodingKeys: String, CodingKey {
+        case title
+        case bodyHTML
+        case url
+        case state
+        case isDraft
+        case reviewDecision
+        case mergeable
+        case viewerDidAuthor
+        case headRefOID = "headRefOid"
+        case author
+        case timelineItems
+        case reviewThreads
+        case reviews
+        case commits
+    }
+}
+
+private struct PullRequestFocusGraphQLConnection<Node: Decodable>: Decodable {
+    let nodes: [Node?]
+}
+
+private struct PullRequestFocusGraphQLActor: Decodable {
+    let typeName: String
+    let login: String
+    let avatarURL: URL?
+    let url: URL?
+
+    enum CodingKeys: String, CodingKey {
+        case typeName = "__typename"
+        case login
+        case avatarURL = "avatarUrl"
+        case url
+    }
+
+    var isBotAccount: Bool {
+        typeName == "Bot"
+    }
+}
+
+private struct PullRequestFocusGraphQLReviewThread: Decodable {
+    let id: String
+    let isResolved: Bool
+    let isOutdated: Bool
+    let path: String?
+    let line: Int?
+    let startLine: Int?
+    let comments: PullRequestFocusGraphQLConnection<PullRequestFocusGraphQLReviewComment>
+}
+
+private struct PullRequestFocusGraphQLAssignedEvent: Decodable {
+    let typeName: String
+    let createdAt: Date
+    let actor: PullRequestFocusGraphQLActor?
+    let assignee: PullRequestFocusGraphQLActor?
+
+    enum CodingKeys: String, CodingKey {
+        case typeName = "__typename"
+        case createdAt
+        case actor
+        case assignee
+    }
+}
+
+private struct PullRequestFocusGraphQLReviewComment: Decodable {
+    let id: String
+    let body: String
+    let createdAt: Date
+    let url: URL
+    let outdated: Bool
+    let viewerDidAuthor: Bool
+    let author: PullRequestFocusGraphQLActor?
+}
+
+private struct PullRequestFocusGraphQLReview: Decodable {
+    let state: String
+    let submittedAt: Date
+    let url: URL
+    let author: PullRequestFocusGraphQLActor?
+}
+
+private struct PullRequestFocusGraphQLCommitNode: Decodable {
+    let commit: PullRequestFocusGraphQLCommit
+}
+
+private struct PullRequestFocusGraphQLCommit: Decodable {
+    let oid: String
+    let abbreviatedOID: String
+    let messageHeadline: String
+    let committedDate: Date
+    let url: URL
+    let author: PullRequestFocusGraphQLCommitAuthor?
+
+    enum CodingKeys: String, CodingKey {
+        case oid
+        case abbreviatedOID = "abbreviatedOid"
+        case messageHeadline
+        case committedDate
+        case url
+        case author
+    }
+}
+
+private struct PullRequestFocusGraphQLCommitAuthor: Decodable {
+    let user: PullRequestFocusGraphQLActor?
+}
+
+private struct PullRequestFocusThread {
+    let isResolved: Bool
+    let isOutdated: Bool
+    let latestActivityAt: Date
+    let entry: PullRequestFocusEntry
+}
+
+private struct PullRequestCheckInsights {
+    let summary: PullRequestCheckSummary
+    let failingEntries: [PullRequestFocusEntry]
+}
+
+private struct CheckRunsResponse: Decodable {
+    let checkRuns: [CheckRun]
+
+    enum CodingKeys: String, CodingKey {
+        case checkRuns = "check_runs"
+    }
+}
+
+private struct CheckRun: Decodable {
+    let id: Int
+    let name: String
+    let status: String
+    let conclusion: String?
+    let htmlURL: URL?
+    let detailsURL: URL?
+    let startedAt: Date?
+    let completedAt: Date?
+    let app: CheckRunApp?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case status
+        case conclusion
+        case htmlURL = "html_url"
+        case detailsURL = "details_url"
+        case startedAt = "started_at"
+        case completedAt = "completed_at"
+        case app
+    }
+}
+
+private struct CheckRunApp: Decodable {
+    let slug: String?
+}
+
+private struct PullRequestReviewSubmissionRequest: Encodable {
+    let event: String
+}
+
+private struct PullRequestReviewSubmissionResponse: Decodable {
+    let id: Int?
+}
+
+private struct PullRequestMergeRequest: Encodable {}
+
+private struct PullRequestMergeResponse: Decodable {
+    let sha: String?
+    let merged: Bool
+    let message: String
+}
+
 private struct CurrentUser: Decodable {
     let login: String
 }
@@ -2225,10 +3138,12 @@ private struct LatestApprovalSummary {
 private struct GitHubUser: Decodable {
     let login: String
     let avatarURL: URL?
+    let htmlURL: URL?
 
     enum CodingKeys: String, CodingKey {
         case login
         case avatarURL = "avatar_url"
+        case htmlURL = "html_url"
     }
 }
 
@@ -2331,10 +3246,12 @@ private struct GitHubOrganization: Decodable {
 private struct TimelineIdentity: Decodable {
     let login: String?
     let avatarURL: URL?
+    let url: URL?
 
     enum CodingKeys: String, CodingKey {
         case login
         case avatarURL = "avatar_url"
+        case url = "html_url"
     }
 }
 

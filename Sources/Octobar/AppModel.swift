@@ -34,6 +34,13 @@ final class AppModel: ObservableObject {
     private let teamMembershipStoreKey = "team-membership-cache-v1"
     private let client = GitHubClient()
     private let notifier = UserNotifier()
+    private let pullRequestFocusCacheTTL: TimeInterval = 300
+
+    private struct PullRequestFocusCacheEntry {
+        let focus: PullRequestFocus
+        let sourceTimestamp: Date
+        let loadedAt: Date
+    }
 
     private var token: String?
     private var userLogin: String?
@@ -41,6 +48,7 @@ final class AppModel: ObservableObject {
     private var knownItemIDs = Set<String>()
     private var notificationScanState = NotificationScanState.default
     private var teamMembershipCache = TeamMembershipCache.default
+    private var pullRequestFocusCache = [String: PullRequestFocusCacheEntry]()
     private var ignoredItemsByKey = [String: IgnoredAttentionSubject]()
     private var readStateByItemID: [String: Date] = [:]
     private let relativeDateFormatter: RelativeDateTimeFormatter = {
@@ -155,17 +163,30 @@ final class AppModel: ObservableObject {
 
         if let resetAt = rateLimit.resetAt {
             let resetDescription: String
-            if abs(resetAt.timeIntervalSince(referenceDate)) < 1 {
+            let resetDelta = resetAt.timeIntervalSince(referenceDate)
+            if abs(resetDelta) < 1 {
                 resetDescription = "resets now"
-            } else {
+            } else if resetDelta > 1 {
                 resetDescription = "resets \(relativeDateFormatter.localizedString(for: resetAt, relativeTo: referenceDate))"
+            } else {
+                resetDescription = ""
             }
-            segments.append(resetDescription)
+            if !resetDescription.isEmpty {
+                segments.append(resetDescription)
+            }
         }
 
         if let pollIntervalHint = rateLimit.pollIntervalHintSeconds,
             pollIntervalHint > pollIntervalSeconds {
             segments.append("GitHub suggests \(pollIntervalHint)s polls")
+        }
+
+        let effectiveInterval = rateLimit.minimumAutomaticRefreshInterval(
+            userConfiguredSeconds: pollIntervalSeconds,
+            now: referenceDate
+        )
+        if effectiveInterval > pollIntervalSeconds {
+            segments.append("polling every \(formatInterval(effectiveInterval))")
         }
 
         return segments.joined(separator: " · ")
@@ -194,6 +215,7 @@ final class AppModel: ObservableObject {
         knownItemIDs.removeAll()
         notificationScanState = .default
         teamMembershipCache = .default
+        pullRequestFocusCache = [:]
         UserDefaults.standard.removeObject(forKey: notificationScanStateStoreKey)
         UserDefaults.standard.removeObject(forKey: teamMembershipStoreKey)
 
@@ -236,6 +258,79 @@ final class AppModel: ObservableObject {
         Task {
             await refresh(force: true)
         }
+    }
+
+    func fetchPullRequestFocus(
+        for item: AttentionItem,
+        force: Bool = false
+    ) async throws -> PullRequestFocus? {
+        guard let reference = item.pullRequestReference else {
+            return nil
+        }
+
+        guard let token, let userLogin else {
+            return nil
+        }
+
+        let cacheKey = item.ignoreKey
+        if
+            !force,
+            let cached = pullRequestFocusCache[cacheKey],
+            cached.sourceTimestamp >= item.timestamp,
+            Date().timeIntervalSince(cached.loadedAt) < pullRequestFocusCacheTTL
+        {
+            return cached.focus
+        }
+
+        let result = try await client.fetchPullRequestFocus(
+            token: token,
+            login: userLogin,
+            reference: reference,
+            sourceType: item.type
+        )
+
+        if let sample = result.rateLimit {
+            if let current = rateLimit {
+                rateLimit = current.merged(with: sample)
+            } else {
+                rateLimit = sample
+            }
+        }
+
+        pullRequestFocusCache[cacheKey] = PullRequestFocusCacheEntry(
+            focus: result.focus,
+            sourceTimestamp: item.timestamp,
+            loadedAt: Date()
+        )
+
+        return result.focus
+    }
+
+    func approveAndMergePullRequest(
+        for item: AttentionItem,
+        requiresApproval: Bool
+    ) async throws {
+        guard let reference = item.pullRequestReference, let token else {
+            throw GitHubClientError.invalidResponse
+        }
+
+        let rateLimitSample = try await client.approveAndMergePullRequest(
+            token: token,
+            reference: reference,
+            approveFirst: requiresApproval
+        )
+
+        if let rateLimitSample {
+            if let current = rateLimit {
+                rateLimit = current.merged(with: rateLimitSample)
+            } else {
+                rateLimit = rateLimitSample
+            }
+        }
+
+        markItemAsRead(item)
+        pullRequestFocusCache[item.ignoreKey] = nil
+        await refresh(force: true)
     }
 
     func markItemAsRead(_ item: AttentionItem) {
@@ -394,6 +489,7 @@ final class AppModel: ObservableObject {
             knownItemIDs.removeAll()
             lastError = nil
             rateLimit = nil
+            pullRequestFocusCache = [:]
 
             if previousLogin?.caseInsensitiveCompare(validatedLogin) != .orderedSame {
                 teamMembershipCache = .default
@@ -674,6 +770,16 @@ final class AppModel: ObservableObject {
         return resetAt.timeIntervalSince(referenceDate) > 1
     }
 
+    private func formatInterval(_ seconds: Int) -> String {
+        if seconds % 3600 == 0 {
+            return "\(seconds / 3600)h"
+        }
+        if seconds % 60 == 0 {
+            return "\(seconds / 60)m"
+        }
+        return "\(seconds)s"
+    }
+
     private func applyLaunchFixture(_ fixture: LaunchFixture) {
         token = "ui-test-token"
         tokenInput = ""
@@ -693,6 +799,7 @@ final class AppModel: ObservableObject {
         autoMarkReadSetting = fixture.autoMarkReadSetting
         notificationScanState = .default
         teamMembershipCache = .default
+        pullRequestFocusCache = [:]
     }
 }
 

@@ -57,6 +57,7 @@ struct MenuBarContentView: View {
                 .font(.system(size: 13, weight: .semibold))
         }
         .buttonStyle(.plain)
+        .appInteractiveHover(backgroundOpacity: 0.08, cornerRadius: 8)
         .help("Open Octowatch")
     }
 
@@ -83,6 +84,7 @@ struct MenuBarContentView: View {
                                         .foregroundStyle(item.isUnread ? .blue : .secondary)
                                 }
                                 .buttonStyle(.plain)
+                                .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 8)
                                 .help(item.isUnread ? "Mark as read" : "Mark as unread")
 
                                 Button {
@@ -102,6 +104,7 @@ struct MenuBarContentView: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                                 .buttonStyle(.plain)
+                                .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 10)
 
                                 VStack(alignment: .trailing, spacing: 6) {
                                     if let actor = item.actor {
@@ -135,6 +138,7 @@ struct MenuBarContentView: View {
             Button(action: requestSettings) {
                 Text("Open Settings")
             }
+            .appInteractiveHover()
         }
     }
 

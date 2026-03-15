@@ -94,6 +94,7 @@ struct SettingsView: View {
                         }
                     }
                     .disabled(model.isValidatingToken)
+                    .appInteractiveHover()
                 }
             } else {
                 customTokenEditor
@@ -195,11 +196,13 @@ struct SettingsView: View {
                                 openURL(ignoredItem.url)
                             }
                             .buttonStyle(.bordered)
+                            .appInteractiveHover()
 
                             Button("Unignore") {
                                 model.unignore(ignoredItem)
                             }
                             .buttonStyle(.borderedProminent)
+                            .appInteractiveHover()
                         }
                     }
                 }
@@ -217,7 +220,7 @@ struct SettingsView: View {
                     .fill(.blue.gradient)
                     .frame(width: 46, height: 46)
                     .overlay {
-                        Image(systemName: "checkmark.circle.badge.clock")
+                        Image(systemName: "checkmark.circle")
                             .font(.system(size: 20, weight: .semibold))
                             .foregroundStyle(.white)
                     }
@@ -270,11 +273,13 @@ struct SettingsView: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(model.isValidatingToken)
+                .appInteractiveHover()
 
                 Button("Clear") {
                     model.clearToken()
                 }
                 .disabled(model.isValidatingToken || (!model.hasToken && model.tokenInput.isEmpty))
+                .appInteractiveHover()
 
                 if model.isValidatingToken {
                     ProgressView()
