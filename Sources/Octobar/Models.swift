@@ -360,6 +360,122 @@ struct PullRequestReference: Hashable, Sendable {
     }
 }
 
+enum GitHubSubjectKind: Hashable, Sendable {
+    case pullRequest
+    case issue
+}
+
+struct GitHubSubjectReference: Hashable, Sendable {
+    let owner: String
+    let name: String
+    let number: Int
+    let kind: GitHubSubjectKind
+
+    var repository: String {
+        "\(owner)/\(name)"
+    }
+
+    var webURL: URL {
+        switch kind {
+        case .pullRequest:
+            return URL(string: "https://github.com/\(repository)/pull/\(number)")!
+        case .issue:
+            return URL(string: "https://github.com/\(repository)/issues/\(number)")!
+        }
+    }
+}
+
+enum GitHubSubjectResolution: Hashable, Sendable {
+    case open
+    case closed
+    case merged
+}
+
+struct GitHubSubjectResolutionState: Hashable, Sendable {
+    let reference: GitHubSubjectReference
+    let resolution: GitHubSubjectResolution
+    let isAssignedToViewer: Bool?
+}
+
+struct AttentionTransitionNotification: Hashable, Sendable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let body: String
+    let url: URL
+}
+
+enum AttentionRemovalNotificationPolicy {
+    static func notification(
+        for removedItems: [AttentionItem],
+        state: GitHubSubjectResolutionState
+    ) -> AttentionTransitionNotification? {
+        guard let representative = removedItems.max(by: { $0.timestamp < $1.timestamp }) else {
+            return nil
+        }
+
+        switch state.resolution {
+        case .merged:
+            guard removedItems.contains(where: \.isClosureNotificationEligible) else {
+                return nil
+            }
+
+            let body: String
+            if removedItems.contains(where: { $0.type == .readyToMerge }) {
+                body = "Your pull request was merged in \(representative.repository ?? state.reference.repository)."
+            } else {
+                body = "A pull request you were following was merged in \(representative.repository ?? state.reference.repository)."
+            }
+
+            return AttentionTransitionNotification(
+                id: "resolved:merged:\(representative.ignoreKey)",
+                title: "Pull request merged",
+                subtitle: representative.title,
+                body: body,
+                url: state.reference.webURL
+            )
+
+        case .closed:
+            guard removedItems.contains(where: \.isClosureNotificationEligible) else {
+                return nil
+            }
+
+            let title = state.reference.kind == .issue ? "Issue closed" : "Pull request closed"
+            let body: String
+            if state.reference.kind == .issue {
+                body = "An issue you were following was closed in \(representative.repository ?? state.reference.repository)."
+            } else {
+                body = "A pull request you were following was closed in \(representative.repository ?? state.reference.repository)."
+            }
+
+            return AttentionTransitionNotification(
+                id: "resolved:closed:\(representative.ignoreKey)",
+                title: title,
+                subtitle: representative.title,
+                body: body,
+                url: state.reference.webURL
+            )
+
+        case .open:
+            guard
+                removedItems.contains(where: { $0.type == .assignedPullRequest }),
+                state.reference.kind == .pullRequest,
+                state.isAssignedToViewer == false
+            else {
+                return nil
+            }
+
+            return AttentionTransitionNotification(
+                id: "resolved:unassigned:\(representative.ignoreKey)",
+                title: "Pull request unassigned",
+                subtitle: representative.title,
+                body: "This pull request is no longer assigned to you in \(representative.repository ?? state.reference.repository).",
+                url: state.reference.webURL
+            )
+        }
+    }
+}
+
 enum PullRequestFocusMode: String, Hashable, Sendable {
     case authored
     case participating
@@ -873,6 +989,34 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             Self.pullRequestReference(from: url.absoluteString)
     }
 
+    var subjectReference: GitHubSubjectReference? {
+        Self.subjectReference(from: ignoreKey) ??
+            Self.subjectReference(from: url.absoluteString)
+    }
+
+    var isClosureNotificationEligible: Bool {
+        switch type {
+        case .readyToMerge,
+                .comment,
+                .mention,
+                .teamMention,
+                .newCommitsAfterComment,
+                .newCommitsAfterReview,
+                .reviewApproved,
+                .reviewChangesRequested,
+                .reviewComment,
+                .pullRequestStateChanged:
+            return true
+        case .assignedPullRequest,
+                .reviewRequested,
+                .teamReviewRequested,
+                .ciActivity,
+                .workflowFailed,
+                .workflowApprovalRequired:
+            return false
+        }
+    }
+
     private static func defaultDetail(
         type: AttentionItemType,
         subtitle: String,
@@ -975,6 +1119,18 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     }
 
     private static func pullRequestReference(from value: String) -> PullRequestReference? {
+        guard let reference = subjectReference(from: value), reference.kind == .pullRequest else {
+            return nil
+        }
+
+        return PullRequestReference(
+            owner: reference.owner,
+            name: reference.name,
+            number: reference.number
+        )
+    }
+
+    private static func subjectReference(from value: String) -> GitHubSubjectReference? {
         guard let url = URL(string: value) else {
             return nil
         }
@@ -984,15 +1140,28 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             return nil
         }
 
-        guard components[3] == "pull", let number = Int(components[4]) else {
+        guard let number = Int(components[4]) else {
             return nil
         }
 
-        return PullRequestReference(
-            owner: components[1],
-            name: components[2],
-            number: number
-        )
+        switch components[3] {
+        case "pull":
+            return GitHubSubjectReference(
+                owner: components[1],
+                name: components[2],
+                number: number,
+                kind: .pullRequest
+            )
+        case "issues":
+            return GitHubSubjectReference(
+                owner: components[1],
+                name: components[2],
+                number: number,
+                kind: .issue
+            )
+        default:
+            return nil
+        }
     }
 }
 

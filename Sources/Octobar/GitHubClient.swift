@@ -796,6 +796,62 @@ struct GitHubClient {
         return await observer.snapshot()
     }
 
+    func fetchSubjectResolutionState(
+        token: String,
+        reference: GitHubSubjectReference,
+        login: String?
+    ) async throws -> GitHubSubjectResolutionState {
+        let observer = GitHubRateLimitObserver()
+
+        switch reference.kind {
+        case .pullRequest:
+            let response: PullRequestStateResponse = try await request(
+                path: "/repos/\(reference.owner)/\(reference.name)/pulls/\(reference.number)",
+                token: token,
+                observer: observer
+            )
+
+            let resolution: GitHubSubjectResolution
+            if response.merged {
+                resolution = .merged
+            } else if response.state.caseInsensitiveCompare("closed") == .orderedSame {
+                resolution = .closed
+            } else {
+                resolution = .open
+            }
+
+            let isAssignedToViewer: Bool?
+            if let login {
+                isAssignedToViewer = (response.assignees ?? []).contains {
+                    $0.login.caseInsensitiveCompare(login) == .orderedSame
+                }
+            } else {
+                isAssignedToViewer = nil
+            }
+
+            return GitHubSubjectResolutionState(
+                reference: reference,
+                resolution: resolution,
+                isAssignedToViewer: isAssignedToViewer
+            )
+
+        case .issue:
+            let response: IssueStateResponse = try await request(
+                path: "/repos/\(reference.owner)/\(reference.name)/issues/\(reference.number)",
+                token: token,
+                observer: observer
+            )
+
+            return GitHubSubjectResolutionState(
+                reference: reference,
+                resolution: response.state.caseInsensitiveCompare("closed") == .orderedSame
+                    ? .closed
+                    : .open,
+                isAssignedToViewer: nil
+            )
+        }
+    }
+
     private func resolveLogin(
         token: String,
         preferredLogin: String?,
@@ -3109,10 +3165,22 @@ private struct PullRequestStateResponse: Decodable {
     let state: String
     let merged: Bool
     let closedAt: Date?
+    let assignees: [GitHubUser]?
 
     enum CodingKeys: String, CodingKey {
         case state
         case merged
+        case closedAt = "closed_at"
+        case assignees
+    }
+}
+
+private struct IssueStateResponse: Decodable {
+    let state: String
+    let closedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case state
         case closedAt = "closed_at"
     }
 }

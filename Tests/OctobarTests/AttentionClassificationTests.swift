@@ -645,4 +645,133 @@ final class AttentionClassificationTests: XCTestCase {
 
         XCTAssertNil(item.pullRequestReference)
     }
+
+    func testRemovedAssignedPullRequestCanNotifyUnassigned() {
+        let item = AttentionItem(
+            id: "pr:assign",
+            ignoreKey: "https://github.com/acme/cloud-infra-terraform/pull/638",
+            type: .assignedPullRequest,
+            title: "chore(deps): update module",
+            subtitle: "acme/cloud-infra-terraform · Assigned pull request",
+            repository: "acme/cloud-infra-terraform",
+            timestamp: .now,
+            url: URL(string: "https://github.com/acme/cloud-infra-terraform/pull/638")!
+        )
+        let state = GitHubSubjectResolutionState(
+            reference: GitHubSubjectReference(
+                owner: "acme",
+                name: "cloud-infra-terraform",
+                number: 638,
+                kind: .pullRequest
+            ),
+            resolution: .open,
+            isAssignedToViewer: false
+        )
+
+        let notification = AttentionRemovalNotificationPolicy.notification(
+            for: [item],
+            state: state
+        )
+
+        XCTAssertEqual(notification?.title, "Pull request unassigned")
+        XCTAssertEqual(notification?.subtitle, item.title)
+    }
+
+    func testRemovedReadyToMergeCanNotifyMergedPullRequest() {
+        let item = AttentionItem(
+            id: "pr:ready",
+            ignoreKey: "https://github.com/ExampleOrg/offload-tools/pull/56",
+            type: .readyToMerge,
+            title: "Add aj zones subcommand",
+            subtitle: "ExampleOrg/offload-tools · Ready to merge",
+            repository: "ExampleOrg/offload-tools",
+            timestamp: .now,
+            url: URL(string: "https://github.com/ExampleOrg/offload-tools/pull/56")!
+        )
+        let state = GitHubSubjectResolutionState(
+            reference: GitHubSubjectReference(
+                owner: "ExampleOrg",
+                name: "offload-tools",
+                number: 56,
+                kind: .pullRequest
+            ),
+            resolution: .merged,
+            isAssignedToViewer: nil
+        )
+
+        let notification = AttentionRemovalNotificationPolicy.notification(
+            for: [item],
+            state: state
+        )
+
+        XCTAssertEqual(notification?.title, "Pull request merged")
+        XCTAssertEqual(
+            notification?.body,
+            "Your pull request was merged in ExampleOrg/offload-tools."
+        )
+    }
+
+    func testRemovedIssueCommentCanNotifyClosedIssue() {
+        let item = AttentionItem(
+            id: "issue:comment",
+            ignoreKey: "https://github.com/acme/saas-mega/issues/17748",
+            type: .comment,
+            title: "Investigate flaky deploy",
+            subtitle: "acme/saas-mega · New comment",
+            repository: "acme/saas-mega",
+            timestamp: .now,
+            url: URL(string: "https://github.com/acme/saas-mega/issues/17748")!
+        )
+        let state = GitHubSubjectResolutionState(
+            reference: GitHubSubjectReference(
+                owner: "acme",
+                name: "saas-mega",
+                number: 17748,
+                kind: .issue
+            ),
+            resolution: .closed,
+            isAssignedToViewer: nil
+        )
+
+        let notification = AttentionRemovalNotificationPolicy.notification(
+            for: [item],
+            state: state
+        )
+
+        XCTAssertEqual(notification?.title, "Issue closed")
+        XCTAssertEqual(
+            notification?.body,
+            "An issue you were following was closed in acme/saas-mega."
+        )
+    }
+
+    func testRemovedTeamReviewRequestedDoesNotNotifyClosedPullRequest() {
+        let item = AttentionItem(
+            id: "pr:team-review",
+            ignoreKey: "https://github.com/ExampleOrg/testcontainers-cloud-web/pull/1038",
+            type: .teamReviewRequested,
+            title: "chore(deps): bump axios",
+            subtitle: "ExampleOrg/testcontainers-cloud-web · Team review requested",
+            repository: "ExampleOrg/testcontainers-cloud-web",
+            timestamp: .now,
+            url: URL(string: "https://github.com/ExampleOrg/testcontainers-cloud-web/pull/1038")!
+        )
+        let state = GitHubSubjectResolutionState(
+            reference: GitHubSubjectReference(
+                owner: "ExampleOrg",
+                name: "testcontainers-cloud-web",
+                number: 1038,
+                kind: .pullRequest
+            ),
+            resolution: .closed,
+            isAssignedToViewer: nil
+        )
+
+        let notification = AttentionRemovalNotificationPolicy.notification(
+            for: [item],
+            state: state
+        )
+
+        XCTAssertNil(notification)
+    }
 }

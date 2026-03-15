@@ -51,6 +51,7 @@ final class AppModel: ObservableObject {
     private var pullRequestFocusCache = [String: PullRequestFocusCacheEntry]()
     private var ignoredItemsByKey = [String: IgnoredAttentionSubject]()
     private var readStateByItemID: [String: Date] = [:]
+    private var suppressedTransitionNotificationKeys = Set<String>()
     private let relativeDateFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
@@ -216,6 +217,7 @@ final class AppModel: ObservableObject {
         notificationScanState = .default
         teamMembershipCache = .default
         pullRequestFocusCache = [:]
+        suppressedTransitionNotificationKeys = []
         UserDefaults.standard.removeObject(forKey: notificationScanStateStoreKey)
         UserDefaults.standard.removeObject(forKey: teamMembershipStoreKey)
 
@@ -329,6 +331,7 @@ final class AppModel: ObservableObject {
         }
 
         markItemAsRead(item)
+        suppressedTransitionNotificationKeys.insert(item.ignoreKey)
         pullRequestFocusCache[item.ignoreKey] = nil
         await refresh(force: true)
     }
@@ -403,6 +406,8 @@ final class AppModel: ObservableObject {
             return
         }
 
+        let previousItems = attentionItems
+
         do {
             let snapshot = try await client.fetchSnapshot(
                 token: token,
@@ -424,7 +429,7 @@ final class AppModel: ObservableObject {
             lastUpdated = Date()
             lastError = nil
 
-            notifyIfNeeded()
+            await notifyIfNeeded(previousItems: previousItems, token: token)
         } catch {
             if let clientError = error as? GitHubClientError,
                 case let .rateLimited(rateLimit) = clientError {
@@ -490,6 +495,7 @@ final class AppModel: ObservableObject {
             lastError = nil
             rateLimit = nil
             pullRequestFocusCache = [:]
+            suppressedTransitionNotificationKeys = []
 
             if previousLogin?.caseInsensitiveCompare(validatedLogin) != .orderedSame {
                 teamMembershipCache = .default
@@ -534,7 +540,7 @@ final class AppModel: ObservableObject {
         return "That token could not be validated for Octowatch."
     }
 
-    private func notifyIfNeeded() {
+    private func notifyIfNeeded(previousItems: [AttentionItem], token: String) async {
         let currentIDs = Set(attentionItems.map(\.id))
         let newItems = attentionItems
             .filter { currentIDs.contains($0.id) && !knownItemIDs.contains($0.id) }
@@ -543,6 +549,53 @@ final class AppModel: ObservableObject {
         if !knownItemIDs.isEmpty {
             for item in newItems.prefix(5) {
                 notifier.notify(item: item)
+            }
+
+            let removedItems = previousItems.filter { knownItemIDs.contains($0.id) && !currentIDs.contains($0.id) }
+            let groupedRemovedItems = Dictionary(grouping: removedItems, by: \.ignoreKey)
+            let sortedRemovedGroups = groupedRemovedItems.values.sorted { lhs, rhs in
+                let lhsTimestamp = lhs.map(\.timestamp).max() ?? .distantPast
+                let rhsTimestamp = rhs.map(\.timestamp).max() ?? .distantPast
+                return lhsTimestamp > rhsTimestamp
+            }
+
+            var deliveredTransitionNotifications = 0
+            for removedGroup in sortedRemovedGroups {
+                guard deliveredTransitionNotifications < 3 else {
+                    break
+                }
+
+                guard let ignoreKey = removedGroup.first?.ignoreKey else {
+                    continue
+                }
+
+                if suppressedTransitionNotificationKeys.remove(ignoreKey) != nil {
+                    continue
+                }
+
+                guard
+                    let representative = removedGroup.max(by: { $0.timestamp < $1.timestamp }),
+                    let subjectReference = representative.subjectReference
+                else {
+                    continue
+                }
+
+                do {
+                    let state = try await client.fetchSubjectResolutionState(
+                        token: token,
+                        reference: subjectReference,
+                        login: userLogin
+                    )
+                    if let transition = AttentionRemovalNotificationPolicy.notification(
+                        for: removedGroup,
+                        state: state
+                    ) {
+                        notifier.notify(transition: transition)
+                        deliveredTransitionNotifications += 1
+                    }
+                } catch {
+                    continue
+                }
             }
         }
 
@@ -800,6 +853,7 @@ final class AppModel: ObservableObject {
         notificationScanState = .default
         teamMembershipCache = .default
         pullRequestFocusCache = [:]
+        suppressedTransitionNotificationKeys = []
     }
 }
 
