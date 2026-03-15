@@ -4,7 +4,7 @@ import SwiftUI
 import UserNotifications
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSPopoverDelegate {
     private struct StatusPresentation: Equatable {
         let symbolName: String
         let title: String
@@ -18,6 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var lastStatusPresentation: StatusPresentation?
     private weak var mainWindow: NSWindow?
     private weak var settingsWindow: NSWindow?
+    private var localPopoverEventMonitor: Any?
+    private var globalPopoverEventMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configurePopover()
@@ -33,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func configurePopover() {
+        popover.delegate = self
         popover.behavior = .transient
         popover.animates = true
         popover.contentSize = NSSize(width: 420, height: 520)
@@ -211,6 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        installPopoverDismissMonitors()
     }
 
     @objc
@@ -371,6 +375,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return true
     }
 
+    nonisolated func popoverDidClose(_ notification: Notification) {
+        Task { @MainActor [weak self] in
+            self?.removePopoverDismissMonitors()
+        }
+    }
+
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
@@ -393,5 +403,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             NSApp.activate(ignoringOtherApps: true)
             NSWorkspace.shared.open(url)
         }
+    }
+
+    private func installPopoverDismissMonitors() {
+        removePopoverDismissMonitors()
+
+        localPopoverEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] event in
+            guard let self else {
+                return event
+            }
+
+            if self.shouldClosePopover(for: event) {
+                self.popover.performClose(nil)
+            }
+
+            return event
+        }
+
+        globalPopoverEventMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.popover.performClose(nil)
+            }
+        }
+    }
+
+    private func removePopoverDismissMonitors() {
+        if let localPopoverEventMonitor {
+            NSEvent.removeMonitor(localPopoverEventMonitor)
+            self.localPopoverEventMonitor = nil
+        }
+
+        if let globalPopoverEventMonitor {
+            NSEvent.removeMonitor(globalPopoverEventMonitor)
+            self.globalPopoverEventMonitor = nil
+        }
+    }
+
+    private func shouldClosePopover(for event: NSEvent) -> Bool {
+        guard popover.isShown else {
+            return false
+        }
+
+        if let statusWindow = statusItem?.button?.window, event.window === statusWindow {
+            return false
+        }
+
+        if let popoverWindow = popover.contentViewController?.view.window, event.window === popoverWindow {
+            return false
+        }
+
+        return true
     }
 }
