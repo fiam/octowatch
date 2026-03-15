@@ -6,8 +6,7 @@ import UserNotifications
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSPopoverDelegate {
     private struct StatusPresentation: Equatable {
-        let symbolName: String
-        let title: String
+        let imageName: String
         let toolTip: String
     }
 
@@ -47,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func configureStatusItem() {
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem = item
 
         guard let button = item.button else {
@@ -57,7 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         button.target = self
         button.action = #selector(handleStatusItemClick(_:))
         button.sendAction(on: [.leftMouseDown, .rightMouseDown])
-        button.imagePosition = .imageLeading
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
         updateStatusItemButton()
     }
 
@@ -109,22 +109,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         let hasUnread = model.unreadCount > 0
-        let symbolName = hasUnread ? "bell.badge.fill" : "bell"
+        let imageName = hasUnread ? "MenuBarIconAlert" : "MenuBarIcon"
 
-        let count: Int?
+        let toolTip: String
         if hasUnread {
-            count = model.unreadCount
+            toolTip = "\(model.unreadCount) unread GitHub items."
         } else if model.actionableCount > 0 {
-            count = model.actionableCount
+            toolTip = "\(model.actionableCount) GitHub items need attention."
         } else {
-            count = nil
+            toolTip = "Octowatch"
         }
-
-        let title = count.map { " \($0)" } ?? ""
-        let toolTip = count.map { "\($0) GitHub items need attention." } ?? "Octowatch"
         let presentation = StatusPresentation(
-            symbolName: symbolName,
-            title: title,
+            imageName: imageName,
             toolTip: toolTip
         )
 
@@ -132,15 +128,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
 
-        let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
-        button.image = NSImage(
-            systemSymbolName: symbolName,
-            accessibilityDescription: "Octowatch"
-        )?.withSymbolConfiguration(symbolConfig)
-        button.title = title
+        button.image = statusItemImage(
+            named: imageName,
+            fallbackSymbolName: hasUnread ? "bell.badge.fill" : "bell"
+        )
+        button.title = ""
         button.toolTip = toolTip
 
         lastStatusPresentation = presentation
+    }
+
+    private func statusItemImage(named assetName: String, fallbackSymbolName: String) -> NSImage? {
+        if let assetImage = NSImage(named: assetName)?.copy() as? NSImage {
+            assetImage.isTemplate = true
+            assetImage.size = NSSize(width: 18, height: 18)
+            return assetImage
+        }
+
+        let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        return NSImage(
+            systemSymbolName: fallbackSymbolName,
+            accessibilityDescription: "Octowatch"
+        )?.withSymbolConfiguration(symbolConfig)
     }
 
     @objc

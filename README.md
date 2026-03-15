@@ -11,6 +11,7 @@ likely needs your attention.
 - GitHub Actions workflow runs with `status=action_required` where you are the actor
 
 The app polls every 60 seconds and shows local macOS notifications when new actionable items appear.
+The menu bar icon uses an unread-dot indicator instead of a numeric badge.
 In the menu, all actionable signals are shown as one inbox with per-type icons.
 Items also have dot-style read/unread indicators, and opening an item marks it as read locally.
 Items can also be ignored locally, and ignored subjects can be restored later from Settings.
