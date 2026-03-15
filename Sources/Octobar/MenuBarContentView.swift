@@ -13,25 +13,23 @@ struct MenuBarContentView: View {
     }()
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            VStack(alignment: .leading, spacing: 10) {
-                header
+        VStack(alignment: .leading, spacing: 10) {
+            header
 
-                if model.hasToken {
-                    attentionList(relativeTo: context.date)
-                } else {
-                    tokenSetup
-                }
-
-                if let lastError = model.lastError {
-                    Text(lastError)
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                }
+            if model.hasToken {
+                attentionList
+            } else {
+                tokenSetup
             }
-            .padding(12)
-            .frame(width: 420)
+
+            if let lastError = model.lastError {
+                Text(lastError)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
         }
+        .padding(12)
+        .frame(width: 420)
         .onReceive(NotificationCenter.default.publisher(for: .performMainWindowOpen)) { _ in
             openWindow(id: AppSceneID.mainWindow)
         }
@@ -62,7 +60,7 @@ struct MenuBarContentView: View {
         .help("Open Octowatch")
     }
 
-    private func attentionList(relativeTo referenceDate: Date) -> some View {
+    private var attentionList: some View {
         Group {
             if model.attentionItems.isEmpty {
                 Text("Inbox is clear right now.")
@@ -110,26 +108,10 @@ struct MenuBarContentView: View {
                                         ActorAvatarView(actor: actor)
                                     }
 
-                                    Text(
-                                        relativeFormatter.localizedString(
-                                            for: item.timestamp,
-                                            relativeTo: referenceDate
-                                        )
+                                    RelativeTimestampText(
+                                        date: item.timestamp,
+                                        formatter: relativeFormatter
                                     )
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .fixedSize()
-
-                                    Button {
-                                        model.ignore(item)
-                                    } label: {
-                                        Image(systemName: "eye.slash")
-                                            .font(.system(size: 11, weight: .semibold))
-                                            .frame(width: 18, height: 18)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(.secondary)
-                                    .help(item.ignoreActionTitle)
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -225,6 +207,20 @@ struct MenuBarContentView: View {
             return .red.opacity(0.14)
         case .workflowApprovalRequired:
             return .orange.opacity(0.14)
+        }
+    }
+}
+
+private struct RelativeTimestampText: View {
+    let date: Date
+    let formatter: RelativeDateTimeFormatter
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text(formatter.localizedString(for: date, relativeTo: context.date))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize()
         }
     }
 }

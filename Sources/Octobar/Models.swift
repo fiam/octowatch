@@ -193,6 +193,14 @@ enum AttentionItemType: String, Hashable, Sendable {
 struct AttentionActor: Hashable, Sendable {
     let login: String
     let avatarURL: URL?
+
+    var isBotAccount: Bool {
+        login.lowercased().hasSuffix("[bot]")
+    }
+
+    var profileURL: URL {
+        URL(string: "https://github.com/\(login)")!
+    }
 }
 
 struct AttentionItem: Identifiable, Hashable, Sendable {

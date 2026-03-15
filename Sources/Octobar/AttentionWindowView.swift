@@ -285,7 +285,10 @@ struct AttentionWindowView: View {
                     relativeTimestamp: relativeFormatter.localizedString(
                         for: item.timestamp,
                         relativeTo: referenceDate
-                    )
+                    ),
+                    onOpenItem: {
+                        openSelectedItem(item)
+                    }
                 )
             } else {
                 emptyStateView
@@ -413,6 +416,7 @@ private struct AttentionDetailView: View {
     let item: AttentionItem
     let absoluteTimestamp: String
     let relativeTimestamp: String
+    let onOpenItem: () -> Void
 
     var body: some View {
         ScrollView {
@@ -420,31 +424,35 @@ private struct AttentionDetailView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     EventBadge(type: item.type, size: 40)
 
-                    Text(item.title)
-                        .font(.largeTitle.weight(.semibold))
-                        .fixedSize(horizontal: false, vertical: true)
+                    Button(action: onOpenItem) {
+                        Text(item.title)
+                            .font(.largeTitle.weight(.semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.primary)
+                    .help("Open on GitHub")
 
-                    HStack(spacing: 10) {
+                    HStack(alignment: .center, spacing: 10) {
                         AttentionTypePill(type: item.type)
 
-                        if item.isUnread {
-                            Text("Unread")
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(.blue)
-                        }
-                    }
-                }
+                        if let actor = item.actor {
+                            Text("by")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
 
-                if let actor = item.actor {
-                    DetailCard(title: "Triggered by") {
-                        HStack(spacing: 12) {
-                            DetailActorAvatar(actor: actor)
-                            VStack(alignment: .leading, spacing: 2) {
+                            DetailActorAvatar(actor: actor, size: 20)
+
+                            if actor.isBotAccount {
                                 Text(actor.login)
-                                    .font(.headline)
-                                Text(item.type.accessibilityLabel)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary)
+                            } else {
+                                Link(actor.login, destination: actor.profileURL)
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.tint)
                             }
                         }
                     }
