@@ -21,6 +21,26 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testTeamScopedNotificationReasonsMapToDistinctAttention() {
+        XCTAssertEqual(
+            AttentionItemType.notificationType(
+                reason: "team_mention",
+                timelineEvent: nil,
+                reviewState: nil
+            ),
+            .teamMention
+        )
+        XCTAssertEqual(
+            AttentionItemType.notificationType(
+                reason: "review_requested",
+                timelineEvent: nil,
+                reviewState: nil,
+                teamScoped: true
+            ),
+            .teamReviewRequested
+        )
+    }
+
     func testTimelineReviewStateOverridesReason() {
         XCTAssertEqual(
             AttentionItemType.notificationType(

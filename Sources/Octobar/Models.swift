@@ -4,7 +4,9 @@ enum AttentionItemType: String, Hashable, Sendable {
     case assignedPullRequest
     case comment
     case mention
+    case teamMention
     case reviewRequested
+    case teamReviewRequested
     case reviewApproved
     case reviewChangesRequested
     case reviewComment
@@ -21,8 +23,12 @@ enum AttentionItemType: String, Hashable, Sendable {
             return "text.bubble"
         case .mention:
             return "at"
+        case .teamMention:
+            return "person.3.fill"
         case .reviewRequested:
             return "person.badge.key"
+        case .teamReviewRequested:
+            return "person.2.fill"
         case .reviewApproved:
             return "checkmark.bubble"
         case .reviewChangesRequested:
@@ -47,9 +53,13 @@ enum AttentionItemType: String, Hashable, Sendable {
         case .comment:
             return "New comment"
         case .mention:
-            return "Mention"
+            return "Mentioned you"
+        case .teamMention:
+            return "Team mention"
         case .reviewRequested:
             return "Review requested"
+        case .teamReviewRequested:
+            return "Team review requested"
         case .reviewApproved:
             return "Review approved"
         case .reviewChangesRequested:
@@ -75,8 +85,12 @@ enum AttentionItemType: String, Hashable, Sendable {
             return "New comment"
         case .mention:
             return "New mention"
+        case .teamMention:
+            return "New team mention"
         case .reviewRequested:
             return "Review requested"
+        case .teamReviewRequested:
+            return "Team review requested"
         case .reviewApproved:
             return "Review approved"
         case .reviewChangesRequested:
@@ -102,8 +116,12 @@ enum AttentionItemType: String, Hashable, Sendable {
             return "commented"
         case .mention:
             return "mentioned you"
+        case .teamMention:
+            return "mentioned one of your teams"
         case .reviewRequested:
             return "requested your review"
+        case .teamReviewRequested:
+            return "requested a team review"
         case .reviewApproved:
             return "approved a pull request"
         case .reviewChangesRequested:
@@ -124,14 +142,15 @@ enum AttentionItemType: String, Hashable, Sendable {
     static func notificationType(
         reason: String,
         timelineEvent: String?,
-        reviewState: String?
+        reviewState: String?,
+        teamScoped: Bool = false
     ) -> AttentionItemType {
         let normalizedEvent = timelineEvent?.lowercased()
         let normalizedState = reviewState?.lowercased()
 
         switch normalizedEvent {
         case "review_requested":
-            return .reviewRequested
+            return teamScoped ? .teamReviewRequested : .reviewRequested
         case "reviewed":
             switch normalizedState {
             case "approved":
@@ -154,10 +173,12 @@ enum AttentionItemType: String, Hashable, Sendable {
         switch reason.lowercased() {
         case "assign":
             return .assignedPullRequest
-        case "mention", "team_mention":
+        case "mention":
             return .mention
+        case "team_mention":
+            return .teamMention
         case "review_requested":
-            return .reviewRequested
+            return teamScoped ? .teamReviewRequested : .reviewRequested
         case "author", "comment", "subscribed", "manual":
             return .comment
         case "state_change":
@@ -403,8 +424,12 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             return "There is new discussion on work you are following."
         case .mention:
             return "Someone mentioned you in a GitHub discussion."
+        case .teamMention:
+            return "One of your GitHub teams was mentioned in a discussion."
         case .reviewRequested:
             return "A pull request is waiting for your review."
+        case .teamReviewRequested:
+            return "A pull request is waiting on one of your teams."
         case .reviewApproved:
             return "A pull request you are tracking was approved."
         case .reviewChangesRequested:
@@ -445,6 +470,7 @@ struct NotificationSummary: Identifiable, Hashable, Sendable {
     let updatedAt: Date
     let unread: Bool
     let actor: AttentionActor?
+    let targetLabel: String?
 }
 
 struct ActionRunSummary: Identifiable, Hashable, Sendable {

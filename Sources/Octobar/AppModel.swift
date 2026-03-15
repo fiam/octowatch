@@ -544,11 +544,13 @@ final class AppModel: ObservableObject {
         case .assignedPullRequest:
             return 4
         case .reviewRequested,
+            .teamReviewRequested,
             .reviewApproved,
             .reviewChangesRequested,
             .reviewComment,
             .comment,
             .mention,
+            .teamMention,
             .pullRequestStateChanged:
             return 3
         case .workflowFailed, .workflowApprovalRequired, .ciActivity:

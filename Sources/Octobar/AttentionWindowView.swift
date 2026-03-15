@@ -752,8 +752,12 @@ private extension AttentionItemType {
             return .secondary
         case .mention:
             return .purple
+        case .teamMention:
+            return .pink
         case .reviewRequested:
             return .indigo
+        case .teamReviewRequested:
+            return .mint
         case .reviewApproved:
             return .green
         case .reviewChangesRequested:
@@ -777,8 +781,12 @@ private extension AttentionItemType {
             return .secondary.opacity(0.12)
         case .mention:
             return .purple.opacity(0.14)
+        case .teamMention:
+            return .pink.opacity(0.14)
         case .reviewRequested:
             return .indigo.opacity(0.14)
+        case .teamReviewRequested:
+            return .mint.opacity(0.18)
         case .reviewApproved:
             return .green.opacity(0.14)
         case .reviewChangesRequested:

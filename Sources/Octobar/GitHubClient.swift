@@ -53,7 +53,6 @@ struct GitHubClient {
                 path: "/notifications",
                 queryItems: [
                     URLQueryItem(name: "all", value: "false"),
-                    URLQueryItem(name: "participating", value: "true"),
                     URLQueryItem(name: "per_page", value: "1")
                 ],
                 token: token
@@ -246,6 +245,19 @@ struct GitHubClient {
             )
         ]
 
+        if let targetLabel = notification.targetLabel {
+            evidence.append(
+                AttentionEvidence(
+                    id: "target",
+                    title: "Why this surfaced",
+                    detail: targetLabel,
+                    iconName: notification.type == .teamReviewRequested || notification.type == .teamMention
+                        ? "person.2"
+                        : "person"
+                )
+            )
+        }
+
         if let actor = notification.actor {
             evidence.append(
                 AttentionEvidence(
@@ -282,7 +294,7 @@ struct GitHubClient {
         return AttentionDetail(
             why: AttentionWhy(
                 summary: whySummary(for: notification.type, actor: notification.actor),
-                detail: "Octowatch surfaced the latest GitHub activity that changed this thread."
+                detail: notification.targetLabel
             ),
             evidence: evidence,
             actions: actions,
@@ -488,7 +500,6 @@ struct GitHubClient {
                 path: "/notifications",
                 queryItems: [
                     URLQueryItem(name: "all", value: "false"),
-                    URLQueryItem(name: "participating", value: "true"),
                     URLQueryItem(name: "per_page", value: "\(notificationPageSize)"),
                     URLQueryItem(name: "page", value: "\(page)")
                 ],
@@ -516,6 +527,7 @@ struct GitHubClient {
         observer: GitHubRateLimitObserver
     ) async throws -> NotificationSummary? {
         var actor: AttentionActor?
+        var reviewTarget: ReviewRequestTarget?
         var type = AttentionItemType.notificationType(
             reason: thread.reason,
             timelineEvent: nil,
@@ -539,21 +551,41 @@ struct GitHubClient {
                 ) else {
                     return nil
                 }
+
+                if thread.reason == "review_requested" {
+                    reviewTarget = try await fetchReviewRequestTarget(
+                        token: token,
+                        reference: reference,
+                        login: login,
+                        observer: observer
+                    )
+                }
             }
 
             if let timelineContext = try await fetchTimelineContext(
                 token: token,
                 reference: reference,
                 currentLogin: login,
+                reviewTarget: reviewTarget,
                 observer: observer
             ) {
                 actor = timelineContext.actor
                 type = AttentionItemType.notificationType(
                     reason: thread.reason,
                     timelineEvent: timelineContext.event,
-                    reviewState: timelineContext.reviewState
+                    reviewState: timelineContext.reviewState,
+                    teamScoped: thread.reason == "team_mention" || reviewTarget?.isTeam == true
                 )
             }
+        }
+
+        if actor == nil {
+            type = AttentionItemType.notificationType(
+                reason: thread.reason,
+                timelineEvent: nil,
+                reviewState: nil,
+                teamScoped: thread.reason == "team_mention" || reviewTarget?.isTeam == true
+            )
         }
 
         let repository = thread.repository.fullName
@@ -573,7 +605,12 @@ struct GitHubClient {
             url: url,
             updatedAt: thread.updatedAt,
             unread: thread.unread,
-            actor: actor
+            actor: actor,
+            targetLabel: notificationTargetLabel(
+                reason: thread.reason,
+                type: type,
+                reviewTarget: reviewTarget
+            )
         )
     }
 
@@ -602,7 +639,12 @@ struct GitHubClient {
             url: url,
             updatedAt: thread.updatedAt,
             unread: thread.unread,
-            actor: nil
+            actor: nil,
+            targetLabel: notificationTargetLabel(
+                reason: thread.reason,
+                type: type,
+                reviewTarget: nil
+            )
         )
     }
 
@@ -610,6 +652,7 @@ struct GitHubClient {
         token: String,
         reference: DiscussionReference,
         currentLogin: String,
+        reviewTarget: ReviewRequestTarget?,
         observer: GitHubRateLimitObserver
     ) async throws -> TimelineContext? {
         let timeline: [TimelineEntry] = try await request(
@@ -638,14 +681,34 @@ struct GitHubClient {
             }
 
             switch event {
-            case "assigned",
-                "closed",
+            case "assigned":
+                guard entry.assignee?.login.caseInsensitiveCompare(currentLogin) == .orderedSame else {
+                    return nil
+                }
+                return TimelineContext(
+                    event: event,
+                    reviewState: entry.state,
+                    actor: attentionActor(from: actor),
+                    timestamp: timestamp
+                )
+            case "review_requested":
+                let requestedReviewerMatches =
+                    entry.requestedReviewer?.login.caseInsensitiveCompare(currentLogin) == .orderedSame
+                guard requestedReviewerMatches || reviewTarget?.isTeam == true else {
+                    return nil
+                }
+                return TimelineContext(
+                    event: event,
+                    reviewState: entry.state,
+                    actor: attentionActor(from: actor),
+                    timestamp: timestamp
+                )
+            case "closed",
                 "commented",
                 "committed",
                 "head_ref_force_pushed",
                 "merged",
                 "reopened",
-                "review_requested",
                 "reviewed":
                 return TimelineContext(
                     event: event,
@@ -671,6 +734,64 @@ struct GitHubClient {
         }
 
         return "\(repository) · \(type.accessibilityLabel)"
+    }
+
+    private func fetchReviewRequestTarget(
+        token: String,
+        reference: DiscussionReference,
+        login: String,
+        observer: GitHubRateLimitObserver
+    ) async throws -> ReviewRequestTarget? {
+        guard reference.kind == .pullRequest else {
+            return nil
+        }
+
+        let response: RequestedReviewersResponse = try await request(
+            path: "/repos/\(reference.owner)/\(reference.name)/pulls/\(reference.number)/requested_reviewers",
+            token: token,
+            observer: observer
+        )
+
+        if response.users.contains(where: { $0.login.caseInsensitiveCompare(login) == .orderedSame }) {
+            return .direct
+        }
+
+        if let team = response.teams.first {
+            return .team(name: team.name ?? team.slug)
+        }
+
+        return nil
+    }
+
+    private func notificationTargetLabel(
+        reason: String,
+        type: AttentionItemType,
+        reviewTarget: ReviewRequestTarget?
+    ) -> String? {
+        switch reason.lowercased() {
+        case "assign":
+            return "Assigned to you directly."
+        case "mention":
+            return "You were mentioned directly."
+        case "team_mention":
+            return "One of your teams was mentioned."
+        case "review_requested":
+            switch reviewTarget {
+            case .direct:
+                return "Review was requested from you directly."
+            case let .team(name):
+                if let name, !name.isEmpty {
+                    return "Review was requested from team \(name)."
+                }
+                return "Review was requested from one of your teams."
+            case nil:
+                return type == .teamReviewRequested
+                    ? "Review was requested from one of your teams."
+                    : "Review was requested from you."
+            }
+        default:
+            return nil
+        }
     }
 
     private func discussionReference(from subjectURL: URL?) -> DiscussionReference? {
@@ -988,8 +1109,12 @@ struct GitHubClient {
             return "There is new discussion on a thread you are following."
         case .mention:
             return "Someone mentioned you in a GitHub discussion."
+        case .teamMention:
+            return "One of your GitHub teams was mentioned in a discussion."
         case .reviewRequested:
             return "A pull request is waiting for your review."
+        case .teamReviewRequested:
+            return "A pull request is waiting on one of your teams."
         case .reviewApproved:
             return "A pull request you are tracking was approved."
         case .reviewChangesRequested:
@@ -1448,12 +1573,38 @@ private struct Repository: Decodable {
     }
 }
 
+private enum ReviewRequestTarget: Hashable, Sendable {
+    case direct
+    case team(name: String?)
+
+    var isTeam: Bool {
+        switch self {
+        case .direct:
+            return false
+        case .team:
+            return true
+        }
+    }
+}
+
+private struct RequestedReviewersResponse: Decodable {
+    let users: [GitHubUser]
+    let teams: [GitHubTeam]
+}
+
+private struct GitHubTeam: Decodable {
+    let slug: String
+    let name: String?
+}
+
 private struct TimelineEntry: Decodable {
     let event: String?
     let createdAt: Date?
     let submittedAt: Date?
     let actor: GitHubUser?
     let user: GitHubUser?
+    let assignee: GitHubUser?
+    let requestedReviewer: GitHubUser?
     let state: String?
 
     enum CodingKeys: String, CodingKey {
@@ -1462,6 +1613,8 @@ private struct TimelineEntry: Decodable {
         case submittedAt = "submitted_at"
         case actor
         case user
+        case assignee
+        case requestedReviewer = "requested_reviewer"
         case state
     }
 }
