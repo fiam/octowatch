@@ -30,6 +30,8 @@ final class AppModel: ObservableObject {
     private let legacyIgnoredSubjectStoreKey = "ignored-attention-subjects-v1"
     private let pollIntervalStoreKey = "poll-interval-seconds-v1"
     private let autoMarkReadStoreKey = "auto-mark-read-setting-v1"
+    private let notificationScanStateStoreKey = "notification-scan-state-v1"
+    private let teamMembershipStoreKey = "team-membership-cache-v1"
     private let client = GitHubClient()
     private let notifier = UserNotifier()
 
@@ -37,6 +39,8 @@ final class AppModel: ObservableObject {
     private var userLogin: String?
     private var pollingTask: Task<Void, Never>?
     private var knownItemIDs = Set<String>()
+    private var notificationScanState = NotificationScanState.default
+    private var teamMembershipCache = TeamMembershipCache.default
     private var ignoredItemsByKey = [String: IgnoredAttentionSubject]()
     private var readStateByItemID: [String: Date] = [:]
     private let relativeDateFormatter: RelativeDateTimeFormatter = {
@@ -54,6 +58,14 @@ final class AppModel: ObservableObject {
         autoMarkReadSetting = Self.loadAutoMarkReadSetting(
             from: UserDefaults.standard,
             key: autoMarkReadStoreKey
+        )
+        notificationScanState = Self.loadNotificationScanState(
+            from: UserDefaults.standard,
+            key: notificationScanStateStoreKey
+        )
+        teamMembershipCache = Self.loadTeamMembershipCache(
+            from: UserDefaults.standard,
+            key: teamMembershipStoreKey
         )
         readStateByItemID = Self.loadReadState(
             from: UserDefaults.standard,
@@ -180,6 +192,10 @@ final class AppModel: ObservableObject {
         lastError = nil
         rateLimit = nil
         knownItemIDs.removeAll()
+        notificationScanState = .default
+        teamMembershipCache = .default
+        UserDefaults.standard.removeObject(forKey: notificationScanStateStoreKey)
+        UserDefaults.standard.removeObject(forKey: teamMembershipStoreKey)
 
         pollingTask?.cancel()
         pollingTask = nil
@@ -295,10 +311,16 @@ final class AppModel: ObservableObject {
         do {
             let snapshot = try await client.fetchSnapshot(
                 token: token,
-                preferredLogin: userLogin
+                preferredLogin: userLogin,
+                notificationScanState: notificationScanState,
+                teamMembershipCache: teamMembershipCache
             )
             userLogin = snapshot.login
             rateLimit = snapshot.rateLimit
+            notificationScanState = snapshot.notificationScanState.normalized
+            teamMembershipCache = snapshot.teamMembershipCache.normalized
+            persistNotificationScanState()
+            persistTeamMembershipCache()
             attentionItems = AttentionItemVisibilityPolicy
                 .excludingIgnoredSubjects(
                     snapshot.attentionItems.map(applyingLocalReadState),
@@ -363,6 +385,7 @@ final class AppModel: ObservableObject {
 
         do {
             let validatedLogin = try await client.validateToken(token: candidate)
+            let previousLogin = userLogin
 
             token = candidate
             userLogin = validatedLogin
@@ -371,6 +394,11 @@ final class AppModel: ObservableObject {
             knownItemIDs.removeAll()
             lastError = nil
             rateLimit = nil
+
+            if previousLogin?.caseInsensitiveCompare(validatedLogin) != .orderedSame {
+                teamMembershipCache = .default
+                UserDefaults.standard.removeObject(forKey: teamMembershipStoreKey)
+            }
 
             startPollingIfNeeded()
             refreshNow()
@@ -469,6 +497,24 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func persistNotificationScanState() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        if let data = try? encoder.encode(notificationScanState.normalized) {
+            UserDefaults.standard.set(data, forKey: notificationScanStateStoreKey)
+        }
+    }
+
+    private func persistTeamMembershipCache() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        if let data = try? encoder.encode(teamMembershipCache.normalized) {
+            UserDefaults.standard.set(data, forKey: teamMembershipStoreKey)
+        }
+    }
+
     private func syncIgnoredItems() {
         ignoredItems = ignoredItemsByKey.values.sorted { lhs, rhs in
             if lhs.ignoredAt == rhs.ignoredAt {
@@ -541,13 +587,15 @@ final class AppModel: ObservableObject {
 
     private func ignoreSummaryPriority(for item: AttentionItem) -> Int {
         switch item.type {
-        case .assignedPullRequest:
+        case .assignedPullRequest, .readyToMerge:
             return 4
         case .reviewRequested,
             .teamReviewRequested,
             .reviewApproved,
             .reviewChangesRequested,
             .reviewComment,
+            .newCommitsAfterComment,
+            .newCommitsAfterReview,
             .comment,
             .mention,
             .teamMention,
@@ -583,6 +631,34 @@ final class AppModel: ObservableObject {
         AutoMarkReadSetting.normalized(rawValue: defaults.object(forKey: key) as? Int ?? 3)
     }
 
+    private static func loadNotificationScanState(
+        from defaults: UserDefaults,
+        key: String
+    ) -> NotificationScanState {
+        guard
+            let data = defaults.data(forKey: key),
+            let state = try? JSONDecoder().decode(NotificationScanState.self, from: data)
+        else {
+            return .default
+        }
+
+        return state.normalized
+    }
+
+    private static func loadTeamMembershipCache(
+        from defaults: UserDefaults,
+        key: String
+    ) -> TeamMembershipCache {
+        guard
+            let data = defaults.data(forKey: key),
+            let cache = try? JSONDecoder().decode(TeamMembershipCache.self, from: data)
+        else {
+            return .default
+        }
+
+        return cache.normalized
+    }
+
     private func effectiveAutomaticPollInterval(relativeTo referenceDate: Date) -> Int {
         rateLimit?.minimumAutomaticRefreshInterval(
             userConfiguredSeconds: pollIntervalSeconds,
@@ -615,6 +691,8 @@ final class AppModel: ObservableObject {
         ignoredItems = []
         readStateByItemID = [:]
         autoMarkReadSetting = fixture.autoMarkReadSetting
+        notificationScanState = .default
+        teamMembershipCache = .default
     }
 }
 

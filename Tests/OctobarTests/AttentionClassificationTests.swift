@@ -11,13 +11,59 @@ final class AttentionClassificationTests: XCTestCase {
             ),
             .comment
         )
+    }
+
+    func testLowSignalNotificationReasonsAreNotActionable() {
+        XCTAssertFalse(NotificationAttentionPolicy.isActionable(reason: "subscribed"))
+        XCTAssertFalse(NotificationAttentionPolicy.isActionable(reason: "manual"))
+        XCTAssertTrue(NotificationAttentionPolicy.isActionable(reason: "comment"))
+    }
+
+    func testFallbackNotificationPolicyDropsStaleDiscussionThreads() {
+        let now = Date()
+
+        XCTAssertTrue(
+            NotificationAttentionPolicy.shouldIncludeFallback(
+                reason: "comment",
+                updatedAt: now.addingTimeInterval(-3_600),
+                now: now
+            )
+        )
         XCTAssertEqual(
-            AttentionItemType.notificationType(
-                reason: "subscribed",
-                timelineEvent: nil,
-                reviewState: nil
+            NotificationAttentionPolicy.shouldIncludeFallback(
+                reason: "comment",
+                updatedAt: now.addingTimeInterval(-172_800),
+                now: now
             ),
-            .comment
+            false
+        )
+        XCTAssertTrue(
+            NotificationAttentionPolicy.shouldIncludeFallback(
+                reason: "mention",
+                updatedAt: now.addingTimeInterval(-172_800),
+                now: now
+            )
+        )
+    }
+
+    func testFallbackPolicyOnlyKeepsOpenPullRequests() {
+        XCTAssertTrue(
+            NotificationAttentionPolicy.shouldIncludePullRequestFallback(
+                state: "open",
+                merged: false
+            )
+        )
+        XCTAssertFalse(
+            NotificationAttentionPolicy.shouldIncludePullRequestFallback(
+                state: "closed",
+                merged: false
+            )
+        )
+        XCTAssertFalse(
+            NotificationAttentionPolicy.shouldIncludePullRequestFallback(
+                state: "closed",
+                merged: true
+            )
         )
     }
 
@@ -38,6 +84,27 @@ final class AttentionClassificationTests: XCTestCase {
                 teamScoped: true
             ),
             .teamReviewRequested
+        )
+    }
+
+    func testCommitFollowUpOverridesGenericStateChange() {
+        XCTAssertEqual(
+            AttentionItemType.notificationType(
+                reason: "comment",
+                timelineEvent: "committed",
+                reviewState: nil,
+                followUpRelationship: .afterYourComment
+            ),
+            .newCommitsAfterComment
+        )
+        XCTAssertEqual(
+            AttentionItemType.notificationType(
+                reason: "comment",
+                timelineEvent: "head_ref_force_pushed",
+                reviewState: nil,
+                followUpRelationship: .afterYourReview
+            ),
+            .newCommitsAfterReview
         )
     }
 
@@ -236,5 +303,85 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(AutoMarkReadSetting.fiveSeconds.delay, .seconds(5))
         XCTAssertEqual(AutoMarkReadSetting.tenSeconds.delay, .seconds(10))
         XCTAssertEqual(AutoMarkReadSetting.normalized(rawValue: 999), .threeSeconds)
+    }
+
+    func testNotificationScanStateNormalizesDepthAndDeduplicatesThreadIDs() {
+        let normalized = NotificationScanState(
+            knownActionableThreadIDs: ["a", "b", "a"],
+            preferredPageDepth: 99
+        ).normalized
+
+        XCTAssertEqual(normalized.knownActionableThreadIDs, ["a", "b"])
+        XCTAssertEqual(normalized.preferredPageDepth, 10)
+    }
+
+    func testTeamMembershipCacheNormalizesAndMatchesOwnerSlugKeys() {
+        let cache = TeamMembershipCache(
+            membershipKeys: ["Acme/BuildOps", "acme/buildops", "ExampleOrg/Developers"],
+            fetchedAt: nil,
+            lastAttemptAt: nil
+        ).normalized
+
+        XCTAssertEqual(
+            cache.membershipKeys,
+            ["acme/buildops", "exampleorg/developers"]
+        )
+        XCTAssertTrue(cache.contains(owner: "acme", slug: "buildops"))
+        XCTAssertTrue(cache.contains(owner: "ExampleOrg", slug: "developers"))
+        XCTAssertFalse(cache.contains(owner: "acme", slug: "iam-team"))
+    }
+
+    func testTeamMembershipCacheFreshnessUsesLastAttempt() {
+        let now = Date()
+
+        XCTAssertTrue(
+            TeamMembershipCache.default
+                .recordingAttempt(at: now.addingTimeInterval(-3_600))
+                .isFresh(relativeTo: now)
+        )
+        XCTAssertFalse(
+            TeamMembershipCache.default
+                .recordingAttempt(at: now.addingTimeInterval(-172_800))
+                .isFresh(relativeTo: now)
+        )
+    }
+
+    func testReadyToMergePolicyRequiresCleanOpenApprovedPullRequest() {
+        XCTAssertTrue(
+            AuthoredPullRequestAttentionPolicy.shouldSurfaceReadyToMerge(
+                state: "open",
+                merged: false,
+                isDraft: false,
+                mergeable: true,
+                mergeableState: "clean",
+                pendingReviewRequests: 0,
+                approvalCount: 1,
+                hasChangesRequested: false
+            )
+        )
+        XCTAssertFalse(
+            AuthoredPullRequestAttentionPolicy.shouldSurfaceReadyToMerge(
+                state: "open",
+                merged: false,
+                isDraft: false,
+                mergeable: true,
+                mergeableState: "dirty",
+                pendingReviewRequests: 0,
+                approvalCount: 1,
+                hasChangesRequested: false
+            )
+        )
+        XCTAssertFalse(
+            AuthoredPullRequestAttentionPolicy.shouldSurfaceReadyToMerge(
+                state: "open",
+                merged: false,
+                isDraft: false,
+                mergeable: true,
+                mergeableState: "clean",
+                pendingReviewRequests: 1,
+                approvalCount: 1,
+                hasChangesRequested: false
+            )
+        )
     }
 }

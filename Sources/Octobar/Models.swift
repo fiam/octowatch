@@ -2,9 +2,12 @@ import Foundation
 
 enum AttentionItemType: String, Hashable, Sendable {
     case assignedPullRequest
+    case readyToMerge
     case comment
     case mention
     case teamMention
+    case newCommitsAfterComment
+    case newCommitsAfterReview
     case reviewRequested
     case teamReviewRequested
     case reviewApproved
@@ -19,12 +22,16 @@ enum AttentionItemType: String, Hashable, Sendable {
         switch self {
         case .assignedPullRequest:
             return "arrow.triangle.pull"
+        case .readyToMerge:
+            return "checkmark.circle"
         case .comment:
             return "text.bubble"
         case .mention:
             return "at"
         case .teamMention:
             return "person.3.fill"
+        case .newCommitsAfterComment, .newCommitsAfterReview:
+            return "arrow.trianglehead.branch"
         case .reviewRequested:
             return "person.badge.key"
         case .teamReviewRequested:
@@ -50,12 +57,18 @@ enum AttentionItemType: String, Hashable, Sendable {
         switch self {
         case .assignedPullRequest:
             return "Assigned pull request"
+        case .readyToMerge:
+            return "Ready to merge"
         case .comment:
             return "New comment"
         case .mention:
             return "Mentioned you"
         case .teamMention:
             return "Team mention"
+        case .newCommitsAfterComment:
+            return "New commits after your comment"
+        case .newCommitsAfterReview:
+            return "New commits after your review"
         case .reviewRequested:
             return "Review requested"
         case .teamReviewRequested:
@@ -81,12 +94,18 @@ enum AttentionItemType: String, Hashable, Sendable {
         switch self {
         case .assignedPullRequest:
             return "Pull request assigned"
+        case .readyToMerge:
+            return "Ready to merge"
         case .comment:
             return "New comment"
         case .mention:
             return "New mention"
         case .teamMention:
             return "New team mention"
+        case .newCommitsAfterComment:
+            return "New commits after comment"
+        case .newCommitsAfterReview:
+            return "New commits after review"
         case .reviewRequested:
             return "Review requested"
         case .teamReviewRequested:
@@ -112,12 +131,18 @@ enum AttentionItemType: String, Hashable, Sendable {
         switch self {
         case .assignedPullRequest:
             return "assigned a pull request"
+        case .readyToMerge:
+            return "approved your pull request"
         case .comment:
             return "commented"
         case .mention:
             return "mentioned you"
         case .teamMention:
             return "mentioned one of your teams"
+        case .newCommitsAfterComment:
+            return "pushed new commits after your comment"
+        case .newCommitsAfterReview:
+            return "pushed new commits after your review"
         case .reviewRequested:
             return "requested your review"
         case .teamReviewRequested:
@@ -143,7 +168,8 @@ enum AttentionItemType: String, Hashable, Sendable {
         reason: String,
         timelineEvent: String?,
         reviewState: String?,
-        teamScoped: Bool = false
+        teamScoped: Bool = false,
+        followUpRelationship: NotificationFollowUpRelationship? = nil
     ) -> AttentionItemType {
         let normalizedEvent = timelineEvent?.lowercased()
         let normalizedState = reviewState?.lowercased()
@@ -162,7 +188,16 @@ enum AttentionItemType: String, Hashable, Sendable {
             }
         case "commented":
             return .comment
-        case "closed", "merged", "reopened", "head_ref_force_pushed", "committed":
+        case "head_ref_force_pushed", "committed":
+            switch followUpRelationship {
+            case .afterYourComment:
+                return .newCommitsAfterComment
+            case .afterYourReview:
+                return .newCommitsAfterReview
+            case nil:
+                return .pullRequestStateChanged
+            }
+        case "closed", "merged", "reopened":
             return .pullRequestStateChanged
         case "assigned":
             return .assignedPullRequest
@@ -222,6 +257,11 @@ struct AttentionActor: Hashable, Sendable {
     var profileURL: URL {
         URL(string: "https://github.com/\(login)")!
     }
+}
+
+enum NotificationFollowUpRelationship: Hashable, Sendable {
+    case afterYourComment
+    case afterYourReview
 }
 
 struct AttentionWhy: Hashable, Sendable {
@@ -420,12 +460,18 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         switch type {
         case .assignedPullRequest:
             return "This pull request is assigned to you."
+        case .readyToMerge:
+            return "One of your pull requests is approved and ready to merge."
         case .comment:
             return "There is new discussion on work you are following."
         case .mention:
             return "Someone mentioned you in a GitHub discussion."
         case .teamMention:
             return "One of your GitHub teams was mentioned in a discussion."
+        case .newCommitsAfterComment:
+            return "A pull request changed after you commented on it."
+        case .newCommitsAfterReview:
+            return "A pull request changed after you reviewed it."
         case .reviewRequested:
             return "A pull request is waiting for your review."
         case .teamReviewRequested:
@@ -459,6 +505,19 @@ struct PullRequestSummary: Identifiable, Hashable, Sendable {
     let updatedAt: Date
 }
 
+struct ReadyToMergeSummary: Identifiable, Hashable, Sendable {
+    let id: String
+    let ignoreKey: String
+    let number: Int
+    let title: String
+    let subtitle: String
+    let repository: String
+    let url: URL
+    let updatedAt: Date
+    let actor: AttentionActor?
+    let approvalCount: Int
+}
+
 struct NotificationSummary: Identifiable, Hashable, Sendable {
     let id: String
     let ignoreKey: String
@@ -471,6 +530,7 @@ struct NotificationSummary: Identifiable, Hashable, Sendable {
     let unread: Bool
     let actor: AttentionActor?
     let targetLabel: String?
+    let detailEvidence: [AttentionEvidence]
 }
 
 struct ActionRunSummary: Identifiable, Hashable, Sendable {
@@ -626,6 +686,84 @@ struct GitHubSnapshot: Sendable {
     let login: String
     let attentionItems: [AttentionItem]
     let rateLimit: GitHubRateLimit?
+    let notificationScanState: NotificationScanState
+    let teamMembershipCache: TeamMembershipCache
+}
+
+struct NotificationScanState: Codable, Hashable, Sendable {
+    let knownActionableThreadIDs: [String]
+    let preferredPageDepth: Int
+
+    static let `default` = NotificationScanState(
+        knownActionableThreadIDs: [],
+        preferredPageDepth: 2
+    )
+
+    var normalized: NotificationScanState {
+        NotificationScanState(
+            knownActionableThreadIDs: Array(NSOrderedSet(array: knownActionableThreadIDs))
+                .compactMap { $0 as? String }
+                .prefix(128)
+                .map { $0 },
+            preferredPageDepth: min(max(preferredPageDepth, 2), 10)
+        )
+    }
+}
+
+struct TeamMembershipCache: Codable, Hashable, Sendable {
+    let membershipKeys: [String]
+    let fetchedAt: Date?
+    let lastAttemptAt: Date?
+
+    static let `default` = TeamMembershipCache(
+        membershipKeys: [],
+        fetchedAt: nil,
+        lastAttemptAt: nil
+    )
+
+    var normalized: TeamMembershipCache {
+        let normalizedKeys = membershipKeys.map { $0.lowercased() }
+        return TeamMembershipCache(
+            membershipKeys: Array(NSOrderedSet(array: normalizedKeys))
+                .compactMap { $0 as? String }
+                .prefix(512)
+                .map { $0 },
+            fetchedAt: fetchedAt,
+            lastAttemptAt: lastAttemptAt
+        )
+    }
+
+    func contains(owner: String, slug: String) -> Bool {
+        normalized.membershipKeys.contains(Self.membershipKey(owner: owner, slug: slug))
+    }
+
+    func refreshed(membershipKeys: [String], at date: Date = .now) -> TeamMembershipCache {
+        TeamMembershipCache(
+            membershipKeys: membershipKeys,
+            fetchedAt: date,
+            lastAttemptAt: date
+        ).normalized
+    }
+
+    func recordingAttempt(at date: Date = .now) -> TeamMembershipCache {
+        TeamMembershipCache(
+            membershipKeys: membershipKeys,
+            fetchedAt: fetchedAt,
+            lastAttemptAt: date
+        ).normalized
+    }
+
+    func isFresh(relativeTo referenceDate: Date = .now) -> Bool {
+        guard let lastAttemptAt else {
+            return false
+        }
+
+        return referenceDate.timeIntervalSince(lastAttemptAt) < 86_400
+    }
+
+    static func membershipKey(owner: String, slug: String) -> String {
+        "\(owner.lowercased())/\(slug.lowercased())"
+    }
 }
 
 struct IgnoredAttentionSubject: Identifiable, Hashable, Codable, Sendable {
@@ -742,6 +880,80 @@ enum AttentionItemVisibilityPolicy {
         ignoredKeys: Set<String>
     ) -> [AttentionItem] {
         items.filter { !ignoredKeys.contains($0.ignoreKey) }
+    }
+}
+
+enum NotificationAttentionPolicy {
+    private static let directReasons: Set<String> = [
+        "assign",
+        "mention",
+        "review_requested",
+        "security_alert",
+        "team_mention"
+    ]
+
+    private static let discussionReasons: Set<String> = [
+        "author",
+        "comment",
+        "state_change"
+    ]
+
+    static func isActionable(reason: String) -> Bool {
+        let normalizedReason = reason.lowercased()
+        return directReasons.contains(normalizedReason) ||
+            discussionReasons.contains(normalizedReason)
+    }
+
+    static func shouldIncludeFallback(
+        reason: String,
+        updatedAt: Date,
+        now: Date = Date()
+    ) -> Bool {
+        let normalizedReason = reason.lowercased()
+
+        if directReasons.contains(normalizedReason) {
+            return true
+        }
+
+        guard discussionReasons.contains(normalizedReason) else {
+            return false
+        }
+
+        return updatedAt >= now.addingTimeInterval(-86_400)
+    }
+
+    static func shouldIncludePullRequestFallback(
+        state: String,
+        merged: Bool
+    ) -> Bool {
+        state.lowercased() == "open" && !merged
+    }
+}
+
+enum AuthoredPullRequestAttentionPolicy {
+    static func shouldSurfaceReadyToMerge(
+        state: String,
+        merged: Bool,
+        isDraft: Bool,
+        mergeable: Bool?,
+        mergeableState: String?,
+        pendingReviewRequests: Int,
+        approvalCount: Int,
+        hasChangesRequested: Bool
+    ) -> Bool {
+        guard state.lowercased() == "open", !merged, !isDraft else {
+            return false
+        }
+
+        guard mergeable == true, mergeableState?.lowercased() == "clean" else {
+            return false
+        }
+
+        guard pendingReviewRequests == 0, approvalCount > 0, !hasChangesRequested else {
+            return false
+        }
+
+        return true
     }
 }
 

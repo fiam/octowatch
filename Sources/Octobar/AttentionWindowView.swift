@@ -748,12 +748,18 @@ private extension AttentionItemType {
         switch self {
         case .assignedPullRequest:
             return .blue
+        case .readyToMerge:
+            return .green
         case .comment, .reviewComment:
             return .secondary
         case .mention:
             return .purple
         case .teamMention:
             return .pink
+        case .newCommitsAfterComment:
+            return .teal
+        case .newCommitsAfterReview:
+            return .cyan
         case .reviewRequested:
             return .indigo
         case .teamReviewRequested:
@@ -777,12 +783,18 @@ private extension AttentionItemType {
         switch self {
         case .assignedPullRequest:
             return .blue.opacity(0.14)
+        case .readyToMerge:
+            return .green.opacity(0.16)
         case .comment, .reviewComment:
             return .secondary.opacity(0.12)
         case .mention:
             return .purple.opacity(0.14)
         case .teamMention:
             return .pink.opacity(0.14)
+        case .newCommitsAfterComment:
+            return .teal.opacity(0.14)
+        case .newCommitsAfterReview:
+            return .cyan.opacity(0.16)
         case .reviewRequested:
             return .indigo.opacity(0.14)
         case .teamReviewRequested:

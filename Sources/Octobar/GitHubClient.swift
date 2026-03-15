@@ -31,9 +31,12 @@ struct GitHubClient {
     private let decoder: JSONDecoder
     private let baseURL = URL(string: "https://api.github.com")!
     private let notificationPageSize = 50
-    private let notificationPageLimit = 2
-    private let actionableNotificationLimit = 24
+    private let steadyNotificationPageLimit = 2
+    private let initialNotificationPageLimit = 5
+    private let maximumNotificationPageLimit = 10
+    private let actionableNotificationLimit = 64
     private let notificationEnrichmentLimit = 10
+    private let authoredPullRequestLimit = 12
     private let workflowCandidateLimit = 8
     private let workflowRunLimit = 20
 
@@ -92,11 +95,21 @@ struct GitHubClient {
         return user.login
     }
 
-    func fetchSnapshot(token: String, preferredLogin: String?) async throws -> GitHubSnapshot {
+    func fetchSnapshot(
+        token: String,
+        preferredLogin: String?,
+        notificationScanState: NotificationScanState,
+        teamMembershipCache: TeamMembershipCache
+    ) async throws -> GitHubSnapshot {
         let observer = GitHubRateLimitObserver()
         let login = try await resolveLogin(
             token: token,
             preferredLogin: preferredLogin,
+            observer: observer
+        )
+        let resolvedTeamMembershipCache = await resolveTeamMembershipCache(
+            token: token,
+            existingCache: teamMembershipCache,
             observer: observer
         )
 
@@ -105,9 +118,16 @@ struct GitHubClient {
             login: login,
             observer: observer
         )
+        async let readyToMergeTask = fetchReadyToMergePullRequests(
+            token: token,
+            login: login,
+            observer: observer
+        )
         async let notificationsTask = fetchActionableNotifications(
             token: token,
             login: login,
+            scanState: notificationScanState,
+            teamMembershipCache: resolvedTeamMembershipCache,
             observer: observer
         )
         async let workflowRunsTask = fetchWatchedWorkflowRuns(
@@ -117,24 +137,29 @@ struct GitHubClient {
         )
 
         let pullRequests = try await pullRequestsTask
-        let notifications = try await notificationsTask
+        let readyToMerge = try await readyToMergeTask
+        let notificationFetch = try await notificationsTask
         let workflowRuns = try await workflowRunsTask
 
         let attentionItems = buildAttentionItems(
             pullRequests: pullRequests,
-            notifications: notifications,
+            readyToMerge: readyToMerge,
+            notifications: notificationFetch.notifications,
             actionRuns: workflowRuns
         )
 
         return GitHubSnapshot(
             login: login,
             attentionItems: attentionItems,
-            rateLimit: await observer.snapshot()
+            rateLimit: await observer.snapshot(),
+            notificationScanState: notificationFetch.scanState,
+            teamMembershipCache: resolvedTeamMembershipCache
         )
     }
 
     private func buildAttentionItems(
         pullRequests: [PullRequestSummary],
+        readyToMerge: [ReadyToMergeSummary],
         notifications: [NotificationSummary],
         actionRuns: [ActionRunSummary]
     ) -> [AttentionItem] {
@@ -148,6 +173,21 @@ struct GitHubClient {
                 repository: pullRequest.repository,
                 timestamp: pullRequest.updatedAt,
                 url: pullRequest.url,
+                detail: detail(for: pullRequest)
+            )
+        }
+
+        let readyToMergeItems = readyToMerge.map { pullRequest in
+            AttentionItem(
+                id: "ready:\(pullRequest.id)",
+                ignoreKey: pullRequest.ignoreKey,
+                type: .readyToMerge,
+                title: pullRequest.title,
+                subtitle: pullRequest.subtitle,
+                repository: pullRequest.repository,
+                timestamp: pullRequest.updatedAt,
+                url: pullRequest.url,
+                actor: pullRequest.actor,
                 detail: detail(for: pullRequest)
             )
         }
@@ -183,7 +223,7 @@ struct GitHubClient {
             )
         }
 
-        return (pullRequestItems + notificationItems + actionRunItems)
+        return (pullRequestItems + readyToMergeItems + notificationItems + actionRunItems)
             .sorted { $0.timestamp > $1.timestamp }
     }
 
@@ -234,6 +274,74 @@ struct GitHubClient {
         )
     }
 
+    private func detail(for pullRequest: ReadyToMergeSummary) -> AttentionDetail {
+        var evidence = [
+            AttentionEvidence(
+                id: "subject",
+                title: "Pull request",
+                detail: "#\(pullRequest.number) · \(pullRequest.title)",
+                iconName: "checkmark.circle",
+                url: pullRequest.url
+            ),
+            AttentionEvidence(
+                id: "repository",
+                title: "Repository",
+                detail: pullRequest.repository,
+                iconName: "shippingbox",
+                url: repositoryWebURL(repository: pullRequest.repository)
+            ),
+            AttentionEvidence(
+                id: "approvals",
+                title: "Current approvals",
+                detail: "\(pullRequest.approvalCount) approval\(pullRequest.approvalCount == 1 ? "" : "s")",
+                iconName: "person.badge.shield.checkmark"
+            )
+        ]
+
+        if let actor = pullRequest.actor {
+            evidence.append(
+                AttentionEvidence(
+                    id: "actor",
+                    title: "Latest approver",
+                    detail: actor.login,
+                    iconName: "person.crop.circle.badge.checkmark",
+                    url: actor.isBotAccount ? nil : actor.profileURL
+                )
+            )
+        }
+
+        var actions = [
+            AttentionAction(
+                id: "open-pr",
+                title: "Open Pull Request",
+                iconName: "arrow.up.right.square",
+                url: pullRequest.url,
+                isPrimary: true
+            )
+        ]
+
+        if let actor = pullRequest.actor, !actor.isBotAccount {
+            actions.append(
+                AttentionAction(
+                    id: "open-actor",
+                    title: "Open \(actor.login)",
+                    iconName: "person.crop.circle",
+                    url: actor.profileURL
+                )
+            )
+        }
+
+        return AttentionDetail(
+            why: AttentionWhy(
+                summary: "This pull request is approved and looks ready to merge.",
+                detail: "There are no pending review requests and GitHub reports a clean merge state."
+            ),
+            evidence: evidence,
+            actions: actions,
+            acknowledgement: "Use the toolbar to mark this read or ignore it."
+        )
+    }
+
     private func detail(for notification: NotificationSummary) -> AttentionDetail {
         var evidence = [
             AttentionEvidence(
@@ -254,9 +362,11 @@ struct GitHubClient {
                     iconName: notification.type == .teamReviewRequested || notification.type == .teamMention
                         ? "person.2"
                         : "person"
-                )
+                    )
             )
         }
+
+        evidence.append(contentsOf: notification.detailEvidence)
 
         if let actor = notification.actor {
             evidence.append(
@@ -395,6 +505,60 @@ struct GitHubClient {
         return user.login
     }
 
+    private func resolveTeamMembershipCache(
+        token: String,
+        existingCache: TeamMembershipCache,
+        observer: GitHubRateLimitObserver
+    ) async -> TeamMembershipCache {
+        let normalizedCache = existingCache.normalized
+        guard !normalizedCache.isFresh() else {
+            return normalizedCache
+        }
+
+        do {
+            let teams = try await fetchCurrentUserTeams(
+                token: token,
+                observer: observer
+            )
+            let membershipKeys: [String] = teams.compactMap { team -> String? in
+                guard let owner = team.organization?.login, !owner.isEmpty else {
+                    return nil
+                }
+
+                return TeamMembershipCache.membershipKey(owner: owner, slug: team.slug)
+            }
+            return normalizedCache.refreshed(membershipKeys: membershipKeys)
+        } catch {
+            return normalizedCache.recordingAttempt()
+        }
+    }
+
+    private func fetchCurrentUserTeams(
+        token: String,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [GitHubTeam] {
+        var teams: [GitHubTeam] = []
+
+        for page in 1...10 {
+            let pageTeams: [GitHubTeam] = try await request(
+                path: "/user/teams",
+                queryItems: [
+                    URLQueryItem(name: "per_page", value: "100"),
+                    URLQueryItem(name: "page", value: "\(page)")
+                ],
+                token: token,
+                observer: observer
+            )
+            teams.append(contentsOf: pageTeams)
+
+            if pageTeams.count < 100 {
+                break
+            }
+        }
+
+        return teams
+    }
+
     private func fetchAssignedPullRequests(
         token: String,
         login: String,
@@ -432,32 +596,131 @@ struct GitHubClient {
         }
     }
 
-    private func fetchActionableNotifications(
+    private func fetchReadyToMergePullRequests(
         token: String,
         login: String,
         observer: GitHubRateLimitObserver
-    ) async throws -> [NotificationSummary] {
-        let actionableReasons: Set<String> = [
-            "assign",
-            "author",
-            "comment",
-            "manual",
-            "mention",
-            "review_requested",
-            "security_alert",
-            "state_change",
-            "subscribed",
-            "team_mention"
-        ]
-
-        let candidateThreads = try await fetchNotificationThreads(
+    ) async throws -> [ReadyToMergeSummary] {
+        let response: SearchIssuesResponse = try await request(
+            path: "/search/issues",
+            queryItems: [
+                URLQueryItem(name: "q", value: "is:open is:pr author:\(login) archived:false"),
+                URLQueryItem(name: "sort", value: "updated"),
+                URLQueryItem(name: "order", value: "desc"),
+                URLQueryItem(name: "per_page", value: "\(authoredPullRequestLimit)")
+            ],
             token: token,
-            actionableReasons: actionableReasons,
             observer: observer
         )
 
-        let enrichedThreads = Array(candidateThreads.prefix(notificationEnrichmentLimit))
-        let fallbackThreads = Array(candidateThreads.dropFirst(notificationEnrichmentLimit))
+        return await withTaskGroup(of: ReadyToMergeSummary?.self) { group in
+            for issue in response.items {
+                group.addTask {
+                    do {
+                        return try await buildReadyToMergeSummary(
+                            token: token,
+                            login: login,
+                            issue: issue,
+                            observer: observer
+                        )
+                    } catch {
+                        return nil
+                    }
+                }
+            }
+
+            var summaries = [ReadyToMergeSummary]()
+            for await summary in group {
+                if let summary {
+                    summaries.append(summary)
+                }
+            }
+
+            return summaries.sorted { $0.updatedAt > $1.updatedAt }
+        }
+    }
+
+    private func buildReadyToMergeSummary(
+        token: String,
+        login: String,
+        issue: IssueItem,
+        observer: GitHubRateLimitObserver
+    ) async throws -> ReadyToMergeSummary? {
+        guard let repository = repositoryFullName(from: issue.repositoryURL) else {
+            return nil
+        }
+
+        let repositoryID = try parseRepositoryFullName(repository)
+        let details: PullRequestDetails = try await request(
+            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/pulls/\(issue.number)",
+            token: token,
+            observer: observer
+        )
+
+        let reviews = try await fetchPullRequestReviews(
+            token: token,
+            repository: repository,
+            number: issue.number,
+            observer: observer
+        )
+        let approvalSummary = latestApprovalSummary(reviews: reviews, excluding: login)
+
+        let pendingReviewRequests = details.requestedReviewers.count + details.requestedTeams.count
+        guard AuthoredPullRequestAttentionPolicy.shouldSurfaceReadyToMerge(
+            state: details.state,
+            merged: details.merged,
+            isDraft: details.isDraft,
+            mergeable: details.mergeable,
+            mergeableState: details.mergeableState,
+            pendingReviewRequests: pendingReviewRequests,
+            approvalCount: approvalSummary.approvalCount,
+            hasChangesRequested: approvalSummary.hasChangesRequested
+        ) else {
+            return nil
+        }
+
+        let subtitle: String
+        if let actor = approvalSummary.latestApprover {
+            subtitle = "\(actor.login) · \(repository) · Ready to merge"
+        } else {
+            subtitle = "\(repository) · Ready to merge"
+        }
+
+        return ReadyToMergeSummary(
+            id: "\(repository)#\(issue.number)",
+            ignoreKey: details.htmlURL.absoluteString,
+            number: issue.number,
+            title: issue.title,
+            subtitle: subtitle,
+            repository: repository,
+            url: details.htmlURL,
+            updatedAt: issue.updatedAt,
+            actor: approvalSummary.latestApprover,
+            approvalCount: approvalSummary.approvalCount
+        )
+    }
+
+    private func fetchActionableNotifications(
+        token: String,
+        login: String,
+        scanState: NotificationScanState,
+        teamMembershipCache: TeamMembershipCache,
+        observer: GitHubRateLimitObserver
+    ) async throws -> NotificationFetchResult {
+        let threadScan = try await fetchNotificationThreads(
+            token: token,
+            scanState: scanState,
+            observer: observer
+        )
+
+        let enrichedThreads = Array(threadScan.candidates.prefix(notificationEnrichmentLimit))
+        let fallbackThreads = await filterFallbackThreads(
+            Array(threadScan.candidates.dropFirst(notificationEnrichmentLimit)),
+            token: token,
+            login: login,
+            teamMembershipCache: teamMembershipCache,
+            observer: observer
+        )
 
         let fallbackSummaries = fallbackThreads.map(buildFallbackNotificationSummary)
 
@@ -468,7 +731,8 @@ struct GitHubClient {
                         return try await buildNotificationSummary(
                             token: token,
                             login: login,
-                            thread: thread,
+                            thread: thread.thread,
+                            teamMembershipCache: teamMembershipCache,
                             observer: observer
                         )
                     } catch {
@@ -484,18 +748,40 @@ struct GitHubClient {
                 }
             }
 
-            return items.sorted { $0.updatedAt > $1.updatedAt }
+            let sortedItems = items.sorted { $0.updatedAt > $1.updatedAt }
+            let visibleThreadIDs = Set(sortedItems.map(\.id))
+            let deepestVisiblePage = threadScan.candidates
+                .filter { visibleThreadIDs.contains($0.thread.id) }
+                .map(\.page)
+                .max() ?? steadyNotificationPageLimit
+
+            return NotificationFetchResult(
+                notifications: sortedItems,
+                scanState: NotificationScanState(
+                    knownActionableThreadIDs: sortedItems.map(\.id),
+                    preferredPageDepth: deepestVisiblePage
+                ).normalized
+            )
         }
     }
 
     private func fetchNotificationThreads(
         token: String,
-        actionableReasons: Set<String>,
+        scanState: NotificationScanState,
         observer: GitHubRateLimitObserver
-    ) async throws -> [NotificationThread] {
-        var candidateThreads: [NotificationThread] = []
+    ) async throws -> NotificationThreadScan {
+        let normalizedScanState = scanState.normalized
+        let knownActionableThreadIDs = Set(normalizedScanState.knownActionableThreadIDs)
+        let minimumPageTarget: Int
+        if knownActionableThreadIDs.isEmpty {
+            minimumPageTarget = initialNotificationPageLimit
+        } else {
+            minimumPageTarget = max(steadyNotificationPageLimit, normalizedScanState.preferredPageDepth)
+        }
 
-        for page in 1...notificationPageLimit {
+        var candidateThreads: [NotificationThreadCandidate] = []
+
+        for page in 1...maximumNotificationPageLimit {
             let threads: [NotificationThread] = try await request(
                 path: "/notifications",
                 queryItems: [
@@ -507,27 +793,43 @@ struct GitHubClient {
                 observer: observer
             )
 
+            let actionableThreads = threads.filter {
+                NotificationAttentionPolicy.isActionable(reason: $0.reason)
+            }
             candidateThreads.append(
-                contentsOf: threads.filter { actionableReasons.contains($0.reason) }
+                contentsOf: actionableThreads.map {
+                    NotificationThreadCandidate(thread: $0, page: page)
+                }
             )
 
-            if threads.count < notificationPageSize ||
-                candidateThreads.count >= actionableNotificationLimit {
+            let pageContainsKnownActionable = !knownActionableThreadIDs.isEmpty &&
+                actionableThreads.contains { knownActionableThreadIDs.contains($0.id) }
+            let shouldStopAfterThisPage = page >= minimumPageTarget && (
+                actionableThreads.isEmpty ||
+                    pageContainsKnownActionable ||
+                    candidateThreads.count >= actionableNotificationLimit
+            )
+
+            if threads.count < notificationPageSize || shouldStopAfterThisPage {
                 break
             }
         }
 
-        return Array(candidateThreads.prefix(actionableNotificationLimit))
+        return NotificationThreadScan(
+            candidates: Array(candidateThreads.prefix(actionableNotificationLimit))
+        )
     }
 
     private func buildNotificationSummary(
         token: String,
         login: String,
         thread: NotificationThread,
+        teamMembershipCache: TeamMembershipCache,
         observer: GitHubRateLimitObserver
     ) async throws -> NotificationSummary? {
         var actor: AttentionActor?
         var reviewTarget: ReviewRequestTarget?
+        var timelineContext: TimelineContext?
         var type = AttentionItemType.notificationType(
             reason: thread.reason,
             timelineEvent: nil,
@@ -557,24 +859,28 @@ struct GitHubClient {
                         token: token,
                         reference: reference,
                         login: login,
+                        teamMembershipCache: teamMembershipCache,
                         observer: observer
                     )
                 }
             }
 
-            if let timelineContext = try await fetchTimelineContext(
-                token: token,
-                reference: reference,
-                currentLogin: login,
-                reviewTarget: reviewTarget,
-                observer: observer
-            ) {
-                actor = timelineContext.actor
+            if let fetchedTimelineContext = try await fetchTimelineContext(
+                    token: token,
+                    reference: reference,
+                    currentLogin: login,
+                    reviewTarget: reviewTarget,
+                    teamMembershipCache: teamMembershipCache,
+                    observer: observer
+                ) {
+                timelineContext = fetchedTimelineContext
+                actor = fetchedTimelineContext.actor
                 type = AttentionItemType.notificationType(
                     reason: thread.reason,
-                    timelineEvent: timelineContext.event,
-                    reviewState: timelineContext.reviewState,
-                    teamScoped: thread.reason == "team_mention" || reviewTarget?.isTeam == true
+                    timelineEvent: fetchedTimelineContext.event,
+                    reviewState: fetchedTimelineContext.reviewState,
+                    teamScoped: thread.reason == "team_mention" || reviewTarget?.isTeam == true,
+                    followUpRelationship: fetchedTimelineContext.followUpRelationship
                 )
             }
         }
@@ -609,16 +915,22 @@ struct GitHubClient {
             targetLabel: notificationTargetLabel(
                 reason: thread.reason,
                 type: type,
-                reviewTarget: reviewTarget
-            )
+                reviewTarget: reviewTarget,
+                followUpRelationship: timelineContext?.followUpRelationship
+            ),
+            detailEvidence: timelineContext?.detailEvidence ?? []
         )
     }
 
-    private func buildFallbackNotificationSummary(thread: NotificationThread) -> NotificationSummary {
+    private func buildFallbackNotificationSummary(
+        _ candidate: FallbackNotificationCandidate
+    ) -> NotificationSummary {
+        let thread = candidate.thread
         let type = AttentionItemType.notificationType(
             reason: thread.reason,
             timelineEvent: nil,
-            reviewState: nil
+            reviewState: nil,
+            teamScoped: candidate.reviewTarget?.isTeam == true
         )
         let reference = discussionReference(from: thread.subject.url)
         let ignoreKey = reference.flatMap { canonicalIgnoreURL(for: $0)?.absoluteString }
@@ -643,9 +955,95 @@ struct GitHubClient {
             targetLabel: notificationTargetLabel(
                 reason: thread.reason,
                 type: type,
-                reviewTarget: nil
-            )
+                reviewTarget: candidate.reviewTarget,
+                followUpRelationship: nil
+            ),
+            detailEvidence: []
         )
+    }
+
+    private func filterFallbackThreads(
+        _ threads: [NotificationThreadCandidate],
+        token: String,
+        login: String,
+        teamMembershipCache: TeamMembershipCache,
+        observer: GitHubRateLimitObserver
+    ) async -> [FallbackNotificationCandidate] {
+        await withTaskGroup(of: (Int, FallbackNotificationCandidate?).self) { group in
+            for (index, thread) in threads.enumerated() {
+                group.addTask {
+                    do {
+                        let candidate = try await fallbackNotificationCandidate(
+                            thread.thread,
+                            token: token,
+                            login: login,
+                            teamMembershipCache: teamMembershipCache,
+                            observer: observer
+                        )
+                        return (index, candidate)
+                    } catch {
+                        return (index, nil)
+                    }
+                }
+            }
+
+            var filtered = Array<FallbackNotificationCandidate?>(repeating: nil, count: threads.count)
+            for await (index, thread) in group {
+                filtered[index] = thread
+            }
+
+            return filtered.compactMap { $0 }
+        }
+    }
+
+    private func fallbackNotificationCandidate(
+        _ thread: NotificationThread,
+        token: String,
+        login: String,
+        teamMembershipCache: TeamMembershipCache,
+        observer: GitHubRateLimitObserver
+    ) async throws -> FallbackNotificationCandidate? {
+        guard NotificationAttentionPolicy.shouldIncludeFallback(
+            reason: thread.reason,
+            updatedAt: thread.updatedAt
+        ) else {
+            return nil
+        }
+
+        guard
+            let reference = discussionReference(from: thread.subject.url),
+            reference.kind == .pullRequest
+        else {
+            return FallbackNotificationCandidate(thread: thread, reviewTarget: nil)
+        }
+
+        let state = try await fetchPullRequestState(
+            token: token,
+            reference: reference,
+            observer: observer
+        )
+        guard NotificationAttentionPolicy.shouldIncludePullRequestFallback(
+            state: state.state,
+            merged: state.merged
+        ) else {
+            return nil
+        }
+
+        if thread.reason == "review_requested" {
+            let reviewTarget = try await fetchReviewRequestTarget(
+                token: token,
+                reference: reference,
+                login: login,
+                teamMembershipCache: teamMembershipCache,
+                observer: observer
+            )
+            guard let reviewTarget else {
+                return nil
+            }
+            return FallbackNotificationCandidate(thread: thread, reviewTarget: reviewTarget)
+        }
+
+        return FallbackNotificationCandidate(thread: thread, reviewTarget: nil)
     }
 
     private func fetchTimelineContext(
@@ -653,56 +1051,53 @@ struct GitHubClient {
         reference: DiscussionReference,
         currentLogin: String,
         reviewTarget: ReviewRequestTarget?,
+        teamMembershipCache: TeamMembershipCache,
         observer: GitHubRateLimitObserver
     ) async throws -> TimelineContext? {
         let timeline: [TimelineEntry] = try await request(
             path: "/repos/\(reference.owner)/\(reference.name)/issues/\(reference.number)/timeline",
             queryItems: [
-                URLQueryItem(name: "per_page", value: "20")
+                URLQueryItem(name: "per_page", value: "50")
             ],
             token: token,
             observer: observer
         )
 
-        let relevantEntries = timeline.compactMap { entry -> TimelineContext? in
+        let sortedTimeline = timeline.sorted {
+            (timelineTimestamp(for: $0, fallbackToDistantPast: true) ?? .distantPast)
+                > (timelineTimestamp(for: $1, fallbackToDistantPast: true) ?? .distantPast)
+        }
+
+        for entry in sortedTimeline {
+            guard let timestamp = timelineTimestamp(for: entry) else {
+                continue
+            }
+
             let event = (entry.event ?? "").lowercased()
-            let actor = entry.actor ?? entry.user
-            let timestamp = entry.submittedAt ?? entry.createdAt
-            guard let timestamp else {
-                return nil
-            }
-
             guard !event.isEmpty else {
-                return nil
+                continue
             }
 
-            guard actor?.login != currentLogin else {
-                return nil
+            guard !timelineActorMatches(entry, login: currentLogin) else {
+                continue
             }
 
             switch event {
             case "assigned":
-                guard entry.assignee?.login.caseInsensitiveCompare(currentLogin) == .orderedSame else {
-                    return nil
+                guard timelineUser(entry.assignee, matches: currentLogin) else {
+                    continue
                 }
-                return TimelineContext(
-                    event: event,
-                    reviewState: entry.state,
-                    actor: attentionActor(from: actor),
-                    timestamp: timestamp
-                )
             case "review_requested":
-                let requestedReviewerMatches =
-                    entry.requestedReviewer?.login.caseInsensitiveCompare(currentLogin) == .orderedSame
-                guard requestedReviewerMatches || reviewTarget?.isTeam == true else {
-                    return nil
-                }
-                return TimelineContext(
-                    event: event,
-                    reviewState: entry.state,
-                    actor: attentionActor(from: actor),
-                    timestamp: timestamp
+                let requestedReviewerMatches = timelineUser(entry.requestedReviewer, matches: currentLogin)
+                let requestedTeamMatches = timelineTeam(
+                    entry.requestedTeam,
+                    owner: reference.owner,
+                    reviewTarget: reviewTarget,
+                    teamMembershipCache: teamMembershipCache
                 )
+                guard requestedReviewerMatches || requestedTeamMatches else {
+                    continue
+                }
             case "closed",
                 "commented",
                 "committed",
@@ -710,18 +1105,41 @@ struct GitHubClient {
                 "merged",
                 "reopened",
                 "reviewed":
-                return TimelineContext(
-                    event: event,
-                    reviewState: entry.state,
-                    actor: attentionActor(from: actor),
-                    timestamp: timestamp
-                )
+                break
             default:
-                return nil
+                continue
             }
+
+            let followUp = followUpRelationship(
+                in: sortedTimeline,
+                latestChangeAt: timestamp,
+                currentLogin: currentLogin
+            )
+
+            let detailEvidence: [AttentionEvidence]
+            if event == "committed" || event == "head_ref_force_pushed",
+                let followUp {
+                detailEvidence = commitEvidence(
+                    in: sortedTimeline,
+                    reference: reference,
+                    after: followUp.timestamp,
+                    currentLogin: currentLogin
+                )
+            } else {
+                detailEvidence = []
+            }
+
+            return TimelineContext(
+                event: event,
+                reviewState: entry.state,
+                actor: timelineActor(from: entry),
+                timestamp: timestamp,
+                followUpRelationship: followUp?.relationship,
+                detailEvidence: detailEvidence
+            )
         }
 
-        return relevantEntries.sorted { $0.timestamp > $1.timestamp }.first
+        return nil
     }
 
     private func notificationSubtitle(
@@ -740,6 +1158,7 @@ struct GitHubClient {
         token: String,
         reference: DiscussionReference,
         login: String,
+        teamMembershipCache: TeamMembershipCache,
         observer: GitHubRateLimitObserver
     ) async throws -> ReviewRequestTarget? {
         guard reference.kind == .pullRequest else {
@@ -756,18 +1175,51 @@ struct GitHubClient {
             return .direct
         }
 
-        if let team = response.teams.first {
-            return .team(name: team.name ?? team.slug)
+        let matchingTeams = response.teams.filter {
+            teamMembershipCache.contains(owner: reference.owner, slug: $0.slug)
+        }
+        if let team = matchingTeams.first {
+            return .team(
+                owner: reference.owner,
+                slug: team.slug,
+                name: team.name ?? team.slug
+            )
         }
 
-        return nil
+        guard !response.teams.isEmpty else {
+            return nil
+        }
+
+        if teamMembershipCache.fetchedAt != nil {
+            return nil
+        }
+
+        if response.teams.count == 1, let team = response.teams.first {
+            return .team(
+                owner: reference.owner,
+                slug: team.slug,
+                name: team.name ?? team.slug
+            )
+        }
+
+        return .team(owner: reference.owner, slug: nil, name: nil)
     }
 
     private func notificationTargetLabel(
         reason: String,
         type: AttentionItemType,
-        reviewTarget: ReviewRequestTarget?
+        reviewTarget: ReviewRequestTarget?,
+        followUpRelationship: NotificationFollowUpRelationship?
     ) -> String? {
+        switch followUpRelationship {
+        case .afterYourComment:
+            return "New commits landed after you commented."
+        case .afterYourReview:
+            return "New commits landed after your review."
+        case nil:
+            break
+        }
+
         switch reason.lowercased() {
         case "assign":
             return "Assigned to you directly."
@@ -779,7 +1231,7 @@ struct GitHubClient {
             switch reviewTarget {
             case .direct:
                 return "Review was requested from you directly."
-            case let .team(name):
+            case let .team(_, _, name):
                 if let name, !name.isEmpty {
                     return "Review was requested from team \(name)."
                 }
@@ -792,6 +1244,158 @@ struct GitHubClient {
         default:
             return nil
         }
+    }
+
+    private func followUpRelationship(
+        in timeline: [TimelineEntry],
+        latestChangeAt: Date,
+        currentLogin: String
+    ) -> (relationship: NotificationFollowUpRelationship, timestamp: Date)? {
+        for entry in timeline {
+            guard let timestamp = timelineTimestamp(for: entry), timestamp < latestChangeAt else {
+                continue
+            }
+
+            guard timelineActorMatches(entry, login: currentLogin) else {
+                continue
+            }
+
+            switch (entry.event ?? "").lowercased() {
+            case "commented":
+                return (.afterYourComment, timestamp)
+            case "reviewed":
+                return (.afterYourReview, timestamp)
+            default:
+                continue
+            }
+        }
+
+        return nil
+    }
+
+    private func commitEvidence(
+        in timeline: [TimelineEntry],
+        reference: DiscussionReference,
+        after participationTimestamp: Date,
+        currentLogin: String
+    ) -> [AttentionEvidence] {
+        timeline.compactMap { entry -> AttentionEvidence? in
+            guard let timestamp = timelineTimestamp(for: entry), timestamp > participationTimestamp else {
+                return nil
+            }
+
+            guard !timelineActorMatches(entry, login: currentLogin) else {
+                return nil
+            }
+
+            let event = (entry.event ?? "").lowercased()
+            guard event == "committed" || event == "head_ref_force_pushed" else {
+                return nil
+            }
+
+            let sha = (entry.sha ?? entry.commitID)?.prefix(7)
+            let title = timelineCommitTitle(for: entry, abbreviatedSHA: sha.map(String.init))
+            let detail = timelineCommitDetail(for: entry, abbreviatedSHA: sha.map(String.init))
+
+            return AttentionEvidence(
+                id: "commit-\(entry.id.map(String.init) ?? UUID().uuidString)",
+                title: title,
+                detail: detail,
+                iconName: event == "head_ref_force_pushed" ? "arrow.uturn.backward.circle" : "arrow.trianglehead.branch",
+                url: timelineCommitURL(for: entry, reference: reference)
+            )
+        }
+        .prefix(3)
+        .map { $0 }
+    }
+
+    private func timelineCommitTitle(for entry: TimelineEntry, abbreviatedSHA: String?) -> String {
+        if let message = entry.message?.split(separator: "\n").first,
+            !message.isEmpty {
+            return String(message)
+        }
+
+        if (entry.event ?? "").lowercased() == "head_ref_force_pushed" {
+            return "Force-pushed branch"
+        }
+
+        if let abbreviatedSHA {
+            return "Commit \(abbreviatedSHA)"
+        }
+
+        return "New commit"
+    }
+
+    private func timelineCommitDetail(for entry: TimelineEntry, abbreviatedSHA: String?) -> String? {
+        if let abbreviatedSHA,
+            let message = entry.message?.split(separator: "\n").first,
+            !message.isEmpty {
+            return abbreviatedSHA
+        }
+
+        return abbreviatedSHA
+    }
+
+    private func timelineCommitURL(for entry: TimelineEntry, reference: DiscussionReference) -> URL? {
+        if let htmlURL = entry.htmlURL {
+            return htmlURL
+        }
+
+        if let sha = entry.sha ?? entry.commitID {
+            return URL(string: "https://github.com/\(reference.owner)/\(reference.name)/commit/\(sha)")
+        }
+
+        if let commitURL = entry.commitURL {
+            return subjectWebURL(
+                subjectURL: commitURL,
+                repositoryWebURL: repositoryWebURL(repository: "\(reference.owner)/\(reference.name)"),
+                subjectType: "Commit"
+            )
+        }
+
+        return nil
+    }
+
+    private func timelineTimestamp(
+        for entry: TimelineEntry,
+        fallbackToDistantPast: Bool = false
+    ) -> Date? {
+        let timestamp = entry.submittedAt ?? entry.createdAt
+        if fallbackToDistantPast, timestamp == nil {
+            return .distantPast
+        }
+        return timestamp
+    }
+
+    private func timelineActor(from entry: TimelineEntry) -> AttentionActor? {
+        attentionActor(from: entry.actor ?? entry.user) ??
+            attentionActor(from: entry.committer) ??
+            attentionActor(from: entry.author)
+    }
+
+    private func timelineActorMatches(_ entry: TimelineEntry, login: String) -> Bool {
+        timelineActor(from: entry)?.login.caseInsensitiveCompare(login) == .orderedSame
+    }
+
+    private func timelineUser(_ user: GitHubUser?, matches login: String) -> Bool {
+        user?.login.caseInsensitiveCompare(login) == .orderedSame
+    }
+
+    private func timelineTeam(
+        _ team: GitHubTeam?,
+        owner: String,
+        reviewTarget: ReviewRequestTarget?,
+        teamMembershipCache: TeamMembershipCache
+    ) -> Bool {
+        guard let team else {
+            return false
+        }
+
+        if reviewTarget?.matches(owner: owner, slug: team.slug) == true {
+            return true
+        }
+
+        return reviewTarget == nil && teamMembershipCache.contains(owner: owner, slug: team.slug)
     }
 
     private func discussionReference(from subjectURL: URL?) -> DiscussionReference? {
@@ -1044,13 +1648,10 @@ struct GitHubClient {
         login: String,
         observer: GitHubRateLimitObserver
     ) async throws -> Bool {
-        let repositoryID = try parseRepositoryFullName(repository)
-        let reviews: [PullRequestReview] = try await request(
-            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/pulls/\(number)/reviews",
-            queryItems: [
-                URLQueryItem(name: "per_page", value: "100")
-            ],
+        let reviews = try await fetchPullRequestReviews(
             token: token,
+            repository: repository,
+            number: number,
             observer: observer
         )
 
@@ -1058,6 +1659,59 @@ struct GitHubClient {
             $0.user.login.caseInsensitiveCompare(login) == .orderedSame &&
                 $0.state.caseInsensitiveCompare("APPROVED") == .orderedSame
         }
+    }
+
+    private func fetchPullRequestReviews(
+        token: String,
+        repository: String,
+        number: Int,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [PullRequestReview] {
+        let repositoryID = try parseRepositoryFullName(repository)
+        return try await request(
+            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/pulls/\(number)/reviews",
+            queryItems: [
+                URLQueryItem(name: "per_page", value: "100")
+            ],
+            token: token,
+            observer: observer
+        )
+    }
+
+    private func latestApprovalSummary(
+        reviews: [PullRequestReview],
+        excluding login: String
+    ) -> LatestApprovalSummary {
+        var latestByReviewer = [String: PullRequestReview]()
+
+        for review in reviews {
+            guard review.user.login.caseInsensitiveCompare(login) != .orderedSame else {
+                continue
+            }
+
+            let key = review.user.login.lowercased()
+            if let existing = latestByReviewer[key],
+                existing.submittedAt >= review.submittedAt {
+                continue
+            }
+            latestByReviewer[key] = review
+        }
+
+        let latestReviews = Array(latestByReviewer.values)
+        let approvals = latestReviews.filter {
+            $0.state.caseInsensitiveCompare("APPROVED") == .orderedSame
+        }
+        let latestApprover = approvals.max { lhs, rhs in
+            lhs.submittedAt < rhs.submittedAt
+        }.flatMap { attentionActor(from: $0.user) }
+
+        return LatestApprovalSummary(
+            approvalCount: approvals.count,
+            hasChangesRequested: latestReviews.contains {
+                $0.state.caseInsensitiveCompare("CHANGES_REQUESTED") == .orderedSame
+            },
+            latestApprover: latestApprover
+        )
     }
 
     private func fetchWorkflowRunsForCommit(
@@ -1105,12 +1759,18 @@ struct GitHubClient {
         switch type {
         case .assignedPullRequest:
             return "This pull request is assigned to you."
+        case .readyToMerge:
+            return "One of your pull requests is approved and ready to merge."
         case .comment:
             return "There is new discussion on a thread you are following."
         case .mention:
             return "Someone mentioned you in a GitHub discussion."
         case .teamMention:
             return "One of your GitHub teams was mentioned in a discussion."
+        case .newCommitsAfterComment:
+            return "A pull request changed after you commented on it."
+        case .newCommitsAfterReview:
+            return "A pull request changed after you reviewed it."
         case .reviewRequested:
             return "A pull request is waiting for your review."
         case .teamReviewRequested:
@@ -1155,6 +1815,14 @@ struct GitHubClient {
         }
 
         return AttentionActor(login: user.login, avatarURL: user.avatarURL)
+    }
+
+    private func attentionActor(from identity: TimelineIdentity?) -> AttentionActor? {
+        guard let identity, let login = identity.login, !login.isEmpty else {
+            return nil
+        }
+
+        return AttentionActor(login: login, avatarURL: identity.avatarURL)
     }
 
     private func canonicalIgnoreURL(for reference: DiscussionReference) -> URL? {
@@ -1468,6 +2136,8 @@ private struct TimelineContext: Hashable, Sendable {
     let reviewState: String?
     let actor: AttentionActor?
     let timestamp: Date
+    let followUpRelationship: NotificationFollowUpRelationship?
+    let detailEvidence: [AttentionEvidence]
 }
 
 private struct IssueItem: Decodable {
@@ -1492,18 +2162,28 @@ private struct PullRequestDetails: Decodable {
     let title: String
     let htmlURL: URL
     let state: String
+    let isDraft: Bool
     let merged: Bool
     let mergedAt: Date?
     let mergeCommitSHA: String?
+    let mergeable: Bool?
+    let mergeableState: String?
+    let requestedReviewers: [GitHubUser]
+    let requestedTeams: [GitHubTeam]
     let head: PullRequestBranch
 
     enum CodingKeys: String, CodingKey {
         case title
         case htmlURL = "html_url"
         case state
+        case isDraft = "draft"
         case merged
         case mergedAt = "merged_at"
         case mergeCommitSHA = "merge_commit_sha"
+        case mergeable
+        case mergeableState = "mergeable_state"
+        case requestedReviewers = "requested_reviewers"
+        case requestedTeams = "requested_teams"
         case head
     }
 }
@@ -1527,6 +2207,19 @@ private struct PullRequestStateResponse: Decodable {
 private struct PullRequestReview: Decodable {
     let state: String
     let user: GitHubUser
+    let submittedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case user
+        case submittedAt = "submitted_at"
+    }
+}
+
+private struct LatestApprovalSummary {
+    let approvalCount: Int
+    let hasChangesRequested: Bool
+    let latestApprover: AttentionActor?
 }
 
 private struct GitHubUser: Decodable {
@@ -1557,6 +2250,25 @@ private struct NotificationThread: Decodable {
     }
 }
 
+private struct NotificationThreadCandidate: Sendable {
+    let thread: NotificationThread
+    let page: Int
+}
+
+private struct NotificationThreadScan: Sendable {
+    let candidates: [NotificationThreadCandidate]
+}
+
+private struct FallbackNotificationCandidate: Sendable {
+    let thread: NotificationThread
+    let reviewTarget: ReviewRequestTarget?
+}
+
+private struct NotificationFetchResult: Sendable {
+    let notifications: [NotificationSummary]
+    let scanState: NotificationScanState
+}
+
 private struct Subject: Decodable {
     let title: String
     let type: String
@@ -1575,7 +2287,7 @@ private struct Repository: Decodable {
 
 private enum ReviewRequestTarget: Hashable, Sendable {
     case direct
-    case team(name: String?)
+    case team(owner: String, slug: String?, name: String?)
 
     var isTeam: Bool {
         switch self {
@@ -1583,6 +2295,20 @@ private enum ReviewRequestTarget: Hashable, Sendable {
             return false
         case .team:
             return true
+        }
+    }
+
+    func matches(owner: String, slug: String) -> Bool {
+        switch self {
+        case .direct:
+            return false
+        case let .team(targetOwner, targetSlug, _):
+            guard let targetSlug else {
+                return false
+            }
+
+            return targetOwner.caseInsensitiveCompare(owner) == .orderedSame &&
+                targetSlug.caseInsensitiveCompare(slug) == .orderedSame
         }
     }
 }
@@ -1595,26 +2321,59 @@ private struct RequestedReviewersResponse: Decodable {
 private struct GitHubTeam: Decodable {
     let slug: String
     let name: String?
+    let organization: GitHubOrganization?
+}
+
+private struct GitHubOrganization: Decodable {
+    let login: String
+}
+
+private struct TimelineIdentity: Decodable {
+    let login: String?
+    let avatarURL: URL?
+
+    enum CodingKeys: String, CodingKey {
+        case login
+        case avatarURL = "avatar_url"
+    }
 }
 
 private struct TimelineEntry: Decodable {
+    let id: Int?
     let event: String?
     let createdAt: Date?
     let submittedAt: Date?
     let actor: GitHubUser?
     let user: GitHubUser?
+    let author: TimelineIdentity?
+    let committer: TimelineIdentity?
     let assignee: GitHubUser?
     let requestedReviewer: GitHubUser?
+    let requestedTeam: GitHubTeam?
+    let sha: String?
+    let commitID: String?
+    let commitURL: URL?
+    let htmlURL: URL?
+    let message: String?
     let state: String?
 
     enum CodingKeys: String, CodingKey {
+        case id
         case event
         case createdAt = "created_at"
         case submittedAt = "submitted_at"
         case actor
         case user
+        case author
+        case committer
         case assignee
         case requestedReviewer = "requested_reviewer"
+        case requestedTeam = "requested_team"
+        case sha
+        case commitID = "commit_id"
+        case commitURL = "commit_url"
+        case htmlURL = "html_url"
+        case message
         case state
     }
 }
