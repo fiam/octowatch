@@ -25,6 +25,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var ignoreUndoState: IgnoreUndoState?
     @Published private(set) var pollIntervalSeconds = 60
     @Published private(set) var autoMarkReadSetting: AutoMarkReadSetting = .threeSeconds
+    @Published private(set) var pullRequestWatchRevision = 0
 
     private let readStateStoreKey = "attention-item-read-state-v1"
     private let ignoredSubjectStoreKey = "ignored-attention-subjects-v2"
@@ -33,9 +34,11 @@ final class AppModel: ObservableObject {
     private let autoMarkReadStoreKey = "auto-mark-read-setting-v1"
     private let notificationScanStateStoreKey = "notification-scan-state-v1"
     private let teamMembershipStoreKey = "team-membership-cache-v1"
+    private let postMergeWatchStoreKey = "post-merge-watches-v1"
     private let client = GitHubClient()
     private let notifier = UserNotifier()
     private let pullRequestFocusCacheTTL: TimeInterval = 300
+    private let pullRequestWatchIntervalSeconds = 20
 
     private struct PullRequestFocusCacheEntry {
         let focus: PullRequestFocus
@@ -46,10 +49,14 @@ final class AppModel: ObservableObject {
     private var token: String?
     private var userLogin: String?
     private var pollingTask: Task<Void, Never>?
+    private var watchedPullRequestTask: Task<Void, Never>?
     private var knownItemIDs = Set<String>()
     private var notificationScanState = NotificationScanState.default
     private var teamMembershipCache = TeamMembershipCache.default
+    private var postMergeWatchesByKey = [String: PostMergeWatch]()
     private var pullRequestFocusCache = [String: PullRequestFocusCacheEntry]()
+    private var watchedPullRequestKey: String?
+    private var watchedPullRequestState: PullRequestLiveWatchState?
     private var ignoredItemsByKey = [String: IgnoredAttentionSubject]()
     private var ignoreUndoDismissTask: Task<Void, Never>?
     private var readStateByItemID: [String: Date] = [:]
@@ -77,6 +84,10 @@ final class AppModel: ObservableObject {
         teamMembershipCache = Self.loadTeamMembershipCache(
             from: UserDefaults.standard,
             key: teamMembershipStoreKey
+        )
+        postMergeWatchesByKey = Self.loadPostMergeWatches(
+            from: UserDefaults.standard,
+            key: postMergeWatchStoreKey
         )
         readStateByItemID = Self.loadReadState(
             from: UserDefaults.standard,
@@ -107,6 +118,7 @@ final class AppModel: ObservableObject {
 
     deinit {
         pollingTask?.cancel()
+        watchedPullRequestTask?.cancel()
         ignoreUndoDismissTask?.cancel()
     }
 
@@ -224,9 +236,12 @@ final class AppModel: ObservableObject {
         clearIgnoreUndoState()
         UserDefaults.standard.removeObject(forKey: notificationScanStateStoreKey)
         UserDefaults.standard.removeObject(forKey: teamMembershipStoreKey)
+        UserDefaults.standard.removeObject(forKey: postMergeWatchStoreKey)
+        postMergeWatchesByKey.removeAll()
 
         pollingTask?.cancel()
         pollingTask = nil
+        clearWatchedPullRequest()
     }
 
     func reloadTokenFromGitHubCLI() async -> Bool {
@@ -263,6 +278,30 @@ final class AppModel: ObservableObject {
 
         Task {
             await refresh(force: true)
+        }
+    }
+
+    func setWatchedPullRequest(_ item: AttentionItem?) {
+        guard hasToken, let item, let reference = item.pullRequestReference else {
+            clearWatchedPullRequest()
+            return
+        }
+
+        let watchKey = item.ignoreKey
+        if let cached = pullRequestFocusCache[watchKey], cached.focus.resolution != .open {
+            clearWatchedPullRequest()
+            return
+        }
+
+        if watchedPullRequestKey == watchKey, watchedPullRequestTask != nil {
+            return
+        }
+
+        watchedPullRequestTask?.cancel()
+        watchedPullRequestKey = watchKey
+        watchedPullRequestState = nil
+        watchedPullRequestTask = Task { [weak self] in
+            await self?.runWatchedPullRequestLoop(reference: reference, cacheKey: watchKey)
         }
     }
 
@@ -314,19 +353,21 @@ final class AppModel: ObservableObject {
 
     func approveAndMergePullRequest(
         for item: AttentionItem,
-        requiresApproval: Bool
-    ) async throws {
+        requiresApproval: Bool,
+        mergeMethod: PullRequestMergeMethod?
+    ) async throws -> PullRequestMutationOutcome {
         guard let reference = item.pullRequestReference, let token else {
             throw GitHubClientError.invalidResponse
         }
 
-        let rateLimitSample = try await client.approveAndMergePullRequest(
+        let mutationResult = try await client.approveAndMergePullRequest(
             token: token,
             reference: reference,
-            approveFirst: requiresApproval
+            approveFirst: requiresApproval,
+            preferredMergeMethod: mergeMethod
         )
 
-        if let rateLimitSample {
+        if let rateLimitSample = mutationResult.rateLimit {
             if let current = rateLimit {
                 rateLimit = current.merged(with: rateLimitSample)
             } else {
@@ -336,8 +377,9 @@ final class AppModel: ObservableObject {
 
         markItemAsRead(item)
         suppressedTransitionNotificationKeys.insert(item.ignoreKey)
+        registerPostMergeWatch(for: item, outcome: mutationResult.outcome)
         pullRequestFocusCache[item.ignoreKey] = nil
-        await refresh(force: true)
+        return mutationResult.outcome
     }
 
     func markItemAsRead(_ item: AttentionItem) {
@@ -412,6 +454,81 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func clearWatchedPullRequest() {
+        watchedPullRequestTask?.cancel()
+        watchedPullRequestTask = nil
+        watchedPullRequestKey = nil
+        watchedPullRequestState = nil
+    }
+
+    private func runWatchedPullRequestLoop(
+        reference: PullRequestReference,
+        cacheKey: String
+    ) async {
+        defer {
+            if watchedPullRequestKey == cacheKey {
+                watchedPullRequestTask = nil
+            }
+        }
+
+        while !Task.isCancelled {
+            let shouldContinue = await pollWatchedPullRequest(
+                reference: reference,
+                cacheKey: cacheKey
+            )
+
+            guard shouldContinue, !Task.isCancelled else {
+                return
+            }
+
+            let interval = max(
+                pullRequestWatchIntervalSeconds,
+                effectiveAutomaticPollInterval(relativeTo: .now)
+            )
+            try? await Task.sleep(for: .seconds(Double(interval)))
+        }
+    }
+
+    private func pollWatchedPullRequest(
+        reference: PullRequestReference,
+        cacheKey: String
+    ) async -> Bool {
+        guard watchedPullRequestKey == cacheKey, let token else {
+            return false
+        }
+
+        do {
+            let result = try await client.fetchPullRequestLiveWatchUpdate(
+                token: token,
+                reference: reference,
+                previous: watchedPullRequestState
+            )
+
+            if let sample = result.rateLimit {
+                if let current = rateLimit {
+                    rateLimit = current.merged(with: sample)
+                } else {
+                    rateLimit = sample
+                }
+            }
+
+            watchedPullRequestState = result.update.state
+
+            if result.update.shouldReloadFocus {
+                pullRequestFocusCache[cacheKey] = nil
+                pullRequestWatchRevision &+= 1
+            }
+
+            if result.update.shouldRefreshSnapshot {
+                await refresh(force: true)
+            }
+
+            return result.update.shouldContinueWatching
+        } catch {
+            return true
+        }
+    }
+
     private func refresh(force: Bool) async {
         guard hasToken, !isRefreshing else {
             return
@@ -451,6 +568,7 @@ final class AppModel: ObservableObject {
             lastUpdated = Date()
             lastError = nil
 
+            await processPostMergeWatches(token: token)
             await notifyIfNeeded(previousItems: previousItems, token: token)
         } catch {
             if let clientError = error as? GitHubClientError,
@@ -521,7 +639,10 @@ final class AppModel: ObservableObject {
 
             if previousLogin?.caseInsensitiveCompare(validatedLogin) != .orderedSame {
                 teamMembershipCache = .default
+                postMergeWatchesByKey.removeAll()
                 UserDefaults.standard.removeObject(forKey: teamMembershipStoreKey)
+                UserDefaults.standard.removeObject(forKey: postMergeWatchStoreKey)
+                clearWatchedPullRequest()
             }
 
             startPollingIfNeeded()
@@ -564,13 +685,27 @@ final class AppModel: ObservableObject {
 
     private func notifyIfNeeded(previousItems: [AttentionItem], token: String) async {
         let currentIDs = Set(attentionItems.map(\.id))
+        let suppressedWorkflowItemIDs = Set(
+            postMergeWatchesByKey.values.flatMap(\.suppressedWorkflowItemIDs)
+        )
+        var registeredNewPostMergeWatch = false
         let newItems = attentionItems
             .filter { currentIDs.contains($0.id) && !knownItemIDs.contains($0.id) }
             .sorted { $0.timestamp < $1.timestamp }
 
         if !knownItemIDs.isEmpty {
-            for item in newItems.prefix(5) {
+            var deliveredItemNotifications = 0
+            for item in newItems {
+                guard deliveredItemNotifications < 5 else {
+                    break
+                }
+
+                if suppressedWorkflowItemIDs.contains(item.id) {
+                    continue
+                }
+
                 notifier.notify(item: item)
+                deliveredItemNotifications += 1
             }
 
             let removedItems = previousItems.filter { knownItemIDs.contains($0.id) && !currentIDs.contains($0.id) }
@@ -615,6 +750,13 @@ final class AppModel: ObservableObject {
                         notifier.notify(transition: transition)
                         deliveredTransitionNotifications += 1
                     }
+
+                    if registerResolvedPostMergeWatchIfNeeded(
+                        for: removedGroup,
+                        state: state
+                    ) {
+                        registeredNewPostMergeWatch = true
+                    }
                 } catch {
                     continue
                 }
@@ -622,6 +764,107 @@ final class AppModel: ObservableObject {
         }
 
         knownItemIDs = currentIDs
+
+        if registeredNewPostMergeWatch {
+            await processPostMergeWatches(token: token)
+        }
+    }
+
+    private func registerPostMergeWatch(
+        for item: AttentionItem,
+        outcome: PullRequestMutationOutcome
+    ) {
+        guard let watch = PostMergeWatch.register(item: item, outcome: outcome) else {
+            return
+        }
+
+        postMergeWatchesByKey[watch.id] = watch
+        persistPostMergeWatches()
+    }
+
+    private func registerResolvedPostMergeWatchIfNeeded(
+        for removedItems: [AttentionItem],
+        state: GitHubSubjectResolutionState
+    ) -> Bool {
+        guard let watch = AttentionRemovalPostMergeWatchPolicy.watch(
+            for: removedItems,
+            state: state
+        ) else {
+            return false
+        }
+
+        if let existing = postMergeWatchesByKey[watch.id] {
+            let updatedWatch = existing.updating(
+                mergedAt: state.mergedAt ?? existing.mergedAt,
+                mergeCommitSHA: state.mergeCommitSHA ?? existing.mergeCommitSHA
+            )
+
+            guard updatedWatch != existing else {
+                return false
+            }
+
+            postMergeWatchesByKey[watch.id] = updatedWatch
+            persistPostMergeWatches()
+            return true
+        }
+
+        postMergeWatchesByKey[watch.id] = watch
+        persistPostMergeWatches()
+        return true
+    }
+
+    private func processPostMergeWatches(token: String) async {
+        guard !postMergeWatchesByKey.isEmpty else {
+            return
+        }
+
+        var updatedWatches = postMergeWatchesByKey
+        let watchKeys = updatedWatches.keys.sorted()
+
+        for watchKey in watchKeys {
+            guard let watch = updatedWatches[watchKey] else {
+                continue
+            }
+
+            do {
+                let result = try await client.fetchPostMergeWatchObservation(
+                    token: token,
+                    watch: watch
+                )
+
+                if let rateLimitSample = result.rateLimit {
+                    if let current = rateLimit {
+                        rateLimit = current.merged(with: rateLimitSample)
+                    } else {
+                        rateLimit = rateLimitSample
+                    }
+                }
+
+                let update = PostMergeWatchPolicy.apply(
+                    watch: watch,
+                    observation: result.observation
+                )
+
+                if result.observation.resolution != .open || !result.observation.workflowRuns.isEmpty {
+                    pullRequestFocusCache[watch.reference.pullRequestURL.absoluteString] = nil
+                }
+
+                if let updatedWatch = update.updatedWatch {
+                    updatedWatches[watchKey] = updatedWatch
+                } else {
+                    updatedWatches[watchKey] = nil
+                }
+
+                for notification in update.notifications {
+                    notifier.notify(transition: notification)
+                }
+            } catch {
+                continue
+            }
+        }
+
+        postMergeWatchesByKey = updatedWatches
+        persistPostMergeWatches()
     }
 
     private func applyingLocalReadState(to item: AttentionItem) -> AttentionItem {
@@ -683,6 +926,17 @@ final class AppModel: ObservableObject {
 
         if let data = try? encoder.encode(teamMembershipCache.normalized) {
             UserDefaults.standard.set(data, forKey: teamMembershipStoreKey)
+        }
+    }
+
+    private func persistPostMergeWatches() {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        let payload = postMergeWatchesByKey.values.sorted { $0.createdAt > $1.createdAt }
+
+        if let data = try? encoder.encode(payload) {
+            UserDefaults.standard.set(data, forKey: postMergeWatchStoreKey)
         }
     }
 
@@ -750,6 +1004,24 @@ final class AppModel: ObservableObject {
         }
 
         return Dictionary(uniqueKeysWithValues: items.map { ($0.ignoreKey, $0) })
+    }
+
+    private static func loadPostMergeWatches(
+        from defaults: UserDefaults,
+        key: String
+    ) -> [String: PostMergeWatch] {
+        guard let data = defaults.data(forKey: key) else {
+            return [:]
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        guard let items = try? decoder.decode([PostMergeWatch].self, from: data) else {
+            return [:]
+        }
+
+        return Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
     }
 
     private static func loadLegacyIgnoredItems(

@@ -55,11 +55,18 @@ struct GitHubClient {
     query PullRequestFocus($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) {
         viewerPermission
+        mergeCommitAllowed
+        squashMergeAllowed
+        rebaseMergeAllowed
         pullRequest(number: $number) {
+          id
           title
           bodyHTML
           url
+          baseRefName
           state
+          merged
+          isInMergeQueue
           isDraft
           reviewDecision
           mergeable
@@ -164,6 +171,28 @@ struct GitHubClient {
               }
             }
           }
+        }
+      }
+    }
+    """
+
+    private static let pullRequestNodeIDQuery = """
+    query PullRequestNodeID($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+          id
+          merged
+          isInMergeQueue
+        }
+      }
+    }
+    """
+
+    private static let enqueuePullRequestMutation = """
+    mutation EnqueuePullRequest($pullRequestId: ID!) {
+      enqueuePullRequest(input: { pullRequestId: $pullRequestId }) {
+        mergeQueueEntry {
+          id
         }
       }
     }
@@ -806,6 +835,12 @@ struct GitHubClient {
             headSHA: pullRequest.headRefOID,
             observer: observer
         )
+        let postMergeWorkflowPreview = try? await fetchPostMergeWorkflowPreview(
+            token: token,
+            repository: reference.repository,
+            branch: pullRequest.baseRefName,
+            observer: observer
+        )
         let commitsSinceReview: [PullRequestFocusEntry]
         if let latestViewerReview {
             commitsSinceReview = focusCommitEntries(
@@ -828,6 +863,9 @@ struct GitHubClient {
             mode: focusMode,
             author: author,
             viewerPermission: response.repository?.viewerPermission,
+            allowMergeCommit: response.repository?.mergeCommitAllowed ?? false,
+            allowSquashMerge: response.repository?.squashMergeAllowed ?? false,
+            allowRebaseMerge: response.repository?.rebaseMergeAllowed ?? false,
             mergeable: pullRequest.mergeable,
             isDraft: pullRequest.isDraft,
             reviewDecision: pullRequest.reviewDecision,
@@ -835,10 +873,14 @@ struct GitHubClient {
             hasChangesRequested: approvalSummary.hasChangesRequested,
             pendingReviewRequestCount: pendingReviewRequestCount,
             checkSummary: checkInsights.summary,
-            openThreadCount: openThreadCount
+            openThreadCount: openThreadCount,
+            isMerged: pullRequest.merged,
+            isInMergeQueue: pullRequest.isInMergeQueue
         )
         let statusSummary = PullRequestStatusSummary.build(
             mode: focusMode,
+            resolution: pullRequest.merged ? .merged
+                : (pullRequest.state.caseInsensitiveCompare("closed") == .orderedSame ? .closed : .open),
             checkSummary: checkInsights.summary,
             openThreadCount: openThreadCount,
             reviewMergeAction: reviewMergeAction
@@ -855,11 +897,14 @@ struct GitHubClient {
             reference: reference,
             sourceType: sourceType,
             mode: focusMode,
+            resolution: pullRequest.merged ? .merged
+                : (pullRequest.state.caseInsensitiveCompare("closed") == .orderedSame ? .closed : .open),
             author: author,
             headerFacts: headerFacts,
             contextBadges: contextBadges,
             descriptionHTML: renderedPullRequestDescriptionHTML(pullRequest.bodyHTML),
             statusSummary: statusSummary,
+            postMergeWorkflowPreview: postMergeWorkflowPreview,
             sections: sections,
             actions: actions,
             reviewMergeAction: reviewMergeAction,
@@ -882,8 +927,9 @@ struct GitHubClient {
     func approveAndMergePullRequest(
         token: String,
         reference: PullRequestReference,
-        approveFirst: Bool
-    ) async throws -> GitHubRateLimit? {
+        approveFirst: Bool,
+        preferredMergeMethod: PullRequestMergeMethod?
+    ) async throws -> PullRequestMutationResult {
         let observer = GitHubRateLimitObserver()
 
         if approveFirst {
@@ -896,19 +942,60 @@ struct GitHubClient {
             )
         }
 
-        let mergeResponse: PullRequestMergeResponse = try await request(
-            method: "PUT",
-            path: "/repos/\(reference.owner)/\(reference.name)/pulls/\(reference.number)/merge",
-            body: PullRequestMergeRequest(),
+        let repositoryMergeSettings: RepositoryMergeSettingsResponse = try await request(
+            path: "/repos/\(reference.owner)/\(reference.name)",
             token: token,
             observer: observer
         )
+        let mergeMethod = preferredMergeMethod ?? PullRequestMergeMethod.preferred(
+            allowMergeCommit: repositoryMergeSettings.allowMergeCommit,
+            allowSquashMerge: repositoryMergeSettings.allowSquashMerge,
+            allowRebaseMerge: repositoryMergeSettings.allowRebaseMerge
+        )
+
+        guard let mergeMethod else {
+            throw GitHubClientError.api(
+                statusCode: 405,
+                message: "This repository does not allow pull requests to be merged directly."
+            )
+        }
+
+        let mergeResponse: PullRequestMergeResponse
+        do {
+            mergeResponse = try await request(
+                method: "PUT",
+                path: "/repos/\(reference.owner)/\(reference.name)/pulls/\(reference.number)/merge",
+                body: PullRequestMergeRequest(mergeMethod: mergeMethod.rawValue),
+                token: token,
+                observer: observer
+            )
+        } catch let GitHubClientError.api(statusCode, message)
+            where shouldUseMergeQueueFallback(statusCode: statusCode, message: message) {
+            let pullRequestID = try await fetchPullRequestNodeID(
+                token: token,
+                reference: reference
+            )
+            let _: EnqueuePullRequestMutationData = try await graphQLRequest(
+                query: Self.enqueuePullRequestMutation,
+                variables: EnqueuePullRequestMutationVariables(pullRequestID: pullRequestID),
+                token: token,
+                observer: observer
+            )
+
+            return PullRequestMutationResult(
+                outcome: .queued,
+                rateLimit: await observer.snapshot()
+            )
+        }
 
         if !mergeResponse.merged {
             throw GitHubClientError.api(statusCode: 200, message: mergeResponse.message)
         }
 
-        return await observer.snapshot()
+        return PullRequestMutationResult(
+            outcome: .merged,
+            rateLimit: await observer.snapshot()
+        )
     }
 
     func fetchSubjectResolutionState(
@@ -947,7 +1034,9 @@ struct GitHubClient {
             return GitHubSubjectResolutionState(
                 reference: reference,
                 resolution: resolution,
-                isAssignedToViewer: isAssignedToViewer
+                isAssignedToViewer: isAssignedToViewer,
+                mergedAt: response.mergedAt,
+                mergeCommitSHA: response.mergeCommitSHA
             )
 
         case .issue:
@@ -962,9 +1051,189 @@ struct GitHubClient {
                 resolution: response.state.caseInsensitiveCompare("closed") == .orderedSame
                     ? .closed
                     : .open,
-                isAssignedToViewer: nil
+                isAssignedToViewer: nil,
+                mergedAt: nil,
+                mergeCommitSHA: nil
             )
         }
+    }
+
+    func fetchPostMergeWatchObservation(
+        token: String,
+        watch: PostMergeWatch
+    ) async throws -> PostMergeWatchObservationResult {
+        let observer = GitHubRateLimitObserver()
+        let details: PullRequestDetails = try await request(
+            path: "/repos/\(watch.reference.owner)/\(watch.reference.name)/pulls/\(watch.reference.number)",
+            token: token,
+            observer: observer
+        )
+
+        let resolution: GitHubSubjectResolution
+        if details.merged {
+            resolution = .merged
+        } else if details.state.caseInsensitiveCompare("closed") == .orderedSame {
+            resolution = .closed
+        } else {
+            resolution = .open
+        }
+
+        let workflowRuns: [PostMergeObservedWorkflowRun]
+        if details.merged, let mergeCommitSHA = details.mergeCommitSHA {
+            let runs = try await fetchWorkflowRunsForCommit(
+                token: token,
+                repository: watch.repository,
+                commitSHA: mergeCommitSHA,
+                observer: observer
+            )
+            workflowRuns = runs.compactMap { run in
+                guard run.event.caseInsensitiveCompare("push") == .orderedSame else {
+                    return nil
+                }
+
+                return PostMergeObservedWorkflowRun(
+                    id: run.id,
+                    title: run.displayTitle ?? run.name ?? "Workflow run",
+                    repository: watch.repository,
+                    url: run.htmlURL ?? runWebURL(repository: watch.repository, runID: run.id),
+                    event: run.event,
+                    status: run.status,
+                    conclusion: run.conclusion,
+                    createdAt: run.createdAt,
+                    actor: attentionActor(from: run.triggeringActor ?? run.actor)
+                )
+            }
+        } else {
+            workflowRuns = []
+        }
+
+        return PostMergeWatchObservationResult(
+            observation: PostMergeWatchObservation(
+                resolution: resolution,
+                mergedAt: details.mergedAt,
+                mergeCommitSHA: details.mergeCommitSHA,
+                workflowRuns: workflowRuns
+            ),
+            rateLimit: await observer.snapshot()
+        )
+    }
+
+    func fetchPullRequestLiveWatchUpdate(
+        token: String,
+        reference: PullRequestReference,
+        previous: PullRequestLiveWatchState?
+    ) async throws -> PullRequestLiveWatchUpdateResult {
+        let observer = GitHubRateLimitObserver()
+
+        let detailsResponse: ConditionalRequestResult<PullRequestDetails> = try await conditionalRequest(
+            path: "/repos/\(reference.owner)/\(reference.name)/pulls/\(reference.number)",
+            ifNoneMatch: previous?.detailsETag,
+            token: token,
+            observer: observer
+        )
+
+        let timelineResponse: ConditionalRequestResult<[TimelineEntry]> = try await conditionalRequest(
+            path: "/repos/\(reference.owner)/\(reference.name)/issues/\(reference.number)/timeline",
+            queryItems: [
+                URLQueryItem(name: "per_page", value: "1")
+            ],
+            ifNoneMatch: previous?.timelineETag,
+            token: token,
+            observer: observer
+        )
+
+        let resolution: GitHubSubjectResolution
+        let isInMergeQueue: Bool
+        let headSHA: String?
+        let detailsETag: String?
+        switch detailsResponse {
+        case let .modified(value, etag):
+            resolution = subjectResolution(for: value)
+            isInMergeQueue = false
+            headSHA = value.head.sha
+            detailsETag = etag
+        case let .notModified(etag):
+            guard let previous else {
+                throw GitHubClientError.invalidResponse
+            }
+            resolution = previous.resolution
+            isInMergeQueue = previous.isInMergeQueue
+            headSHA = previous.headSHA
+            detailsETag = etag ?? previous.detailsETag
+        }
+
+        let timelineETag: String?
+        let latestTimelineMarker: String?
+        switch timelineResponse {
+        case let .modified(value, etag):
+            timelineETag = etag
+            if let entry = value.last ?? value.first {
+                if let id = entry.id {
+                    latestTimelineMarker = "\(id)"
+                } else if let createdAt = entry.createdAt ?? entry.submittedAt {
+                    latestTimelineMarker = "\(createdAt.timeIntervalSince1970)"
+                } else {
+                    latestTimelineMarker = etag
+                }
+            } else {
+                latestTimelineMarker = etag
+            }
+        case let .notModified(etag):
+            timelineETag = etag ?? previous?.timelineETag
+            latestTimelineMarker = previous?.latestTimelineMarker
+        }
+
+        let state = PullRequestLiveWatchState(
+            reference: reference,
+            resolution: resolution,
+            isInMergeQueue: resolution == .merged ? false : isInMergeQueue,
+            headSHA: headSHA?.isEmpty == true ? previous?.headSHA : headSHA,
+            latestTimelineMarker: latestTimelineMarker,
+            detailsETag: detailsETag ?? previous?.detailsETag,
+            timelineETag: timelineETag ?? previous?.timelineETag
+        )
+
+        return PullRequestLiveWatchUpdateResult(
+            update: PullRequestLiveWatchPolicy.apply(previous: previous, current: state),
+            rateLimit: await observer.snapshot()
+        )
+    }
+
+    private func fetchPullRequestNodeID(
+        token: String,
+        reference: PullRequestReference
+    ) async throws -> String {
+        let response: PullRequestNodeIDQueryData = try await graphQLRequest(
+            query: Self.pullRequestNodeIDQuery,
+            variables: PullRequestFocusQueryVariables(
+                owner: reference.owner,
+                name: reference.name,
+                number: reference.number
+            ),
+            token: token
+        )
+
+        guard let pullRequestID = response.repository?.pullRequest?.id else {
+            throw GitHubClientError.invalidResponse
+        }
+
+        return pullRequestID
+    }
+
+    private func shouldUseMergeQueueFallback(statusCode: Int, message: String) -> Bool {
+        GitHubMergeQueuePolicy.shouldFallback(statusCode: statusCode, message: message)
+    }
+
+    private func subjectResolution(for details: PullRequestDetails) -> GitHubSubjectResolution {
+        if details.merged {
+            return .merged
+        }
+
+        if details.state.caseInsensitiveCompare("closed") == .orderedSame {
+            return .closed
+        }
+
+        return .open
     }
 
     private func resolveLogin(
@@ -2649,6 +2918,73 @@ struct GitHubClient {
         return response.workflowRuns
     }
 
+    private func fetchPostMergeWorkflowPreview(
+        token: String,
+        repository: String,
+        branch: String,
+        observer: GitHubRateLimitObserver
+    ) async throws -> PullRequestPostMergeWorkflowPreview? {
+        let repositoryID = try parseRepositoryFullName(repository)
+        let response: WorkflowRunsResponse = try await request(
+            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/actions/runs",
+            queryItems: [
+                URLQueryItem(name: "event", value: "push"),
+                URLQueryItem(name: "branch", value: branch),
+                URLQueryItem(name: "per_page", value: "10")
+            ],
+            token: token,
+            observer: observer
+        )
+
+        var workflowsByKey = [String: PullRequestPostMergeWorkflow]()
+
+        for run in response.workflowRuns {
+            let title = run.name ?? run.displayTitle ?? "Workflow"
+            let dedupeKey: String
+            if let workflowID = run.workflowID {
+                dedupeKey = "workflow:\(workflowID)"
+            } else {
+                dedupeKey = "name:\(title.lowercased())"
+            }
+
+            let workflow = PullRequestPostMergeWorkflow(
+                id: run.workflowID ?? run.id,
+                title: title,
+                url: run.htmlURL ?? repositoryActionsURL(repository: repository),
+                lastRunAt: run.createdAt
+            )
+
+            if let existing = workflowsByKey[dedupeKey], existing.lastRunAt >= workflow.lastRunAt {
+                continue
+            }
+
+            workflowsByKey[dedupeKey] = workflow
+        }
+
+        let workflows = workflowsByKey.values
+            .sorted { lhs, rhs in
+                if lhs.lastRunAt != rhs.lastRunAt {
+                    return lhs.lastRunAt > rhs.lastRunAt
+                }
+
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+
+        guard !workflows.isEmpty else {
+            return nil
+        }
+
+        return PullRequestPostMergeWorkflowPreview(
+            branch: branch,
+            workflows: Array(workflows.prefix(4)),
+            isBestEffort: true
+        )
+    }
+
+    private func repositoryActionsURL(repository: String) -> URL {
+        URL(string: "https://github.com/\(repository)/actions")!
+    }
+
     private func workflowSubtitle(
         type: AttentionItemType,
         actor: AttentionActor?,
@@ -2859,6 +3195,46 @@ struct GitHubClient {
         return try decoder.decode(Response.self, from: data)
     }
 
+    private func conditionalRequest<Response: Decodable>(
+        path: String,
+        queryItems: [URLQueryItem] = [],
+        accept: String = "application/vnd.github+json",
+        ifNoneMatch: String?,
+        token: String,
+        observer: GitHubRateLimitObserver? = nil
+    ) async throws -> ConditionalRequestResult<Response> {
+        var components = URLComponents(url: baseURL.appending(path: path), resolvingAgainstBaseURL: false)
+        if !queryItems.isEmpty {
+            components?.queryItems = queryItems
+        }
+
+        guard let url = components?.url else {
+            throw GitHubClientError.invalidResponse
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(accept, forHTTPHeaderField: "Accept")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        request.setValue("Octowatch", forHTTPHeaderField: "User-Agent")
+        if let ifNoneMatch, !ifNoneMatch.isEmpty {
+            request.setValue(ifNoneMatch, forHTTPHeaderField: "If-None-Match")
+        }
+
+        let (data, response) = try await performResponse(request, observer: observer)
+        let etag = Self.headerString("ETag", in: response)
+
+        if response.statusCode == 304 {
+            return .notModified(etag: etag)
+        }
+
+        return .modified(
+            value: try decoder.decode(Response.self, from: data),
+            etag: etag
+        )
+    }
+
     private func request<Response: Decodable, Body: Encodable>(
         method: String,
         path: String,
@@ -2932,6 +3308,14 @@ struct GitHubClient {
         _ request: URLRequest,
         observer: GitHubRateLimitObserver? = nil
     ) async throws -> Data {
+        let (data, _) = try await performResponse(request, observer: observer)
+        return data
+    }
+
+    private func performResponse(
+        _ request: URLRequest,
+        observer: GitHubRateLimitObserver? = nil
+    ) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw GitHubClientError.invalidResponse
@@ -2946,7 +3330,7 @@ struct GitHubClient {
             throw GitHubClientError.invalidCredentials
         }
 
-        guard (200..<300).contains(http.statusCode) else {
+        guard http.statusCode == 304 || (200..<300).contains(http.statusCode) else {
             let message = (try? decoder.decode(GitHubAPIError.self, from: data).message) ?? "Unknown error"
             if http.statusCode == 403 || http.statusCode == 429 {
                 let lowercasedMessage = message.lowercased()
@@ -2957,7 +3341,7 @@ struct GitHubClient {
             throw GitHubClientError.api(statusCode: http.statusCode, message: message)
         }
 
-        return data
+        return (data, http)
     }
 
     private func mapTokenValidationError(
@@ -3082,6 +3466,19 @@ struct GitHubClient {
 
         return nil
     }
+
+    private static func headerString(_ name: String, in response: HTTPURLResponse) -> String? {
+        let candidates = [name, name.lowercased()]
+
+        for candidate in candidates {
+            if let stringValue = response.value(forHTTPHeaderField: candidate),
+                !stringValue.isEmpty {
+                return stringValue
+            }
+        }
+
+        return nil
+    }
 }
 
 private actor GitHubRateLimitObserver {
@@ -3105,6 +3502,11 @@ private struct GraphQLRequest<Variables: Encodable>: Encodable {
     let variables: Variables
 }
 
+private enum ConditionalRequestResult<Response> {
+    case modified(value: Response, etag: String?)
+    case notModified(etag: String?)
+}
+
 private struct GraphQLResponse<DataType: Decodable>: Decodable {
     let data: DataType?
     let errors: [GraphQLError]?
@@ -3124,16 +3526,35 @@ private struct PullRequestFocusQueryData: Decodable {
     let repository: PullRequestFocusGraphQLRepository?
 }
 
+private struct PullRequestNodeIDQueryData: Decodable {
+    let repository: PullRequestNodeIDRepository?
+}
+
+private struct PullRequestNodeIDRepository: Decodable {
+    let pullRequest: PullRequestNodeIDPullRequest?
+}
+
+private struct PullRequestNodeIDPullRequest: Decodable {
+    let id: String
+}
+
 private struct PullRequestFocusGraphQLRepository: Decodable {
     let viewerPermission: String?
+    let mergeCommitAllowed: Bool
+    let squashMergeAllowed: Bool
+    let rebaseMergeAllowed: Bool
     let pullRequest: PullRequestFocusGraphQLPullRequest?
 }
 
 private struct PullRequestFocusGraphQLPullRequest: Decodable {
+    let id: String
     let title: String
     let bodyHTML: String
     let url: URL
+    let baseRefName: String
     let state: String
+    let merged: Bool
+    let isInMergeQueue: Bool
     let isDraft: Bool
     let reviewDecision: String?
     let mergeable: String?
@@ -3147,10 +3568,14 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
     let commits: PullRequestFocusGraphQLConnection<PullRequestFocusGraphQLCommitNode>
 
     enum CodingKeys: String, CodingKey {
+        case id
         case title
         case bodyHTML
         case url
+        case baseRefName
         case state
+        case merged
+        case isInMergeQueue
         case isDraft
         case reviewDecision
         case mergeable
@@ -3163,6 +3588,26 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
         case reviews
         case commits
     }
+}
+
+private struct EnqueuePullRequestMutationVariables: Encodable {
+    let pullRequestID: String
+
+    enum CodingKeys: String, CodingKey {
+        case pullRequestID = "pullRequestId"
+    }
+}
+
+private struct EnqueuePullRequestMutationData: Decodable {
+    let enqueuePullRequest: EnqueuePullRequestPayload?
+}
+
+private struct EnqueuePullRequestPayload: Decodable {
+    let mergeQueueEntry: EnqueuePullRequestQueueEntry?
+}
+
+private struct EnqueuePullRequestQueueEntry: Decodable {
+    let id: String
 }
 
 private struct PullRequestFocusGraphQLReviewRequestConnection: Decodable {
@@ -3314,12 +3759,30 @@ private struct PullRequestReviewSubmissionResponse: Decodable {
     let id: Int?
 }
 
-private struct PullRequestMergeRequest: Encodable {}
+private struct PullRequestMergeRequest: Encodable {
+    let mergeMethod: String
+
+    enum CodingKeys: String, CodingKey {
+        case mergeMethod = "merge_method"
+    }
+}
 
 private struct PullRequestMergeResponse: Decodable {
     let sha: String?
     let merged: Bool
     let message: String
+}
+
+private struct RepositoryMergeSettingsResponse: Decodable {
+    let allowMergeCommit: Bool
+    let allowSquashMerge: Bool
+    let allowRebaseMerge: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case allowMergeCommit = "allow_merge_commit"
+        case allowSquashMerge = "allow_squash_merge"
+        case allowRebaseMerge = "allow_rebase_merge"
+    }
 }
 
 private struct CurrentUser: Decodable {
@@ -3435,12 +3898,16 @@ private struct PullRequestStateResponse: Decodable {
     let state: String
     let merged: Bool
     let closedAt: Date?
+    let mergedAt: Date?
+    let mergeCommitSHA: String?
     let assignees: [GitHubUser]?
 
     enum CodingKeys: String, CodingKey {
         case state
         case merged
         case closedAt = "closed_at"
+        case mergedAt = "merged_at"
+        case mergeCommitSHA = "merge_commit_sha"
         case assignees
     }
 }
@@ -3643,6 +4110,7 @@ private struct WorkflowRunsResponse: Decodable {
 
 private struct WorkflowRun: Decodable {
     let id: Int
+    let workflowID: Int?
     let name: String?
     let displayTitle: String?
     let htmlURL: URL?
@@ -3655,6 +4123,7 @@ private struct WorkflowRun: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case id
+        case workflowID = "workflow_id"
         case name
         case displayTitle = "display_title"
         case htmlURL = "html_url"

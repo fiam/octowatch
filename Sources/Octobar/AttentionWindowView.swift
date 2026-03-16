@@ -120,9 +120,11 @@ struct AttentionWindowView: View {
         .frame(minWidth: 940, minHeight: 620)
         .onAppear {
             syncSelection()
+            updateWatchedPullRequestSelection()
         }
         .onDisappear {
             cancelAutoMarkReadTask()
+            model.setWatchedPullRequest(nil)
         }
         .onChange(of: model.attentionItems) { _, _ in
             syncSelection()
@@ -241,7 +243,8 @@ struct AttentionWindowView: View {
             return nil
         }
 
-        return "\(item.ignoreKey)#\(item.timestamp.timeIntervalSince1970)"
+        return "\(item.ignoreKey)#\(item.timestamp.timeIntervalSince1970)#\(model.lastUpdated?.timeIntervalSince1970 ?? 0)"
+            + "#\(model.pullRequestWatchRevision)"
     }
 
     private var selectionBinding: Binding<AttentionItem.ID?> {
@@ -251,12 +254,13 @@ struct AttentionWindowView: View {
                 let selectionChanged = selectedItemID != newValue
                 selectedItemID = newValue
 
-                    if selectionChanged {
-                        pullRequestFocusState = .idle
-                        reviewMergeState = .idle
-                        armAutoMarkReadForCurrentSelection()
-                    }
+                if selectionChanged {
+                    pullRequestFocusState = .idle
+                    reviewMergeState = .idle
+                    armAutoMarkReadForCurrentSelection()
+                    updateWatchedPullRequestSelection()
                 }
+            }
         )
     }
 
@@ -513,6 +517,12 @@ struct AttentionWindowView: View {
             pullRequestFocusState = .idle
             reviewMergeState = .idle
         }
+
+        updateWatchedPullRequestSelection()
+    }
+
+    private func updateWatchedPullRequestSelection() {
+        model.setWatchedPullRequest(selectedItem)
     }
 
     private func openSelectedItem(_ item: AttentionItem) {
@@ -572,14 +582,16 @@ struct AttentionWindowView: View {
         }
 
         do {
-            try await model.approveAndMergePullRequest(
+            let outcome = try await model.approveAndMergePullRequest(
                 for: item,
-                requiresApproval: reviewMergeAction.requiresApproval
+                requiresApproval: reviewMergeAction.requiresApproval,
+                mergeMethod: reviewMergeAction.mergeMethod
             )
             await MainActor.run {
-                reviewMergeState = .idle
+                reviewMergeState = .succeeded(outcome)
             }
             await loadPullRequestFocusForSelection(force: true)
+            model.refreshNow()
         } catch {
             await MainActor.run {
                 reviewMergeState = .failed(error.localizedDescription)
@@ -640,6 +652,7 @@ private enum PullRequestFocusLoadState: Equatable {
 private enum PullRequestReviewMergeState: Equatable {
     case idle
     case running
+    case succeeded(PullRequestMutationOutcome)
     case failed(String)
 }
 
@@ -1048,6 +1061,39 @@ private struct PullRequestFocusView: View {
     let onOpenURL: (URL) -> Void
     let onPerformReviewMerge: () -> Void
 
+    private var displayedMergeOutcome: PullRequestMutationOutcome? {
+        if focus.resolution == .merged {
+            return .merged
+        }
+
+        if let outcome = focus.reviewMergeAction?.outcome {
+            return outcome
+        }
+
+        if case let .succeeded(outcome) = reviewMergeState {
+            return outcome
+        }
+
+        return nil
+    }
+
+    private var reviewMergeButtonTint: Color? {
+        if let outcome = displayedMergeOutcome {
+            switch outcome {
+            case .merged:
+                return .green
+            case .queued:
+                return .orange
+            }
+        }
+
+        if focus.reviewMergeAction?.isEnabled == true {
+            return .green
+        }
+
+        return nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             if !focus.contextBadges.isEmpty {
@@ -1077,18 +1123,28 @@ private struct PullRequestFocusView: View {
                                                 : "Merging…"
                                         )
                                     }
+                                } else if let outcome = displayedMergeOutcome {
+                                    Label(
+                                        outcome.buttonTitle,
+                                        systemImage: outcome.iconName
+                                    )
                                 } else {
                                     Label(
                                         reviewMergeAction.title,
-                                        systemImage: reviewMergeAction.requiresApproval
-                                            ? "checkmark.circle.badge.questionmark"
-                                            : "checkmark.circle"
+                                        systemImage: reviewMergeAction.outcome?.iconName
+                                            ?? (reviewMergeAction.requiresApproval
+                                                ? "checkmark.circle.badge.questionmark"
+                                                : "checkmark.circle")
                                     )
                                 }
                             }
                             .buttonStyle(.borderedProminent)
-                            .tint(reviewMergeAction.isEnabled ? .green : nil)
-                            .disabled(reviewMergeState == .running || !reviewMergeAction.isEnabled)
+                            .tint(reviewMergeButtonTint)
+                            .disabled(
+                                reviewMergeState == .running ||
+                                    displayedMergeOutcome != nil ||
+                                    !reviewMergeAction.isEnabled
+                            )
                             .appInteractiveHover()
                         }
 
@@ -1120,6 +1176,14 @@ private struct PullRequestFocusView: View {
                         Text(message)
                             .font(.caption)
                             .foregroundStyle(.red)
+                    } else if let outcome = displayedMergeOutcome {
+                        Text(
+                            outcome == .queued
+                                ? "This pull request was added to the merge queue."
+                                : "This pull request was merged successfully."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     } else if let disabledReason = reviewMergeAction.disabledReason,
                         !reviewMergeAction.isEnabled {
                         Text(disabledReason)
@@ -1131,6 +1195,33 @@ private struct PullRequestFocusView: View {
 
             if let statusSummary = focus.statusSummary {
                 PullRequestStatusSummaryCard(summary: statusSummary)
+            }
+
+            if let postMergeWorkflowPreview = focus.postMergeWorkflowPreview,
+                focus.resolution == .open {
+                DetailCard(title: postMergeWorkflowPreview.title) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text(postMergeWorkflowPreview.detail)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(postMergeWorkflowPreview.workflows) { workflow in
+                                PullRequestPostMergeWorkflowRow(
+                                    workflow: workflow,
+                                    referenceDate: referenceDate,
+                                    onOpenURL: onOpenURL
+                                )
+                            }
+                        }
+
+                        if postMergeWorkflowPreview.isBestEffort {
+                            Text(postMergeWorkflowPreview.footnote)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
 
             if let descriptionHTML = focus.descriptionHTML {
@@ -1606,6 +1697,51 @@ private struct PullRequestFocusEntryRow: View {
 
     private var accentColor: Color {
         color(for: entry.accent)
+    }
+}
+
+private struct PullRequestPostMergeWorkflowRow: View {
+    let workflow: PullRequestPostMergeWorkflow
+    let referenceDate: Date
+    let onOpenURL: (URL) -> Void
+
+    private static let relativeFormatter = RelativeDateTimeFormatter()
+
+    var body: some View {
+        Button {
+            onOpenURL(workflow.url)
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(Color.secondary.opacity(0.08))
+                    )
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(workflow.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+
+                    Text(Self.relativeFormatter.localizedString(for: workflow.lastRunAt, relativeTo: referenceDate))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "arrow.up.right.square")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .appLinkHover()
+        .help("Open workflow run on GitHub")
     }
 }
 

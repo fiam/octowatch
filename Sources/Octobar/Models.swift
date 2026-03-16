@@ -451,7 +451,7 @@ struct AttentionDetail: Hashable, Sendable {
     let acknowledgement: String?
 }
 
-struct PullRequestReference: Hashable, Sendable {
+struct PullRequestReference: Hashable, Codable, Sendable {
     let owner: String
     let name: String
     let number: Int
@@ -508,10 +508,81 @@ enum GitHubSubjectResolution: Hashable, Sendable {
     case merged
 }
 
+struct PullRequestLiveWatchState: Hashable, Sendable {
+    let reference: PullRequestReference
+    let resolution: GitHubSubjectResolution
+    let isInMergeQueue: Bool
+    let headSHA: String?
+    let latestTimelineMarker: String?
+    let detailsETag: String?
+    let timelineETag: String?
+}
+
+struct PullRequestLiveWatchUpdate: Hashable, Sendable {
+    let state: PullRequestLiveWatchState
+    let shouldReloadFocus: Bool
+    let shouldRefreshSnapshot: Bool
+    let shouldContinueWatching: Bool
+}
+
+struct PullRequestLiveWatchUpdateResult: Hashable, Sendable {
+    let update: PullRequestLiveWatchUpdate
+    let rateLimit: GitHubRateLimit?
+}
+
+enum PullRequestLiveWatchPolicy {
+    static func apply(
+        previous: PullRequestLiveWatchState?,
+        current: PullRequestLiveWatchState
+    ) -> PullRequestLiveWatchUpdate {
+        guard let previous else {
+            return PullRequestLiveWatchUpdate(
+                state: current,
+                shouldReloadFocus: false,
+                shouldRefreshSnapshot: false,
+                shouldContinueWatching: current.resolution == .open
+            )
+        }
+
+        let didChange =
+            previous.resolution != current.resolution ||
+            previous.isInMergeQueue != current.isInMergeQueue ||
+            previous.headSHA != current.headSHA ||
+            previous.latestTimelineMarker != current.latestTimelineMarker ||
+            previous.detailsETag != current.detailsETag ||
+            previous.timelineETag != current.timelineETag
+
+        return PullRequestLiveWatchUpdate(
+            state: current,
+            shouldReloadFocus: didChange,
+            shouldRefreshSnapshot:
+                previous.resolution != current.resolution ||
+                previous.isInMergeQueue != current.isInMergeQueue,
+            shouldContinueWatching: current.resolution == .open
+        )
+    }
+}
+
 struct GitHubSubjectResolutionState: Hashable, Sendable {
     let reference: GitHubSubjectReference
     let resolution: GitHubSubjectResolution
     let isAssignedToViewer: Bool?
+    let mergedAt: Date?
+    let mergeCommitSHA: String?
+
+    init(
+        reference: GitHubSubjectReference,
+        resolution: GitHubSubjectResolution,
+        isAssignedToViewer: Bool?,
+        mergedAt: Date? = nil,
+        mergeCommitSHA: String? = nil
+    ) {
+        self.reference = reference
+        self.resolution = resolution
+        self.isAssignedToViewer = isAssignedToViewer
+        self.mergedAt = mergedAt
+        self.mergeCommitSHA = mergeCommitSHA
+    }
 }
 
 struct AttentionTransitionNotification: Hashable, Sendable {
@@ -520,6 +591,258 @@ struct AttentionTransitionNotification: Hashable, Sendable {
     let subtitle: String
     let body: String
     let url: URL
+}
+
+struct PostMergeWatch: Identifiable, Hashable, Codable, Sendable {
+    let reference: PullRequestReference
+    let title: String
+    let repository: String
+    let url: URL
+    let createdAt: Date
+    let queuedAt: Date?
+    let mergedAt: Date?
+    let mergeCommitSHA: String?
+    let lastObservedWorkflowRunAt: Date?
+    let notifiedWorkflowRunIDs: [Int]
+    let suppressedWorkflowItemIDs: [String]
+
+    var id: String { reference.pullRequestURL.absoluteString }
+
+    func updating(
+        mergedAt: Date? = nil,
+        mergeCommitSHA: String? = nil,
+        lastObservedWorkflowRunAt: Date? = nil,
+        notifiedWorkflowRunIDs: [Int]? = nil,
+        suppressedWorkflowItemIDs: [String]? = nil
+    ) -> PostMergeWatch {
+        PostMergeWatch(
+            reference: reference,
+            title: title,
+            repository: repository,
+            url: url,
+            createdAt: createdAt,
+            queuedAt: queuedAt,
+            mergedAt: mergedAt ?? self.mergedAt,
+            mergeCommitSHA: mergeCommitSHA ?? self.mergeCommitSHA,
+            lastObservedWorkflowRunAt: lastObservedWorkflowRunAt ?? self.lastObservedWorkflowRunAt,
+            notifiedWorkflowRunIDs: notifiedWorkflowRunIDs ?? self.notifiedWorkflowRunIDs,
+            suppressedWorkflowItemIDs: suppressedWorkflowItemIDs ?? self.suppressedWorkflowItemIDs
+        )
+    }
+
+    static func register(
+        item: AttentionItem,
+        outcome: PullRequestMutationOutcome,
+        at date: Date = .now
+    ) -> PostMergeWatch? {
+        guard let reference = item.pullRequestReference else {
+            return nil
+        }
+
+        return PostMergeWatch(
+            reference: reference,
+            title: item.title,
+            repository: item.repository ?? reference.repository,
+            url: item.url,
+            createdAt: date,
+            queuedAt: outcome == .queued ? date : nil,
+            mergedAt: outcome == .merged ? date : nil,
+            mergeCommitSHA: nil,
+            lastObservedWorkflowRunAt: nil,
+            notifiedWorkflowRunIDs: [],
+            suppressedWorkflowItemIDs: []
+        )
+    }
+
+    static func registerResolved(
+        item: AttentionItem,
+        mergedAt: Date?,
+        mergeCommitSHA: String?,
+        at date: Date = .now
+    ) -> PostMergeWatch? {
+        guard let reference = item.pullRequestReference else {
+            return nil
+        }
+
+        return PostMergeWatch(
+            reference: reference,
+            title: item.title,
+            repository: item.repository ?? reference.repository,
+            url: item.url,
+            createdAt: date,
+            queuedAt: nil,
+            mergedAt: mergedAt ?? date,
+            mergeCommitSHA: mergeCommitSHA,
+            lastObservedWorkflowRunAt: nil,
+            notifiedWorkflowRunIDs: [],
+            suppressedWorkflowItemIDs: []
+        )
+    }
+}
+
+struct PostMergeObservedWorkflowRun: Hashable, Sendable {
+    let id: Int
+    let title: String
+    let repository: String
+    let url: URL
+    let event: String
+    let status: String?
+    let conclusion: String?
+    let createdAt: Date
+    let actor: AttentionActor?
+
+    var attentionItemID: String {
+        "\(repository)-\(id)"
+    }
+}
+
+struct PostMergeWatchObservation: Hashable, Sendable {
+    let resolution: GitHubSubjectResolution
+    let mergedAt: Date?
+    let mergeCommitSHA: String?
+    let workflowRuns: [PostMergeObservedWorkflowRun]
+}
+
+struct PostMergeWatchObservationResult: Hashable, Sendable {
+    let observation: PostMergeWatchObservation
+    let rateLimit: GitHubRateLimit?
+}
+
+struct PostMergeWatchUpdate: Hashable, Sendable {
+    let updatedWatch: PostMergeWatch?
+    let notifications: [AttentionTransitionNotification]
+}
+
+enum PostMergeWatchPolicy {
+    static func apply(
+        watch: PostMergeWatch,
+        observation: PostMergeWatchObservation,
+        now: Date = .now
+    ) -> PostMergeWatchUpdate {
+        switch observation.resolution {
+        case .closed:
+            return PostMergeWatchUpdate(updatedWatch: nil, notifications: [])
+
+        case .open:
+            return PostMergeWatchUpdate(
+                updatedWatch: shouldKeep(watch: watch, hasPendingRuns: false, now: now) ? watch : nil,
+                notifications: []
+            )
+
+        case .merged:
+            var updatedWatch = watch.updating(
+                mergedAt: observation.mergedAt ?? watch.mergedAt ?? now,
+                mergeCommitSHA: observation.mergeCommitSHA
+            )
+            var notifications = [AttentionTransitionNotification]()
+
+            if watch.queuedAt != nil && watch.mergedAt == nil {
+                notifications.append(
+                    AttentionTransitionNotification(
+                        id: "post-merge:merged:\(watch.id)",
+                        title: "Pull request merged",
+                        subtitle: watch.title,
+                        body: "Your queued pull request was merged in \(watch.repository).",
+                        url: watch.url
+                    )
+                )
+            }
+
+            let pushRuns = observation.workflowRuns
+                .filter { $0.event.caseInsensitiveCompare("push") == .orderedSame }
+                .sorted { $0.createdAt < $1.createdAt }
+
+            if let latestRunAt = pushRuns.map(\.createdAt).max() {
+                updatedWatch = updatedWatch.updating(lastObservedWorkflowRunAt: latestRunAt)
+            }
+
+            var notifiedRunIDs = Set(updatedWatch.notifiedWorkflowRunIDs)
+            var suppressedItemIDs = Set(updatedWatch.suppressedWorkflowItemIDs)
+
+            for run in pushRuns {
+                guard
+                    (run.status ?? "").caseInsensitiveCompare("completed") == .orderedSame,
+                    !notifiedRunIDs.contains(run.id),
+                    let notification = workflowCompletionNotification(for: run, pullRequestTitle: watch.title)
+                else {
+                    continue
+                }
+
+                notifications.append(notification)
+                notifiedRunIDs.insert(run.id)
+                suppressedItemIDs.insert(run.attentionItemID)
+            }
+
+            updatedWatch = updatedWatch.updating(
+                notifiedWorkflowRunIDs: Array(notifiedRunIDs).sorted(),
+                suppressedWorkflowItemIDs: Array(suppressedItemIDs).sorted()
+            )
+
+            if shouldKeep(
+                watch: updatedWatch,
+                hasPendingRuns: pushRuns.contains {
+                    ($0.status ?? "").caseInsensitiveCompare("completed") != .orderedSame
+                },
+                now: now
+            ) {
+                return PostMergeWatchUpdate(updatedWatch: updatedWatch, notifications: notifications)
+            }
+
+            return PostMergeWatchUpdate(updatedWatch: nil, notifications: notifications)
+        }
+    }
+
+    static func shouldKeep(
+        watch: PostMergeWatch,
+        hasPendingRuns: Bool,
+        now: Date = .now
+    ) -> Bool {
+        if watch.mergedAt == nil {
+            return now.timeIntervalSince(watch.createdAt) < 86_400
+        }
+
+        if hasPendingRuns {
+            return true
+        }
+
+        if let lastObservedWorkflowRunAt = watch.lastObservedWorkflowRunAt {
+            return now.timeIntervalSince(lastObservedWorkflowRunAt) < 900
+        }
+
+        if let mergedAt = watch.mergedAt {
+            return now.timeIntervalSince(mergedAt) < 1_800
+        }
+
+        return false
+    }
+
+    private static func workflowCompletionNotification(
+        for run: PostMergeObservedWorkflowRun,
+        pullRequestTitle: String
+    ) -> AttentionTransitionNotification? {
+        let normalizedConclusion = (run.conclusion ?? "").lowercased()
+        let title: String
+        let body: String
+
+        switch normalizedConclusion {
+        case "success":
+            title = "Post-merge workflow succeeded"
+            body = "\(run.title) finished successfully for \(pullRequestTitle)."
+        case "failure", "timed_out", "startup_failure":
+            title = "Post-merge workflow failed"
+            body = "\(run.title) failed after \(pullRequestTitle) merged."
+        default:
+            return nil
+        }
+
+        return AttentionTransitionNotification(
+            id: "post-merge:workflow:\(run.repository):\(run.id)",
+            title: title,
+            subtitle: run.title,
+            body: body,
+            url: run.url
+        )
+    }
 }
 
 enum AttentionRemovalNotificationPolicy {
@@ -593,6 +916,35 @@ enum AttentionRemovalNotificationPolicy {
     }
 }
 
+enum AttentionRemovalPostMergeWatchPolicy {
+    static func watch(
+        for removedItems: [AttentionItem],
+        state: GitHubSubjectResolutionState,
+        now: Date = .now
+    ) -> PostMergeWatch? {
+        guard
+            state.reference.kind == .pullRequest,
+            state.resolution == .merged
+        else {
+            return nil
+        }
+
+        let eligibleItems = removedItems.filter(\.isPostMergeWatchEligible)
+        guard
+            let representative = eligibleItems.max(by: { $0.timestamp < $1.timestamp })
+        else {
+            return nil
+        }
+
+        return PostMergeWatch.registerResolved(
+            item: representative,
+            mergedAt: state.mergedAt,
+            mergeCommitSHA: state.mergeCommitSHA,
+            at: now
+        )
+    }
+}
+
 enum PullRequestFocusMode: String, Hashable, Sendable {
     case authored
     case participating
@@ -639,16 +991,111 @@ struct PullRequestFocus: Hashable, Sendable {
     let reference: PullRequestReference
     let sourceType: AttentionItemType
     let mode: PullRequestFocusMode
+    let resolution: GitHubSubjectResolution
     let author: AttentionActor?
     let headerFacts: [PullRequestHeaderFact]
     let contextBadges: [PullRequestContextBadge]
     let descriptionHTML: String?
     let statusSummary: PullRequestStatusSummary?
+    let postMergeWorkflowPreview: PullRequestPostMergeWorkflowPreview?
     let sections: [PullRequestFocusSection]
     let actions: [AttentionAction]
     let reviewMergeAction: PullRequestReviewMergeAction?
     let emptyStateTitle: String
     let emptyStateDetail: String
+}
+
+struct PullRequestPostMergeWorkflowPreview: Hashable, Sendable {
+    let branch: String
+    let workflows: [PullRequestPostMergeWorkflow]
+    let isBestEffort: Bool
+
+    var title: String {
+        workflows.count == 1 ? "Likely post-merge workflow" : "Likely post-merge workflows"
+    }
+
+    var detail: String {
+        let workflowCount = workflows.count
+        let workflowLabel = workflowCount == 1 ? "workflow" : "workflows"
+        return "Recent merges to \(branch) triggered \(workflowCount) push \(workflowLabel)."
+    }
+
+    var footnote: String {
+        "Based on recent push runs to \(branch). Path filters may still skip them for this pull request."
+    }
+}
+
+struct PullRequestPostMergeWorkflow: Identifiable, Hashable, Sendable {
+    let id: Int
+    let title: String
+    let url: URL
+    let lastRunAt: Date
+}
+
+enum PullRequestMergeMethod: String, Hashable, Sendable {
+    case merge
+    case squash
+    case rebase
+
+    static func preferred(
+        allowMergeCommit: Bool,
+        allowSquashMerge: Bool,
+        allowRebaseMerge: Bool
+    ) -> PullRequestMergeMethod? {
+        if allowMergeCommit {
+            return .merge
+        }
+
+        if allowSquashMerge {
+            return .squash
+        }
+
+        if allowRebaseMerge {
+            return .rebase
+        }
+
+        return nil
+    }
+}
+
+enum PullRequestMutationOutcome: Hashable, Sendable {
+    case merged
+    case queued
+
+    var buttonTitle: String {
+        switch self {
+        case .merged:
+            return "Merged"
+        case .queued:
+            return "Queued to Merge"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .merged:
+            return "checkmark.circle.fill"
+        case .queued:
+            return "clock"
+        }
+    }
+}
+
+enum GitHubMergeQueuePolicy {
+    static func shouldFallback(statusCode: Int, message: String) -> Bool {
+        guard statusCode == 405 else {
+            return false
+        }
+
+        let normalized = message.lowercased()
+        return normalized.contains("merge queue") ||
+            normalized.contains("changes must be made through the merge queue")
+    }
+}
+
+struct PullRequestMutationResult: Sendable {
+    let outcome: PullRequestMutationOutcome
+    let rateLimit: GitHubRateLimit?
 }
 
 struct PullRequestHeaderFact: Identifiable, Hashable, Sendable {
@@ -684,6 +1131,8 @@ struct PullRequestReviewMergeAction: Hashable, Sendable {
     let requiresApproval: Bool
     let isEnabled: Bool
     let disabledReason: String?
+    let mergeMethod: PullRequestMergeMethod?
+    let outcome: PullRequestMutationOutcome?
 
     var blockedStatusSummary: PullRequestStatusSummary? {
         guard let disabledReason, !isEnabled else {
@@ -759,6 +1208,16 @@ enum PullRequestRepositoryPermissionPolicy {
         default:
             return false
         }
+    }
+}
+
+enum PullRequestMergeQueuePolicy {
+    static func shouldFallbackFromDirectMerge(statusCode: Int, message: String) -> Bool {
+        guard statusCode == 405 else {
+            return false
+        }
+
+        return message.localizedCaseInsensitiveContains("merge queue")
     }
 }
 
@@ -936,6 +1395,9 @@ extension PullRequestReviewMergeAction {
         mode: PullRequestFocusMode,
         author: AttentionActor?,
         viewerPermission: String?,
+        allowMergeCommit: Bool,
+        allowSquashMerge: Bool,
+        allowRebaseMerge: Bool,
         mergeable: String?,
         isDraft: Bool,
         reviewDecision: String?,
@@ -943,7 +1405,9 @@ extension PullRequestReviewMergeAction {
         hasChangesRequested: Bool,
         pendingReviewRequestCount: Int,
         checkSummary: PullRequestCheckSummary,
-        openThreadCount: Int
+        openThreadCount: Int,
+        isMerged: Bool = false,
+        isInMergeQueue: Bool = false
     ) -> PullRequestReviewMergeAction? {
         let isBotReviewablePullRequest =
             [
@@ -963,6 +1427,33 @@ extension PullRequestReviewMergeAction {
         let title = requiresApproval ? "Approve and Merge" : "Merge Pull Request"
         let allowsCurrentReviewRequestToBeSatisfied =
             requiresApproval && pendingReviewRequestCount == 1
+        let mergeMethod = PullRequestMergeMethod.preferred(
+            allowMergeCommit: allowMergeCommit,
+            allowSquashMerge: allowSquashMerge,
+            allowRebaseMerge: allowRebaseMerge
+        )
+
+        if isMerged {
+            return PullRequestReviewMergeAction(
+                title: PullRequestMutationOutcome.merged.buttonTitle,
+                requiresApproval: false,
+                isEnabled: false,
+                disabledReason: nil,
+                mergeMethod: nil,
+                outcome: .merged
+            )
+        }
+
+        if isInMergeQueue {
+            return PullRequestReviewMergeAction(
+                title: PullRequestMutationOutcome.queued.buttonTitle,
+                requiresApproval: false,
+                isEnabled: false,
+                disabledReason: nil,
+                mergeMethod: nil,
+                outcome: .queued
+            )
+        }
 
         if !PullRequestRepositoryPermissionPolicy.canMergeOrApprove(viewerPermission: viewerPermission) {
             return PullRequestReviewMergeAction(
@@ -971,7 +1462,9 @@ extension PullRequestReviewMergeAction {
                 isEnabled: false,
                 disabledReason: requiresApproval
                     ? "You do not have permission to review and merge pull requests in this repository."
-                    : "You do not have permission to merge pull requests in this repository."
+                    : "You do not have permission to merge pull requests in this repository.",
+                mergeMethod: mergeMethod,
+                outcome: nil
             )
         }
 
@@ -980,7 +1473,9 @@ extension PullRequestReviewMergeAction {
                 title: title,
                 requiresApproval: requiresApproval,
                 isEnabled: false,
-                disabledReason: "This pull request is still a draft."
+                disabledReason: "This pull request is still a draft.",
+                mergeMethod: mergeMethod,
+                outcome: nil
             )
         }
 
@@ -989,7 +1484,20 @@ extension PullRequestReviewMergeAction {
                 title: title,
                 requiresApproval: requiresApproval,
                 isEnabled: false,
-                disabledReason: "GitHub does not consider this pull request mergeable yet."
+                disabledReason: "GitHub does not consider this pull request mergeable yet.",
+                mergeMethod: mergeMethod,
+                outcome: nil
+            )
+        }
+
+        guard let mergeMethod else {
+            return PullRequestReviewMergeAction(
+                title: title,
+                requiresApproval: requiresApproval,
+                isEnabled: false,
+                disabledReason: "This repository does not allow pull requests to be merged directly.",
+                mergeMethod: nil,
+                outcome: nil
             )
         }
 
@@ -998,7 +1506,9 @@ extension PullRequestReviewMergeAction {
                 title: title,
                 requiresApproval: requiresApproval,
                 isEnabled: false,
-                disabledReason: "Changes have been requested on this pull request."
+                disabledReason: "Changes have been requested on this pull request.",
+                mergeMethod: mergeMethod,
+                outcome: nil
             )
         }
 
@@ -1009,7 +1519,9 @@ extension PullRequestReviewMergeAction {
                 isEnabled: false,
                 disabledReason: pendingReviewRequestCount == 1
                     ? "A review is still requested on this pull request."
-                    : "Reviews are still requested on this pull request."
+                    : "Reviews are still requested on this pull request.",
+                mergeMethod: mergeMethod,
+                outcome: nil
             )
         }
 
@@ -1018,7 +1530,9 @@ extension PullRequestReviewMergeAction {
                 title: title,
                 requiresApproval: requiresApproval,
                 isEnabled: false,
-                disabledReason: "Resolve the open review conversations first."
+                disabledReason: "Resolve the open review conversations first.",
+                mergeMethod: mergeMethod,
+                outcome: nil
             )
         }
 
@@ -1027,7 +1541,9 @@ extension PullRequestReviewMergeAction {
                 title: title,
                 requiresApproval: requiresApproval,
                 isEnabled: false,
-                disabledReason: "Some checks are failing."
+                disabledReason: "Some checks are failing.",
+                mergeMethod: mergeMethod,
+                outcome: nil
             )
         }
 
@@ -1036,7 +1552,9 @@ extension PullRequestReviewMergeAction {
                 title: title,
                 requiresApproval: requiresApproval,
                 isEnabled: false,
-                disabledReason: "Checks are still running."
+                disabledReason: "Checks are still running.",
+                mergeMethod: mergeMethod,
+                outcome: nil
             )
         }
 
@@ -1045,7 +1563,9 @@ extension PullRequestReviewMergeAction {
                 title: title,
                 requiresApproval: requiresApproval,
                 isEnabled: false,
-                disabledReason: "This pull request still needs an approving review."
+                disabledReason: "This pull request still needs an approving review.",
+                mergeMethod: mergeMethod,
+                outcome: nil
             )
         }
 
@@ -1053,7 +1573,9 @@ extension PullRequestReviewMergeAction {
             title: title,
             requiresApproval: requiresApproval,
             isEnabled: true,
-            disabledReason: nil
+            disabledReason: nil,
+            mergeMethod: mergeMethod,
+            outcome: nil
         )
     }
 }
@@ -1116,10 +1638,49 @@ extension AttentionAction {
 extension PullRequestStatusSummary {
     static func build(
         mode: PullRequestFocusMode,
+        resolution: GitHubSubjectResolution = .open,
         checkSummary: PullRequestCheckSummary,
         openThreadCount: Int,
         reviewMergeAction: PullRequestReviewMergeAction?
     ) -> PullRequestStatusSummary? {
+        switch resolution {
+        case .merged:
+            return PullRequestStatusSummary(
+                title: "Merged",
+                detail: "This pull request has already been merged.",
+                iconName: "checkmark.circle.fill",
+                accent: .success
+            )
+        case .closed:
+            return PullRequestStatusSummary(
+                title: "Closed",
+                detail: "This pull request is already closed.",
+                iconName: "xmark.circle.fill",
+                accent: .warning
+            )
+        case .open:
+            break
+        }
+
+        if let outcome = reviewMergeAction?.outcome {
+            switch outcome {
+            case .merged:
+                return PullRequestStatusSummary(
+                    title: "Merged",
+                    detail: "This pull request has been merged.",
+                    iconName: "checkmark.circle.fill",
+                    accent: .success
+                )
+            case .queued:
+                return PullRequestStatusSummary(
+                    title: "Queued to merge",
+                    detail: "This pull request is waiting in the merge queue.",
+                    iconName: "clock",
+                    accent: .warning
+                )
+            }
+        }
+
         if checkSummary.hasFailures {
             return PullRequestStatusSummary(
                 title: checkSummary.failedCount == 1 ? "1 check failed" : "\(checkSummary.failedCount) checks failed",
@@ -1284,6 +1845,39 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         case .assignedPullRequest,
                 .reviewRequested,
                 .teamReviewRequested,
+                .ciActivity,
+                .workflowFailed,
+                .workflowApprovalRequired:
+            return false
+        }
+    }
+
+    var isPostMergeWatchEligible: Bool {
+        guard pullRequestReference != nil else {
+            return false
+        }
+
+        switch type {
+        case .assignedPullRequest,
+                .reviewRequested,
+                .teamReviewRequested,
+                .authoredPullRequest,
+                .reviewedPullRequest,
+                .commentedPullRequest,
+                .readyToMerge,
+                .comment,
+                .mention,
+                .teamMention,
+                .newCommitsAfterComment,
+                .newCommitsAfterReview,
+                .reviewApproved,
+                .reviewChangesRequested,
+                .reviewComment,
+                .pullRequestStateChanged:
+            return true
+        case .assignedIssue,
+                .authoredIssue,
+                .commentedIssue,
                 .ciActivity,
                 .workflowFailed,
                 .workflowApprovalRequired:

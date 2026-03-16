@@ -685,6 +685,9 @@ final class AttentionClassificationTests: XCTestCase {
             mode: .generic,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
             viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "REVIEW_REQUIRED",
@@ -704,6 +707,159 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(action?.requiresApproval, true)
         XCTAssertEqual(action?.isEnabled, true)
         XCTAssertNil(action?.disabledReason)
+        XCTAssertEqual(action?.mergeMethod, .merge)
+    }
+
+    func testBotAssignedReviewMergeActionFallsBackToSquashWhenRepoDisallowsMergeCommits() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .assignedPullRequest,
+            mode: .generic,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            viewerPermission: "WRITE",
+            allowMergeCommit: false,
+            allowSquashMerge: true,
+            allowRebaseMerge: false,
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "REVIEW_REQUIRED",
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 1,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 9,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.isEnabled, true)
+        XCTAssertEqual(action?.mergeMethod, .squash)
+    }
+
+    func testReviewMergeActionShowsMergedStateWhenPullRequestIsAlreadyMerged() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .readyToMerge,
+            mode: .authored,
+            author: AttentionActor(login: "alberto", avatarURL: nil, isBot: false),
+            viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "APPROVED",
+            approvalCount: 1,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 0,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 8,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0,
+            isMerged: true
+        )
+
+        XCTAssertEqual(action?.title, "Merged")
+        XCTAssertEqual(action?.isEnabled, false)
+        XCTAssertEqual(action?.outcome, .merged)
+        XCTAssertNil(action?.disabledReason)
+    }
+
+    func testReviewMergeActionShowsQueuedStateWhenPullRequestIsAlreadyQueued() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .reviewRequested,
+            mode: .generic,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            viewerPermission: "WRITE",
+            allowMergeCommit: false,
+            allowSquashMerge: true,
+            allowRebaseMerge: false,
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "APPROVED",
+            approvalCount: 1,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 0,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 6,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0,
+            isInMergeQueue: true
+        )
+
+        XCTAssertEqual(action?.title, "Queued to Merge")
+        XCTAssertEqual(action?.isEnabled, false)
+        XCTAssertEqual(action?.outcome, .queued)
+        XCTAssertNil(action?.disabledReason)
+    }
+
+    func testReviewMergeActionPrefersMergedStateOverQueuedState() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .reviewRequested,
+            mode: .generic,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            viewerPermission: "WRITE",
+            allowMergeCommit: false,
+            allowSquashMerge: true,
+            allowRebaseMerge: false,
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "APPROVED",
+            approvalCount: 1,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 0,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 6,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0,
+            isMerged: true,
+            isInMergeQueue: true
+        )
+
+        XCTAssertEqual(action?.title, "Merged")
+        XCTAssertEqual(action?.isEnabled, false)
+        XCTAssertEqual(action?.outcome, .merged)
+    }
+
+    func testReviewMergeActionDisablesWhenRepositoryAllowsNoMergeMethods() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .assignedPullRequest,
+            mode: .generic,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            viewerPermission: "WRITE",
+            allowMergeCommit: false,
+            allowSquashMerge: false,
+            allowRebaseMerge: false,
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "REVIEW_REQUIRED",
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 1,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 9,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.isEnabled, false)
+        XCTAssertEqual(
+            action?.disabledReason,
+            "This repository does not allow pull requests to be merged directly."
+        )
     }
 
     func testBotReviewRequestedActionEnablesApproveAndMergeForCurrentRequest() {
@@ -712,6 +868,9 @@ final class AttentionClassificationTests: XCTestCase {
             mode: .generic,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
             viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "REVIEW_REQUIRED",
@@ -739,6 +898,9 @@ final class AttentionClassificationTests: XCTestCase {
             mode: .generic,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
             viewerPermission: "MAINTAIN",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "REVIEW_REQUIRED",
@@ -766,6 +928,9 @@ final class AttentionClassificationTests: XCTestCase {
             mode: .generic,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
             viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "REVIEW_REQUIRED",
@@ -791,6 +956,9 @@ final class AttentionClassificationTests: XCTestCase {
             mode: .generic,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
             viewerPermission: "MAINTAIN",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "REVIEW_REQUIRED",
@@ -816,6 +984,9 @@ final class AttentionClassificationTests: XCTestCase {
             mode: .generic,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
             viewerPermission: "READ",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "REVIEW_REQUIRED",
@@ -844,6 +1015,9 @@ final class AttentionClassificationTests: XCTestCase {
             mode: .authored,
             author: AttentionActor(login: "alberto", avatarURL: nil, isBot: false),
             viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "APPROVED",
@@ -870,6 +1044,9 @@ final class AttentionClassificationTests: XCTestCase {
             mode: .authored,
             author: AttentionActor(login: "alberto", avatarURL: nil, isBot: false),
             viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "APPROVED",
@@ -895,6 +1072,9 @@ final class AttentionClassificationTests: XCTestCase {
             mode: .generic,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
             viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "REVIEW_REQUIRED",
@@ -920,6 +1100,9 @@ final class AttentionClassificationTests: XCTestCase {
             mode: .generic,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
             viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "REVIEW_REQUIRED",
@@ -940,12 +1123,375 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertNil(action?.disabledReason)
     }
 
+    func testPullRequestStatusSummaryShowsMergedState() {
+        let action = PullRequestReviewMergeAction(
+            title: "Merged",
+            requiresApproval: false,
+            isEnabled: false,
+            disabledReason: nil,
+            mergeMethod: nil,
+            outcome: .merged
+        )
+
+        let summary = PullRequestStatusSummary.build(
+            mode: .authored,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 8,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0,
+            reviewMergeAction: action
+        )
+
+        XCTAssertEqual(summary?.title, "Merged")
+        XCTAssertEqual(summary?.accent, .success)
+    }
+
+    func testPullRequestStatusSummaryShowsQueuedState() {
+        let action = PullRequestReviewMergeAction(
+            title: "Queued to Merge",
+            requiresApproval: false,
+            isEnabled: false,
+            disabledReason: nil,
+            mergeMethod: nil,
+            outcome: .queued
+        )
+
+        let summary = PullRequestStatusSummary.build(
+            mode: .generic,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 5,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0,
+            reviewMergeAction: action
+        )
+
+        XCTAssertEqual(summary?.title, "Queued to merge")
+        XCTAssertEqual(summary?.accent, .warning)
+    }
+
+    func testPullRequestStatusSummaryShowsMergedResolutionEvenWithoutMutationAction() {
+        let summary = PullRequestStatusSummary.build(
+            mode: .generic,
+            resolution: .merged,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 14,
+                skippedCount: 10,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0,
+            reviewMergeAction: nil
+        )
+
+        XCTAssertEqual(summary?.title, "Merged")
+        XCTAssertEqual(summary?.detail, "This pull request has already been merged.")
+        XCTAssertEqual(summary?.accent, .success)
+    }
+
+    func testPullRequestStatusSummaryPrefersMergedResolutionOverQueuedOutcome() {
+        let summary = PullRequestStatusSummary.build(
+            mode: .generic,
+            resolution: .merged,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 14,
+                skippedCount: 10,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0,
+            reviewMergeAction: PullRequestReviewMergeAction(
+                title: "Queued to Merge",
+                requiresApproval: false,
+                isEnabled: false,
+                disabledReason: nil,
+                mergeMethod: nil,
+                outcome: .queued
+            )
+        )
+
+        XCTAssertEqual(summary?.title, "Merged")
+        XCTAssertEqual(summary?.detail, "This pull request has already been merged.")
+        XCTAssertEqual(summary?.accent, .success)
+    }
+
+    func testPullRequestStatusSummaryShowsClosedResolutionEvenWithoutMutationAction() {
+        let summary = PullRequestStatusSummary.build(
+            mode: .generic,
+            resolution: .closed,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 2,
+                skippedCount: 0,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0,
+            reviewMergeAction: nil
+        )
+
+        XCTAssertEqual(summary?.title, "Closed")
+        XCTAssertEqual(summary?.detail, "This pull request is already closed.")
+        XCTAssertEqual(summary?.accent, .warning)
+    }
+
+    func testPullRequestLiveWatchPolicyDoesNotReloadOnInitialBaseline() {
+        let current = PullRequestLiveWatchState(
+            reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 646),
+            resolution: .open,
+            isInMergeQueue: false,
+            headSHA: "abc123",
+            latestTimelineMarker: "1",
+            detailsETag: "\"details-1\"",
+            timelineETag: "\"timeline-1\""
+        )
+
+        let update = PullRequestLiveWatchPolicy.apply(previous: nil, current: current)
+
+        XCTAssertFalse(update.shouldReloadFocus)
+        XCTAssertFalse(update.shouldRefreshSnapshot)
+        XCTAssertTrue(update.shouldContinueWatching)
+    }
+
+    func testPullRequestLiveWatchPolicyReloadsFocusForTimelineChangeOnly() {
+        let previous = PullRequestLiveWatchState(
+            reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 646),
+            resolution: .open,
+            isInMergeQueue: false,
+            headSHA: "abc123",
+            latestTimelineMarker: "1",
+            detailsETag: "\"details-1\"",
+            timelineETag: "\"timeline-1\""
+        )
+        let current = PullRequestLiveWatchState(
+            reference: previous.reference,
+            resolution: .open,
+            isInMergeQueue: false,
+            headSHA: "abc123",
+            latestTimelineMarker: "2",
+            detailsETag: "\"details-1\"",
+            timelineETag: "\"timeline-2\""
+        )
+
+        let update = PullRequestLiveWatchPolicy.apply(previous: previous, current: current)
+
+        XCTAssertTrue(update.shouldReloadFocus)
+        XCTAssertFalse(update.shouldRefreshSnapshot)
+        XCTAssertTrue(update.shouldContinueWatching)
+    }
+
+    func testPullRequestLiveWatchPolicyRefreshesSnapshotWhenResolutionChanges() {
+        let previous = PullRequestLiveWatchState(
+            reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 646),
+            resolution: .open,
+            isInMergeQueue: false,
+            headSHA: "abc123",
+            latestTimelineMarker: "1",
+            detailsETag: "\"details-1\"",
+            timelineETag: "\"timeline-1\""
+        )
+        let current = PullRequestLiveWatchState(
+            reference: previous.reference,
+            resolution: .merged,
+            isInMergeQueue: false,
+            headSHA: "def456",
+            latestTimelineMarker: "3",
+            detailsETag: "\"details-2\"",
+            timelineETag: "\"timeline-2\""
+        )
+
+        let update = PullRequestLiveWatchPolicy.apply(previous: previous, current: current)
+
+        XCTAssertTrue(update.shouldReloadFocus)
+        XCTAssertTrue(update.shouldRefreshSnapshot)
+        XCTAssertFalse(update.shouldContinueWatching)
+    }
+
+    func testMergeQueuePolicyRecognizesQueueRequiredErrors() {
+        XCTAssertTrue(
+            GitHubMergeQueuePolicy.shouldFallback(
+                statusCode: 405,
+                message: "Repository rule violations found\n\nChanges must be made through the merge queue"
+            )
+        )
+        XCTAssertTrue(
+            GitHubMergeQueuePolicy.shouldFallback(
+                statusCode: 405,
+                message: "This repository uses a merge queue."
+            )
+        )
+        XCTAssertFalse(
+            GitHubMergeQueuePolicy.shouldFallback(
+                statusCode: 405,
+                message: "Merge commits are not allowed on this repository."
+            )
+        )
+        XCTAssertFalse(
+            GitHubMergeQueuePolicy.shouldFallback(
+                statusCode: 422,
+                message: "Changes must be made through the merge queue"
+            )
+        )
+    }
+
+    func testPostMergeWatchPolicyNotifiesWhenQueuedPullRequestActuallyMerges() {
+        let watch = PostMergeWatch(
+            reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 639),
+            title: "Refresh module lockfiles",
+            repository: "acme/cloud-infra-terraform",
+            url: URL(string: "https://github.com/acme/cloud-infra-terraform/pull/639")!,
+            createdAt: Date(timeIntervalSince1970: 100),
+            queuedAt: Date(timeIntervalSince1970: 100),
+            mergedAt: nil,
+            mergeCommitSHA: nil,
+            lastObservedWorkflowRunAt: nil,
+            notifiedWorkflowRunIDs: [],
+            suppressedWorkflowItemIDs: []
+        )
+        let observation = PostMergeWatchObservation(
+            resolution: .merged,
+            mergedAt: Date(timeIntervalSince1970: 200),
+            mergeCommitSHA: "abc123",
+            workflowRuns: []
+        )
+
+        let update = PostMergeWatchPolicy.apply(
+            watch: watch,
+            observation: observation,
+            now: Date(timeIntervalSince1970: 200)
+        )
+
+        XCTAssertEqual(update.notifications.count, 1)
+        XCTAssertEqual(update.notifications.first?.title, "Pull request merged")
+        XCTAssertEqual(update.updatedWatch?.mergeCommitSHA, "abc123")
+        XCTAssertEqual(update.updatedWatch?.mergedAt, Date(timeIntervalSince1970: 200))
+    }
+
+    func testPostMergeWatchPolicyNotifiesSuccessfulWorkflowCompletion() {
+        let watch = PostMergeWatch(
+            reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 639),
+            title: "Refresh module lockfiles",
+            repository: "acme/cloud-infra-terraform",
+            url: URL(string: "https://github.com/acme/cloud-infra-terraform/pull/639")!,
+            createdAt: Date(timeIntervalSince1970: 100),
+            queuedAt: nil,
+            mergedAt: Date(timeIntervalSince1970: 150),
+            mergeCommitSHA: "abc123",
+            lastObservedWorkflowRunAt: nil,
+            notifiedWorkflowRunIDs: [],
+            suppressedWorkflowItemIDs: []
+        )
+        let run = PostMergeObservedWorkflowRun(
+            id: 42,
+            title: "deploy",
+            repository: "acme/cloud-infra-terraform",
+            url: URL(string: "https://github.com/acme/cloud-infra-terraform/actions/runs/42")!,
+            event: "push",
+            status: "completed",
+            conclusion: "success",
+            createdAt: Date(timeIntervalSince1970: 180),
+            actor: nil
+        )
+
+        let update = PostMergeWatchPolicy.apply(
+            watch: watch,
+            observation: PostMergeWatchObservation(
+                resolution: .merged,
+                mergedAt: watch.mergedAt,
+                mergeCommitSHA: "abc123",
+                workflowRuns: [run]
+            ),
+            now: Date(timeIntervalSince1970: 181)
+        )
+
+        XCTAssertEqual(update.notifications.count, 1)
+        XCTAssertEqual(update.notifications.first?.title, "Post-merge workflow succeeded")
+        XCTAssertEqual(update.notifications.first?.subtitle, "deploy")
+        XCTAssertEqual(update.updatedWatch?.notifiedWorkflowRunIDs, [42])
+        XCTAssertEqual(update.updatedWatch?.suppressedWorkflowItemIDs, ["acme/cloud-infra-terraform-42"])
+    }
+
+    func testPostMergeWatchPolicyNotifiesFailedWorkflowCompletion() {
+        let watch = PostMergeWatch(
+            reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 639),
+            title: "Refresh module lockfiles",
+            repository: "acme/cloud-infra-terraform",
+            url: URL(string: "https://github.com/acme/cloud-infra-terraform/pull/639")!,
+            createdAt: Date(timeIntervalSince1970: 100),
+            queuedAt: nil,
+            mergedAt: Date(timeIntervalSince1970: 150),
+            mergeCommitSHA: "abc123",
+            lastObservedWorkflowRunAt: nil,
+            notifiedWorkflowRunIDs: [],
+            suppressedWorkflowItemIDs: []
+        )
+        let run = PostMergeObservedWorkflowRun(
+            id: 43,
+            title: "deploy",
+            repository: "acme/cloud-infra-terraform",
+            url: URL(string: "https://github.com/acme/cloud-infra-terraform/actions/runs/43")!,
+            event: "push",
+            status: "completed",
+            conclusion: "failure",
+            createdAt: Date(timeIntervalSince1970: 180),
+            actor: nil
+        )
+
+        let update = PostMergeWatchPolicy.apply(
+            watch: watch,
+            observation: PostMergeWatchObservation(
+                resolution: .merged,
+                mergedAt: watch.mergedAt,
+                mergeCommitSHA: "abc123",
+                workflowRuns: [run]
+            ),
+            now: Date(timeIntervalSince1970: 181)
+        )
+
+        XCTAssertEqual(update.notifications.count, 1)
+        XCTAssertEqual(update.notifications.first?.title, "Post-merge workflow failed")
+        XCTAssertEqual(update.updatedWatch?.notifiedWorkflowRunIDs, [43])
+        XCTAssertEqual(update.updatedWatch?.suppressedWorkflowItemIDs, ["acme/cloud-infra-terraform-43"])
+    }
+
+    func testPostMergeWatchPolicyExpiresCompletedMergeWatchAfterGraceWindow() {
+        let mergedAt = Date(timeIntervalSince1970: 100)
+        let watch = PostMergeWatch(
+            reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 639),
+            title: "Refresh module lockfiles",
+            repository: "acme/cloud-infra-terraform",
+            url: URL(string: "https://github.com/acme/cloud-infra-terraform/pull/639")!,
+            createdAt: mergedAt,
+            queuedAt: nil,
+            mergedAt: mergedAt,
+            mergeCommitSHA: "abc123",
+            lastObservedWorkflowRunAt: nil,
+            notifiedWorkflowRunIDs: [],
+            suppressedWorkflowItemIDs: []
+        )
+
+        XCTAssertFalse(
+            PostMergeWatchPolicy.shouldKeep(
+                watch: watch,
+                hasPendingRuns: false,
+                now: mergedAt.addingTimeInterval(1_801)
+            )
+        )
+    }
+
     func testAuthoredMergeActionDisablesWhenApprovalIsStillMissing() {
         let action = PullRequestReviewMergeAction.makeAction(
             sourceType: .authoredPullRequest,
             mode: .authored,
             author: AttentionActor(login: "alberto", avatarURL: nil, isBot: false),
             viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "REVIEW_REQUIRED",
@@ -972,6 +1518,9 @@ final class AttentionClassificationTests: XCTestCase {
             mode: .generic,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
             viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "REVIEW_REQUIRED",
@@ -1010,6 +1559,9 @@ final class AttentionClassificationTests: XCTestCase {
             mode: .authored,
             author: AttentionActor(login: "alberto", avatarURL: nil, isBot: false),
             viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "APPROVED",
@@ -1048,6 +1600,9 @@ final class AttentionClassificationTests: XCTestCase {
             mode: .authored,
             author: AttentionActor(login: "alberto", avatarURL: nil, isBot: false),
             viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "REVIEW_REQUIRED",
@@ -1258,5 +1813,73 @@ final class AttentionClassificationTests: XCTestCase {
         )
 
         XCTAssertNil(notification)
+    }
+
+    func testRemovedReviewRequestedCanRegisterPostMergeWatch() {
+        let item = AttentionItem(
+            id: "pr:review",
+            ignoreKey: "https://github.com/ExampleOrg/sample-services/pull/1102",
+            type: .reviewRequested,
+            title: "DCL-1591 add billing-mode setting",
+            subtitle: "ExampleOrg/sample-services · Review requested",
+            repository: "ExampleOrg/sample-services",
+            timestamp: .now,
+            url: URL(string: "https://github.com/ExampleOrg/sample-services/pull/1102")!
+        )
+        let mergedAt = Date(timeIntervalSince1970: 200)
+        let state = GitHubSubjectResolutionState(
+            reference: GitHubSubjectReference(
+                owner: "ExampleOrg",
+                name: "sample-services",
+                number: 1102,
+                kind: .pullRequest
+            ),
+            resolution: .merged,
+            isAssignedToViewer: nil,
+            mergedAt: mergedAt,
+            mergeCommitSHA: "abc123"
+        )
+
+        let watch = AttentionRemovalPostMergeWatchPolicy.watch(
+            for: [item],
+            state: state,
+            now: Date(timeIntervalSince1970: 210)
+        )
+
+        XCTAssertEqual(watch?.id, item.url.absoluteString)
+        XCTAssertEqual(watch?.mergedAt, mergedAt)
+        XCTAssertEqual(watch?.mergeCommitSHA, "abc123")
+    }
+
+    func testRemovedClosedIssueDoesNotRegisterPostMergeWatch() {
+        let item = AttentionItem(
+            id: "issue:authored",
+            ignoreKey: "https://github.com/ExampleOrg/sample-services/issues/42",
+            type: .authoredIssue,
+            title: "Track usage billing mode",
+            subtitle: "ExampleOrg/sample-services · Issue you opened",
+            repository: "ExampleOrg/sample-services",
+            timestamp: .now,
+            url: URL(string: "https://github.com/ExampleOrg/sample-services/issues/42")!
+        )
+        let state = GitHubSubjectResolutionState(
+            reference: GitHubSubjectReference(
+                owner: "ExampleOrg",
+                name: "sample-services",
+                number: 42,
+                kind: .issue
+            ),
+            resolution: .closed,
+            isAssignedToViewer: nil,
+            mergedAt: nil,
+            mergeCommitSHA: nil
+        )
+
+        XCTAssertNil(
+            AttentionRemovalPostMergeWatchPolicy.watch(
+                for: [item],
+                state: state
+            )
+        )
     }
 }
