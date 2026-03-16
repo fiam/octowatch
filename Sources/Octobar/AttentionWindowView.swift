@@ -724,6 +724,10 @@ private struct AttentionDetailView: View {
     }
 
     private var headerPillTitleOverride: String? {
+        if let contextPillTitle = item.detail.contextPillTitle {
+            return contextPillTitle
+        }
+
         switch item.type {
         case .assignedPullRequest:
             return "Assigned to you"
@@ -1094,6 +1098,20 @@ private struct PullRequestFocusView: View {
         return nil
     }
 
+    private var showsTerminalReviewMergeAction: Bool {
+        focus.reviewMergeAction != nil && displayedMergeOutcome != nil
+    }
+
+    private var isReviewMergeActionInteractive: Bool {
+        guard let reviewMergeAction = focus.reviewMergeAction else {
+            return false
+        }
+
+        return reviewMergeState != .running &&
+            displayedMergeOutcome == nil &&
+            reviewMergeAction.isEnabled
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             if !focus.contextBadges.isEmpty {
@@ -1140,12 +1158,12 @@ private struct PullRequestFocusView: View {
                             }
                             .buttonStyle(.borderedProminent)
                             .tint(reviewMergeButtonTint)
-                            .disabled(
-                                reviewMergeState == .running ||
-                                    displayedMergeOutcome != nil ||
-                                    !reviewMergeAction.isEnabled
+                            .disabled(!isReviewMergeActionInteractive)
+                            .modifier(
+                                ConditionalInteractiveHoverModifier(
+                                    isEnabled: isReviewMergeActionInteractive
+                                )
                             )
-                            .appInteractiveHover()
                         }
 
                         ForEach(focus.actions) { action in
@@ -1176,14 +1194,7 @@ private struct PullRequestFocusView: View {
                         Text(message)
                             .font(.caption)
                             .foregroundStyle(.red)
-                    } else if let outcome = displayedMergeOutcome {
-                        Text(
-                            outcome == .queued
-                                ? "This pull request was added to the merge queue."
-                                : "This pull request was merged successfully."
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    } else if showsTerminalReviewMergeAction {
                     } else if let disabledReason = reviewMergeAction.disabledReason,
                         !reviewMergeAction.isEnabled {
                         Text(disabledReason)
@@ -1193,7 +1204,7 @@ private struct PullRequestFocusView: View {
                 }
             }
 
-            if let statusSummary = focus.statusSummary {
+            if let statusSummary = focus.statusSummary, !showsTerminalReviewMergeAction {
                 PullRequestStatusSummaryCard(summary: statusSummary)
             }
 

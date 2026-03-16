@@ -78,3 +78,31 @@ extension View {
         modifier(PointerCursorHoverModifier())
     }
 }
+
+struct ConditionalInteractiveHoverModifier: ViewModifier {
+    let isEnabled: Bool
+    let backgroundOpacity: Double
+    let cornerRadius: CGFloat
+
+    init(
+        isEnabled: Bool,
+        backgroundOpacity: Double = 0.08,
+        cornerRadius: CGFloat = 10
+    ) {
+        self.isEnabled = isEnabled
+        self.backgroundOpacity = backgroundOpacity
+        self.cornerRadius = cornerRadius
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.appInteractiveHover(
+                backgroundOpacity: backgroundOpacity,
+                cornerRadius: cornerRadius
+            )
+        } else {
+            content
+        }
+    }
+}

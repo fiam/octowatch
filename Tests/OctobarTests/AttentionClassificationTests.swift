@@ -195,6 +195,25 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(AttentionItemType.assignedIssue.defaultStream, .issues)
     }
 
+    func testPullRequestStateTransitionUsesSpecificLabels() {
+        XCTAssertEqual(PullRequestStateTransition.merged.title, "Merged")
+        XCTAssertEqual(
+            PullRequestStateTransition.merged.detailLabel,
+            "Pull request merged"
+        )
+        XCTAssertEqual(
+            PullRequestStateTransition.merged.actorVerb,
+            "merged this pull request"
+        )
+
+        XCTAssertEqual(PullRequestStateTransition.closed.title, "Closed")
+        XCTAssertEqual(
+            PullRequestStateTransition.reopened.detailLabel,
+            "Pull request reopened"
+        )
+        XCTAssertEqual(PullRequestStateTransition.synchronized.title, "Updated")
+    }
+
     func testCombinedAttentionViewPrefersNotificationDuplicateOverDirectPullRequestItem() {
         let url = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/pull/638")!
         let directItem = AttentionItem(

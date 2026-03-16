@@ -503,10 +503,25 @@ struct AttentionAction: Identifiable, Hashable, Sendable {
 }
 
 struct AttentionDetail: Hashable, Sendable {
+    let contextPillTitle: String?
     let why: AttentionWhy
     let evidence: [AttentionEvidence]
     let actions: [AttentionAction]
     let acknowledgement: String?
+
+    init(
+        contextPillTitle: String? = nil,
+        why: AttentionWhy,
+        evidence: [AttentionEvidence],
+        actions: [AttentionAction],
+        acknowledgement: String? = nil
+    ) {
+        self.contextPillTitle = contextPillTitle
+        self.why = why
+        self.evidence = evidence
+        self.actions = actions
+        self.acknowledgement = acknowledgement
+    }
 }
 
 struct PullRequestReference: Hashable, Codable, Sendable {
@@ -2152,7 +2167,54 @@ struct NotificationSummary: Identifiable, Hashable, Sendable {
     let unread: Bool
     let actor: AttentionActor?
     let targetLabel: String?
+    let stateTransition: PullRequestStateTransition?
     let detailEvidence: [AttentionEvidence]
+}
+
+enum PullRequestStateTransition: String, Hashable, Sendable {
+    case merged
+    case closed
+    case reopened
+    case synchronized
+
+    var title: String {
+        switch self {
+        case .merged:
+            return "Merged"
+        case .closed:
+            return "Closed"
+        case .reopened:
+            return "Reopened"
+        case .synchronized:
+            return "Updated"
+        }
+    }
+
+    var detailLabel: String {
+        switch self {
+        case .merged:
+            return "Pull request merged"
+        case .closed:
+            return "Pull request closed"
+        case .reopened:
+            return "Pull request reopened"
+        case .synchronized:
+            return "Pull request updated"
+        }
+    }
+
+    var actorVerb: String {
+        switch self {
+        case .merged:
+            return "merged this pull request"
+        case .closed:
+            return "closed this pull request"
+        case .reopened:
+            return "reopened this pull request"
+        case .synchronized:
+            return "updated this pull request"
+        }
+    }
 }
 
 struct ActionRunSummary: Identifiable, Hashable, Sendable {

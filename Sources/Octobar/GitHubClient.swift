@@ -657,8 +657,13 @@ struct GitHubClient {
         }
 
         return AttentionDetail(
+            contextPillTitle: notification.stateTransition?.title,
             why: AttentionWhy(
-                summary: whySummary(for: notification.type, actor: notification.actor),
+                summary: whySummary(
+                    for: notification.type,
+                    actor: notification.actor,
+                    stateTransition: notification.stateTransition
+                ),
                 detail: notification.targetLabel
             ),
             evidence: evidence,
@@ -2053,7 +2058,12 @@ struct GitHubClient {
             ignoreKey: ignoreKey ?? url.absoluteString,
             type: type,
             title: thread.subject.title,
-            subtitle: notificationSubtitle(type: type, repository: repository, actor: actor),
+            subtitle: notificationSubtitle(
+                type: type,
+                repository: repository,
+                actor: actor,
+                stateTransition: timelineContext?.stateTransition
+            ),
             repository: repository,
             url: url,
             updatedAt: thread.updatedAt,
@@ -2063,8 +2073,10 @@ struct GitHubClient {
                 reason: thread.reason,
                 type: type,
                 reviewTarget: reviewTarget,
-                followUpRelationship: timelineContext?.followUpRelationship
+                followUpRelationship: timelineContext?.followUpRelationship,
+                stateTransition: timelineContext?.stateTransition
             ),
+            stateTransition: timelineContext?.stateTransition,
             detailEvidence: timelineContext?.detailEvidence ?? []
         )
     }
@@ -2093,7 +2105,12 @@ struct GitHubClient {
             ignoreKey: ignoreKey ?? url.absoluteString,
             type: type,
             title: thread.subject.title,
-            subtitle: notificationSubtitle(type: type, repository: repository, actor: nil),
+            subtitle: notificationSubtitle(
+                type: type,
+                repository: repository,
+                actor: nil,
+                stateTransition: nil
+            ),
             repository: repository,
             url: url,
             updatedAt: thread.updatedAt,
@@ -2103,8 +2120,10 @@ struct GitHubClient {
                 reason: thread.reason,
                 type: type,
                 reviewTarget: candidate.reviewTarget,
-                followUpRelationship: nil
+                followUpRelationship: nil,
+                stateTransition: nil
             ),
+            stateTransition: nil,
             detailEvidence: []
         )
     }
@@ -2264,6 +2283,7 @@ struct GitHubClient {
             )
 
             let detailEvidence: [AttentionEvidence]
+            let stateTransition: PullRequestStateTransition?
             if event == "committed" || event == "head_ref_force_pushed",
                 let followUp {
                 detailEvidence = commitEvidence(
@@ -2272,8 +2292,19 @@ struct GitHubClient {
                     after: followUp.timestamp,
                     currentLogin: currentLogin
                 )
+                stateTransition = .synchronized
+            } else if event == "merged" {
+                detailEvidence = []
+                stateTransition = .merged
+            } else if event == "closed" {
+                detailEvidence = []
+                stateTransition = .closed
+            } else if event == "reopened" {
+                detailEvidence = []
+                stateTransition = .reopened
             } else {
                 detailEvidence = []
+                stateTransition = nil
             }
 
             return TimelineContext(
@@ -2282,6 +2313,7 @@ struct GitHubClient {
                 actor: timelineActor(from: entry),
                 timestamp: timestamp,
                 followUpRelationship: followUp?.relationship,
+                stateTransition: stateTransition,
                 detailEvidence: detailEvidence
             )
         }
@@ -2292,8 +2324,17 @@ struct GitHubClient {
     private func notificationSubtitle(
         type: AttentionItemType,
         repository: String,
-        actor: AttentionActor?
+        actor: AttentionActor?,
+        stateTransition: PullRequestStateTransition?
     ) -> String {
+        if type == .pullRequestStateChanged, let stateTransition {
+            if let actor {
+                return "\(actor.login) · \(repository) · \(stateTransition.detailLabel)"
+            }
+
+            return "\(repository) · \(stateTransition.detailLabel)"
+        }
+
         if let actor {
             return "\(actor.login) · \(repository) · \(type.accessibilityLabel)"
         }
@@ -2356,7 +2397,8 @@ struct GitHubClient {
         reason: String,
         type: AttentionItemType,
         reviewTarget: ReviewRequestTarget?,
-        followUpRelationship: NotificationFollowUpRelationship?
+        followUpRelationship: NotificationFollowUpRelationship?,
+        stateTransition: PullRequestStateTransition?
     ) -> String? {
         switch followUpRelationship {
         case .afterYourComment:
@@ -2365,6 +2407,10 @@ struct GitHubClient {
             return "New commits landed after your review."
         case nil:
             break
+        }
+
+        if type == .pullRequestStateChanged, let stateTransition {
+            return stateTransition.detailLabel
         }
 
         switch reason.lowercased() {
@@ -3001,8 +3047,17 @@ struct GitHubClient {
 
     private func whySummary(
         for type: AttentionItemType,
-        actor: AttentionActor?
+        actor: AttentionActor?,
+        stateTransition: PullRequestStateTransition? = nil
     ) -> String {
+        if type == .pullRequestStateChanged, let stateTransition {
+            if let actor {
+                return "\(actor.login) \(stateTransition.actorVerb)."
+            }
+
+            return stateTransition.detailLabel + "."
+        }
+
         if let actor {
             return "\(actor.login) \(type.actorVerb)."
         }
@@ -3839,6 +3894,7 @@ private struct TimelineContext: Hashable, Sendable {
     let actor: AttentionActor?
     let timestamp: Date
     let followUpRelationship: NotificationFollowUpRelationship?
+    let stateTransition: PullRequestStateTransition?
     let detailEvidence: [AttentionEvidence]
 }
 
