@@ -15,7 +15,9 @@ The app polls every 60 seconds and shows local macOS notifications when new acti
 The menu bar icon uses an unread-dot indicator instead of a numeric badge.
 In the menu, all actionable signals are shown as one inbox with per-type icons.
 Items also have dot-style read/unread indicators, and opening an item marks it as read locally.
-Items can also be ignored locally, and ignored subjects can be restored later from Settings.
+The main window sidebar supports native macOS multi-selection, and a right-click menu can open, mark read, mark unread, or ignore the current selection.
+Ignoring from the main window shows a small transient undo toast so accidental ignores can be reversed quickly.
+Items can also be ignored locally, and ignored subjects can be restored later from Settings without forcing an immediate GitHub refresh.
 Pull request detail panes read repository workflow files and PR changed paths to predict which push workflows should run after merge, then swap to observed post-merge workflow statuses once GitHub starts them.
 
 ## Requirements

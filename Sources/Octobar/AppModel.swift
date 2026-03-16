@@ -50,6 +50,7 @@ final class AppModel: ObservableObject {
     private var userLogin: String?
     private var pollingTask: Task<Void, Never>?
     private var watchedPullRequestTask: Task<Void, Never>?
+    private var latestSnapshotAttentionItems: [AttentionItem] = []
     private var knownItemIDs = Set<String>()
     private var notificationScanState = NotificationScanState.default
     private var teamMembershipCache = TeamMembershipCache.default
@@ -231,6 +232,7 @@ final class AppModel: ObservableObject {
         token = nil
         tokenInput = ""
         usingGitHubCLIToken = false
+        latestSnapshotAttentionItems = []
         attentionItems = []
         userLogin = nil
         lastUpdated = nil
@@ -391,36 +393,51 @@ final class AppModel: ObservableObject {
     }
 
     func markItemAsRead(_ item: AttentionItem) {
-        updateReadState(for: item, isUnread: false)
+        updateReadState(for: [item], isUnread: false)
+    }
+
+    func markItemsAsRead(_ items: [AttentionItem]) {
+        updateReadState(for: items, isUnread: false)
+    }
+
+    func markItemsAsUnread(_ items: [AttentionItem]) {
+        updateReadState(for: items, isUnread: true)
     }
 
     func toggleReadState(for item: AttentionItem) {
-        updateReadState(for: item, isUnread: !item.isUnread)
+        updateReadState(for: [item], isUnread: !item.isUnread)
     }
 
     func ignore(_ item: AttentionItem) {
-        let summary = preferredIgnoredSummary(for: item)
-        ignoredItemsByKey[item.ignoreKey] = summary
+        ignore([item])
+    }
+
+    func ignore(_ items: [AttentionItem]) {
+        var ignoredSummaries: [IgnoredAttentionSubject] = []
+        var ignoredKeys = Set<String>()
+
+        for item in items {
+            guard ignoredKeys.insert(item.ignoreKey).inserted else {
+                continue
+            }
+
+            let summary = preferredIgnoredSummary(for: item)
+            ignoredItemsByKey[item.ignoreKey] = summary
+            ignoredSummaries.append(summary)
+        }
+
+        guard !ignoredSummaries.isEmpty else {
+            return
+        }
+
         syncIgnoredItems()
         persistIgnoredItems()
-        presentIgnoreUndo(for: summary)
-
-        attentionItems.removeAll { $0.ignoreKey == item.ignoreKey }
-        knownItemIDs = Set(attentionItems.map(\.id))
+        presentIgnoreUndo(for: ignoredSummaries)
+        reconcileAttentionItemsFromSnapshot()
     }
 
     func unignore(_ ignoredItem: IgnoredAttentionSubject) {
-        ignoredItemsByKey[ignoredItem.ignoreKey] = nil
-        syncIgnoredItems()
-        persistIgnoredItems()
-
-        if ignoreUndoState?.subject.ignoreKey == ignoredItem.ignoreKey {
-            clearIgnoreUndoState()
-        }
-
-        if hasToken {
-            refreshNow()
-        }
+        unignore([ignoredItem])
     }
 
     func undoRecentIgnore() {
@@ -428,8 +445,7 @@ final class AppModel: ObservableObject {
             return
         }
 
-        unignore(ignoreUndoState.subject)
-        clearIgnoreUndoState()
+        unignore(ignoreUndoState.subjects)
     }
 
     func dismissIgnoreUndo() {
@@ -568,11 +584,8 @@ final class AppModel: ObservableObject {
             teamMembershipCache = snapshot.teamMembershipCache.normalized
             persistNotificationScanState()
             persistTeamMembershipCache()
-            attentionItems = AttentionItemVisibilityPolicy
-                .excludingIgnoredSubjects(
-                    snapshot.attentionItems.map(applyingLocalReadState),
-                    ignoredKeys: Set(ignoredItemsByKey.keys)
-                )
+            latestSnapshotAttentionItems = snapshot.attentionItems
+            reconcileAttentionItemsFromSnapshot()
             lastUpdated = Date()
             lastError = nil
 
@@ -893,18 +906,23 @@ final class AppModel: ObservableObject {
         return readAt < item.timestamp
     }
 
-    private func updateReadState(for item: AttentionItem, isUnread: Bool) {
-        if isUnread {
-            readStateByItemID[item.id] = nil
-        } else {
-            readStateByItemID[item.id] = Date()
+    private func updateReadState(for items: [AttentionItem], isUnread: Bool) {
+        let itemIDs = Set(items.map(\.id))
+        guard !itemIDs.isEmpty else {
+            return
+        }
+
+        let timestamp = Date()
+        for itemID in itemIDs {
+            if isUnread {
+                readStateByItemID[itemID] = nil
+            } else {
+                readStateByItemID[itemID] = timestamp
+            }
         }
 
         persistReadState()
-
-        if let index = attentionItems.firstIndex(where: { $0.id == item.id }) {
-            attentionItems[index].isUnread = isUnread
-        }
+        reconcileAttentionItemsFromSnapshot()
     }
 
     private func persistReadState() {
@@ -961,11 +979,36 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func presentIgnoreUndo(for ignoredItem: IgnoredAttentionSubject) {
+    private func unignore(_ ignoredItems: [IgnoredAttentionSubject]) {
+        let ignoredKeys = Set(ignoredItems.map(\.ignoreKey))
+        guard !ignoredKeys.isEmpty else {
+            return
+        }
+
+        for ignoreKey in ignoredKeys {
+            ignoredItemsByKey[ignoreKey] = nil
+        }
+
+        syncIgnoredItems()
+        persistIgnoredItems()
+        trimIgnoreUndoState(removing: ignoredKeys)
+        reconcileAttentionItemsFromSnapshot()
+    }
+
+    private func reconcileAttentionItemsFromSnapshot() {
+        attentionItems = AttentionItemVisibilityPolicy
+            .excludingIgnoredSubjects(
+                latestSnapshotAttentionItems.map(applyingLocalReadState),
+                ignoredKeys: Set(ignoredItemsByKey.keys)
+            )
+    }
+
+    private func presentIgnoreUndo(for ignoredItems: [IgnoredAttentionSubject]) {
         ignoreUndoDismissTask?.cancel()
 
         let expiry = Date().addingTimeInterval(8)
-        ignoreUndoState = IgnoreUndoState(subject: ignoredItem, expiresAt: expiry)
+        let ignoreUndoID = ignoredItems.map(\.ignoreKey).sorted().joined(separator: "|")
+        ignoreUndoState = IgnoreUndoState(subjects: ignoredItems, expiresAt: expiry)
 
         ignoreUndoDismissTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(8))
@@ -974,12 +1017,35 @@ final class AppModel: ObservableObject {
             }
 
             await MainActor.run {
-                guard self?.ignoreUndoState?.subject.ignoreKey == ignoredItem.ignoreKey else {
+                guard self?.ignoreUndoState?.id == ignoreUndoID else {
                     return
                 }
 
                 self?.clearIgnoreUndoState()
             }
+        }
+    }
+
+    private func trimIgnoreUndoState(removing ignoredKeys: Set<String>) {
+        guard let ignoreUndoState else {
+            return
+        }
+
+        let remainingSubjects = ignoreUndoState.subjects.filter { subject in
+            !ignoredKeys.contains(subject.ignoreKey)
+        }
+
+        if remainingSubjects.count == ignoreUndoState.subjects.count {
+            return
+        }
+
+        if remainingSubjects.isEmpty {
+            clearIgnoreUndoState()
+        } else {
+            self.ignoreUndoState = IgnoreUndoState(
+                subjects: remainingSubjects,
+                expiresAt: ignoreUndoState.expiresAt
+            )
         }
     }
 
@@ -1178,6 +1244,7 @@ final class AppModel: ObservableObject {
         token = "ui-test-token"
         tokenInput = ""
         userLogin = fixture.login
+        latestSnapshotAttentionItems = fixture.attentionItems
         attentionItems = fixture.attentionItems
         lastUpdated = fixture.lastUpdated
         lastError = nil

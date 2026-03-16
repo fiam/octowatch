@@ -70,7 +70,7 @@ struct AttentionWindowView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openURL) private var openURL
 
-    @State private var selectedItemID: AttentionItem.ID?
+    @State private var selectedItemIDs = Set<AttentionItem.ID>()
     @State private var streamFilter: StreamFilter = .all
     @State private var listFilter: ListFilter = .all
     @State private var autoMarkReadTask: Task<Void, Never>?
@@ -92,7 +92,7 @@ struct AttentionWindowView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            ZStack(alignment: .bottom) {
+            ZStack(alignment: .bottomTrailing) {
                 if showsInitialLoadingState {
                     loadingView
                         .transition(.opacity.combined(with: .scale(scale: 0.985)))
@@ -107,12 +107,13 @@ struct AttentionWindowView: View {
 
                 if let ignoreUndoState = model.ignoreUndoState {
                     IgnoreUndoBanner(
-                        ignoredItem: ignoreUndoState.subject,
+                        state: ignoreUndoState,
                         onUndo: model.undoRecentIgnore,
                         onDismiss: model.dismissIgnoreUndo
                     )
+                    .padding(.trailing, 20)
                     .padding(.bottom, 20)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
         }
@@ -146,37 +147,37 @@ struct AttentionWindowView: View {
             await loadPullRequestFocusForSelection()
         }
         .toolbar {
-            if let selectedItem, model.hasToken {
+            if !selectionActionItems.isEmpty, model.hasToken {
                 ToolbarItemGroup {
                     Button {
-                        openSelectedItem(selectedItem)
+                        openSelection(selectionActionItems)
                     } label: {
                         Label("Open", systemImage: "safari")
                     }
                     .appInteractiveHover()
-                    .help("Open on GitHub")
+                    .help(selectionActionItems.count == 1 ? "Open on GitHub" : "Open selected items on GitHub")
 
                     Button {
-                        toggleReadState(for: selectedItem)
+                        performPrimaryReadAction(for: selectionActionItems)
                     } label: {
                         Label(
-                            selectedItem.isUnread ? "Mark Read" : "Mark Unread",
-                            systemImage: selectedItem.isUnread ? "circle" : "circle.fill"
+                            primaryReadActionTitle,
+                            systemImage: primaryReadActionSymbol
                         )
                     }
                     .appInteractiveHover()
                     .keyboardShortcut("u", modifiers: [.command, .shift])
                     .accessibilityIdentifier("item-toggle-read-state")
-                    .accessibilityLabel(selectedItem.isUnread ? "Mark Read" : "Mark Unread")
-                    .help(selectedItem.isUnread ? "Mark Read" : "Mark Unread")
+                    .accessibilityLabel(primaryReadActionTitle)
+                    .help(primaryReadActionTitle)
 
                     Button {
-                        model.ignore(selectedItem)
+                        ignoreSelection(selectionActionItems)
                     } label: {
                         Label("Ignore", systemImage: "eye.slash")
                     }
                     .appInteractiveHover()
-                    .help(selectedItem.ignoreActionTitle)
+                    .help(selectionActionItems.count == 1 ? selectionActionItems[0].ignoreActionTitle : "Ignore selected items")
                 }
             }
 
@@ -230,12 +231,24 @@ struct AttentionWindowView: View {
         }
     }
 
+    private var selectionActionItems: [AttentionItem] {
+        displayedItems.filter { selectedItemIDs.contains($0.id) }
+    }
+
     private var selectedItem: AttentionItem? {
-        guard let selectedItemID else {
-            return displayedItems.first
+        guard selectionActionItems.count == 1 else {
+            return nil
         }
 
-        return displayedItems.first(where: { $0.id == selectedItemID })
+        return selectionActionItems.first
+    }
+
+    private var primaryReadActionTitle: String {
+        selectionActionItems.contains(where: \.isUnread) ? "Mark Read" : "Mark Unread"
+    }
+
+    private var primaryReadActionSymbol: String {
+        selectionActionItems.contains(where: \.isUnread) ? "circle" : "circle.fill"
     }
 
     private var pullRequestFocusTaskID: String? {
@@ -247,14 +260,16 @@ struct AttentionWindowView: View {
             + "#\(model.pullRequestWatchRevision)"
     }
 
-    private var selectionBinding: Binding<AttentionItem.ID?> {
+    private var selectionBinding: Binding<Set<AttentionItem.ID>> {
         Binding(
-            get: { selectedItemID },
+            get: { selectedItemIDs },
             set: { newValue in
-                let selectionChanged = selectedItemID != newValue
-                selectedItemID = newValue
+                let normalizedSelection = normalizeSelection(newValue)
+                let selectionChanged = selectedItemIDs != normalizedSelection
+                selectedItemIDs = normalizedSelection
 
                 if selectionChanged {
+                    cancelAutoMarkReadTask()
                     pullRequestFocusState = .idle
                     reviewMergeState = .idle
                     armAutoMarkReadForCurrentSelection()
@@ -284,6 +299,10 @@ struct AttentionWindowView: View {
                             relativeTo: referenceDate
                             )
                         )
+                        .contentShape(Rectangle())
+                        .contextMenu {
+                            selectionContextMenu(for: contextMenuItems(for: item))
+                        }
                         .tag(item.id)
                     }
                     .accessibilityIdentifier("inbox-list")
@@ -438,6 +457,8 @@ struct AttentionWindowView: View {
         Group {
             if !model.hasToken {
                 connectionRequiredView
+            } else if selectionActionItems.count > 1 {
+                multipleSelectionView
             } else if let item = selectedItem {
                 AttentionDetailView(
                     item: item,
@@ -502,20 +523,24 @@ struct AttentionWindowView: View {
         }
     }
 
-    private func syncSelection() {
-        let previousSelectionID = selectedItemID
-
-        if let currentSelectionID = selectedItemID,
-            displayedItems.contains(where: { $0.id == currentSelectionID }) {
-            selectedItemID = currentSelectionID
-        } else {
-            selectedItemID = displayedItems.first?.id
+    private var multipleSelectionView: some View {
+        ContentUnavailableView {
+            Label("\(selectionActionItems.count) Items Selected", systemImage: "checklist")
+        } description: {
+            Text("Use the toolbar or the right-click menu to open items, update their read state, or ignore them.")
         }
+    }
 
-        if previousSelectionID != selectedItemID {
+    private func syncSelection() {
+        let normalizedSelection = normalizeSelection(selectedItemIDs)
+        let selectionChanged = selectedItemIDs != normalizedSelection
+        selectedItemIDs = normalizedSelection
+
+        if selectionChanged {
             cancelAutoMarkReadTask()
             pullRequestFocusState = .idle
             reviewMergeState = .idle
+            armAutoMarkReadForCurrentSelection()
         }
 
         updateWatchedPullRequestSelection()
@@ -525,8 +550,19 @@ struct AttentionWindowView: View {
         model.setWatchedPullRequest(selectedItem)
     }
 
-    private func openSelectedItem(_ item: AttentionItem) {
-        openRelatedURL(item.url, for: item)
+    private func normalizeSelection(_ selection: Set<AttentionItem.ID>) -> Set<AttentionItem.ID> {
+        let displayedItemIDs = Set(displayedItems.map(\.id))
+        let normalizedSelection = selection.intersection(displayedItemIDs)
+
+        if !normalizedSelection.isEmpty || displayedItems.isEmpty {
+            return normalizedSelection
+        }
+
+        guard let firstItemID = displayedItems.first?.id else {
+            return []
+        }
+
+        return [firstItemID]
     }
 
     private func openRelatedURL(_ url: URL, for item: AttentionItem) {
@@ -535,9 +571,75 @@ struct AttentionWindowView: View {
         openURL(url)
     }
 
-    private func toggleReadState(for item: AttentionItem) {
+    private func openSelection(_ items: [AttentionItem]) {
         cancelAutoMarkReadTask()
-        model.toggleReadState(for: item)
+        model.markItemsAsRead(items)
+
+        for item in items {
+            openURL(item.url)
+        }
+    }
+
+    private func markSelectionAsRead(_ items: [AttentionItem]) {
+        cancelAutoMarkReadTask()
+        model.markItemsAsRead(items)
+    }
+
+    private func markSelectionAsUnread(_ items: [AttentionItem]) {
+        cancelAutoMarkReadTask()
+        model.markItemsAsUnread(items)
+    }
+
+    private func performPrimaryReadAction(for items: [AttentionItem]) {
+        if items.contains(where: \.isUnread) {
+            markSelectionAsRead(items)
+        } else {
+            markSelectionAsUnread(items)
+        }
+    }
+
+    private func ignoreSelection(_ items: [AttentionItem]) {
+        cancelAutoMarkReadTask()
+        model.ignore(items)
+    }
+
+    private func contextMenuItems(for item: AttentionItem) -> [AttentionItem] {
+        if selectedItemIDs.contains(item.id) {
+            return selectionActionItems
+        }
+
+        return [item]
+    }
+
+    @ViewBuilder
+    private func selectionContextMenu(for items: [AttentionItem]) -> some View {
+        Button {
+            openSelection(items)
+        } label: {
+            Label("Open", systemImage: "safari")
+        }
+
+        Button {
+            markSelectionAsRead(items)
+        } label: {
+            Label("Mark as Read", systemImage: "circle")
+        }
+        .disabled(!items.contains(where: \.isUnread))
+
+        Button {
+            markSelectionAsUnread(items)
+        } label: {
+            Label("Mark as Unread", systemImage: "circle.fill")
+        }
+        .disabled(!items.contains(where: { !$0.isUnread }))
+
+        Divider()
+
+        Button {
+            ignoreSelection(items)
+        } label: {
+            Label("Ignore", systemImage: "eye.slash")
+        }
     }
 
     private func armAutoMarkReadForCurrentSelection() {
@@ -912,56 +1014,92 @@ private struct AttentionDetailView: View {
 }
 
 private struct IgnoreUndoBanner: View {
-    let ignoredItem: IgnoredAttentionSubject
+    let state: IgnoreUndoState
     let onUndo: () -> Void
     let onDismiss: () -> Void
 
+    private var title: String {
+        if state.subjects.count == 1, let ignoredItem = state.primarySubject {
+            return "Ignored \(ignoredItem.title)"
+        }
+
+        return "Ignored \(state.subjects.count) items"
+    }
+
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 10) {
             Image(systemName: "eye.slash")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 28, height: 28)
+                .frame(width: 22, height: 22)
                 .background(
                     Circle()
-                        .fill(Color.secondary.opacity(0.12))
+                        .fill(Color.secondary.opacity(0.1))
                 )
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Ignored \(ignoredItem.title)")
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
+            Text(title)
+                .font(.callout.weight(.semibold))
+                .lineLimit(1)
 
-                Text("Undo is available for a few seconds.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Spacer(minLength: 8)
 
-            Spacer(minLength: 12)
-
-            Button("Undo", action: onUndo)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .appInteractiveHover()
+            ToastUndoButton(action: onUndo)
 
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 24, height: 24)
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 20, height: 20)
             }
             .buttonStyle(.plain)
             .appInteractiveHover(backgroundOpacity: 0.08, cornerRadius: 999)
             .help("Dismiss")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .frame(maxWidth: 420)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: 320)
         .background(.regularMaterial, in: Capsule(style: .continuous))
         .overlay(
             Capsule(style: .continuous)
                 .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.12), radius: 12, y: 6)
+        .shadow(color: .black.opacity(0.12), radius: 10, y: 5)
+    }
+}
+
+private struct ToastUndoButton: View {
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text("Undo")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(isHovering ? Color.accentColor.opacity(0.92) : Color.accentColor)
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(Color.white.opacity(isHovering ? 0.3 : 0.14), lineWidth: 1)
+                )
+                .shadow(
+                    color: Color.accentColor.opacity(isHovering ? 0.28 : 0.18),
+                    radius: isHovering ? 8 : 4,
+                    y: isHovering ? 3 : 2
+                )
+        }
+        .buttonStyle(.plain)
+        .scaleEffect(isHovering ? 1.02 : 1)
+        .animation(.easeInOut(duration: 0.12), value: isHovering)
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .appLinkHover()
+        .help("Undo ignore")
     }
 }
 

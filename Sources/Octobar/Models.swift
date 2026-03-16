@@ -2701,10 +2701,16 @@ struct IgnoredAttentionSubject: Identifiable, Hashable, Codable, Sendable {
 }
 
 struct IgnoreUndoState: Identifiable, Hashable, Sendable {
-    let subject: IgnoredAttentionSubject
+    let subjects: [IgnoredAttentionSubject]
     let expiresAt: Date
 
-    var id: String { subject.id }
+    var id: String {
+        subjects.map(\.ignoreKey).sorted().joined(separator: "|")
+    }
+
+    var primarySubject: IgnoredAttentionSubject? {
+        subjects.first
+    }
 }
 
 enum AttentionItemVisibilityPolicy {
