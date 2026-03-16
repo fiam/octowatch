@@ -253,8 +253,13 @@ enum AttentionItemType: String, Hashable, Sendable {
         teamScoped: Bool = false,
         followUpRelationship: NotificationFollowUpRelationship? = nil
     ) -> AttentionItemType {
+        let normalizedReason = reason.lowercased()
         let normalizedEvent = timelineEvent?.lowercased()
         let normalizedState = reviewState?.lowercased()
+
+        if normalizedReason == "review_requested", followUpRelationship == nil {
+            return teamScoped ? .teamReviewRequested : .reviewRequested
+        }
 
         switch normalizedEvent {
         case "review_requested":
@@ -287,7 +292,7 @@ enum AttentionItemType: String, Hashable, Sendable {
             break
         }
 
-        switch reason.lowercased() {
+        switch normalizedReason {
         case "assign":
             return .assignedPullRequest
         case "mention":

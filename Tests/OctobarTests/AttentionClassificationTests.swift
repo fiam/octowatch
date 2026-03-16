@@ -135,6 +135,46 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testReviewRequestedNotificationsStayStickyForUnrelatedApproval() {
+        XCTAssertEqual(
+            AttentionItemType.notificationType(
+                reason: "review_requested",
+                timelineEvent: "reviewed",
+                reviewState: "APPROVED"
+            ),
+            .reviewRequested
+        )
+        XCTAssertEqual(
+            AttentionItemType.notificationType(
+                reason: "review_requested",
+                timelineEvent: "reviewed",
+                reviewState: "APPROVED",
+                teamScoped: true
+            ),
+            .teamReviewRequested
+        )
+    }
+
+    func testReviewRequestedNotificationsOnlyUpgradeForYourOwnFollowUp() {
+        XCTAssertEqual(
+            AttentionItemType.notificationType(
+                reason: "review_requested",
+                timelineEvent: "committed",
+                reviewState: nil
+            ),
+            .reviewRequested
+        )
+        XCTAssertEqual(
+            AttentionItemType.notificationType(
+                reason: "review_requested",
+                timelineEvent: "committed",
+                reviewState: nil,
+                followUpRelationship: .afterYourReview
+            ),
+            .newCommitsAfterReview
+        )
+    }
+
     func testWorkflowAttentionClassification() {
         XCTAssertEqual(
             AttentionItemType.workflowType(status: "action_required", conclusion: nil),
