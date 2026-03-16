@@ -1208,8 +1208,7 @@ private struct PullRequestFocusView: View {
                 PullRequestStatusSummaryCard(summary: statusSummary)
             }
 
-            if let postMergeWorkflowPreview = focus.postMergeWorkflowPreview,
-                focus.resolution == .open {
+            if let postMergeWorkflowPreview = focus.postMergeWorkflowPreview {
                 DetailCard(title: postMergeWorkflowPreview.title) {
                     VStack(alignment: .leading, spacing: 14) {
                         Text(postMergeWorkflowPreview.detail)
@@ -1226,8 +1225,8 @@ private struct PullRequestFocusView: View {
                             }
                         }
 
-                        if postMergeWorkflowPreview.isBestEffort {
-                            Text(postMergeWorkflowPreview.footnote)
+                        if let footnote = postMergeWorkflowPreview.footnote {
+                            Text(footnote)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -1725,13 +1724,13 @@ private struct PullRequestPostMergeWorkflowRow: View {
             onOpenURL(workflow.url)
         } label: {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "arrow.triangle.branch")
+                Image(systemName: workflow.status.iconName)
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(color(for: workflow.status.accent))
                     .frame(width: 22, height: 22)
                     .background(
                         RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(Color.secondary.opacity(0.08))
+                            .fill(color(for: workflow.status.accent).opacity(0.08))
                     )
 
                 VStack(alignment: .leading, spacing: 3) {
@@ -1739,7 +1738,7 @@ private struct PullRequestPostMergeWorkflowRow: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
 
-                    Text(Self.relativeFormatter.localizedString(for: workflow.lastRunAt, relativeTo: referenceDate))
+                    Text(statusLine)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1755,6 +1754,15 @@ private struct PullRequestPostMergeWorkflowRow: View {
         .buttonStyle(.plain)
         .appLinkHover()
         .help("Open workflow run on GitHub")
+    }
+
+    private var statusLine: String {
+        if let timestamp = workflow.timestamp {
+            return workflow.status.label + " · " +
+                Self.relativeFormatter.localizedString(for: timestamp, relativeTo: referenceDate)
+        }
+
+        return workflow.status.label
     }
 }
 

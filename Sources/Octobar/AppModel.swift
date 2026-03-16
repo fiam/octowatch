@@ -127,15 +127,19 @@ final class AppModel: ObservableObject {
     }
 
     var actionableCount: Int {
-        combinedAttentionItems.count
+        actionableAttentionItems.count
     }
 
     var unreadCount: Int {
-        combinedAttentionItems.filter { $0.isUnread }.count
+        actionableAttentionItems.filter { $0.isUnread }.count
     }
 
     var combinedAttentionItems: [AttentionItem] {
         AttentionCombinedViewPolicy.collapsingDuplicates(in: attentionItems)
+    }
+
+    var actionableAttentionItems: [AttentionItem] {
+        AttentionItemVisibilityPolicy.excludingHistoricalLogEntries(combinedAttentionItems)
     }
 
     var relativeLastUpdated: String {
@@ -705,6 +709,10 @@ final class AppModel: ObservableObject {
                 }
 
                 if suppressedWorkflowItemIDs.contains(item.id) {
+                    continue
+                }
+
+                if item.isHistoricalLogEntry {
                     continue
                 }
 

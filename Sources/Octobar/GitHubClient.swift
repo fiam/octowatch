@@ -72,6 +72,9 @@ struct GitHubClient {
           mergeable
           viewerDidAuthor
           headRefOid
+          mergeCommit {
+            oid
+          }
           reviewRequests(first: 20) {
             totalCount
           }
@@ -331,7 +334,11 @@ struct GitHubClient {
     ) -> [AttentionItem] {
         let pullRequestItems = pullRequests.map { pullRequest in
             AttentionItem(
-                id: "pr:\(pullRequest.id)",
+                id: pullRequestItemID(
+                    prefix: "pr",
+                    baseID: "\(pullRequest.id)",
+                    resolution: pullRequest.resolution
+                ),
                 ignoreKey: pullRequest.ignoreKey,
                 stream: .pullRequests,
                 type: .assignedPullRequest,
@@ -340,7 +347,9 @@ struct GitHubClient {
                 repository: pullRequest.repository,
                 timestamp: pullRequest.updatedAt,
                 url: pullRequest.url,
-                detail: detail(for: pullRequest)
+                detail: detail(for: pullRequest),
+                isHistoricalLogEntry: pullRequest.resolution == .merged,
+                isUnread: pullRequest.resolution != .merged
             )
         }
 
@@ -398,7 +407,11 @@ struct GitHubClient {
             .filter { !directPullRequestKeys.contains($0.ignoreKey) }
             .map { trackedSubject in
                 AttentionItem(
-                    id: "tracked-pr:\(trackedSubject.id)",
+                    id: pullRequestItemID(
+                        prefix: "tracked-pr",
+                        baseID: trackedSubject.id,
+                        resolution: trackedSubject.resolution
+                    ),
                     ignoreKey: trackedSubject.ignoreKey,
                     stream: .pullRequests,
                     type: trackedSubject.type,
@@ -407,7 +420,9 @@ struct GitHubClient {
                     repository: trackedSubject.repository,
                     timestamp: trackedSubject.updatedAt,
                     url: trackedSubject.url,
-                    detail: detail(for: trackedSubject)
+                    detail: detail(for: trackedSubject),
+                    isHistoricalLogEntry: trackedSubject.resolution == .merged,
+                    isUnread: trackedSubject.resolution != .merged
                 )
             }
 
@@ -439,9 +454,14 @@ struct GitHubClient {
 
     private func detail(for pullRequest: PullRequestSummary) -> AttentionDetail {
         AttentionDetail(
+            contextPillTitle: pullRequest.resolution == .merged ? "Merged" : nil,
             why: AttentionWhy(
-                summary: "This pull request is assigned to you directly.",
-                detail: "Review it, move it forward, or decide whether to ignore it."
+                summary: pullRequest.resolution == .merged
+                    ? "This merged pull request is kept in your log."
+                    : "This pull request is assigned to you directly.",
+                detail: pullRequest.resolution == .merged
+                    ? "Review the merge result and the workflows it triggered."
+                    : "Review it, move it forward, or decide whether to ignore it."
             ),
             evidence: [
                 AttentionEvidence(
@@ -484,14 +504,29 @@ struct GitHubClient {
         )
     }
 
+    private func pullRequestItemID(
+        prefix: String,
+        baseID: String,
+        resolution: GitHubSubjectResolution
+    ) -> String {
+        if resolution == .merged {
+            return "\(prefix):\(baseID):merged"
+        }
+
+        return "\(prefix):\(baseID)"
+    }
+
     private func detail(for trackedSubject: TrackedSubjectSummary) -> AttentionDetail {
         let isPullRequest = trackedSubject.url.absoluteString.contains("/pull/")
         let subjectTitle = isPullRequest ? "Pull request" : "Issue"
         let subjectIcon = isPullRequest ? "arrow.triangle.pull" : "exclamationmark.circle"
 
         return AttentionDetail(
+            contextPillTitle: trackedSubject.resolution == .merged ? "Merged" : nil,
             why: AttentionWhy(
-                summary: whySummary(for: trackedSubject.type, actor: nil),
+                summary: trackedSubject.resolution == .merged && isPullRequest
+                    ? "This merged pull request is kept in your log."
+                    : whySummary(for: trackedSubject.type, actor: nil),
                 detail: trackedSubject.subtitle
             ),
             evidence: [
@@ -842,8 +877,9 @@ struct GitHubClient {
         )
         let postMergeWorkflowPreview = try? await fetchPostMergeWorkflowPreview(
             token: token,
-            repository: reference.repository,
+            reference: reference,
             branch: pullRequest.baseRefName,
+            mergeCommitSHA: pullRequest.mergeCommit?.oid,
             observer: observer
         )
         let commitsSinceReview: [PullRequestFocusEntry]
@@ -1091,23 +1127,10 @@ struct GitHubClient {
                 commitSHA: mergeCommitSHA,
                 observer: observer
             )
-            workflowRuns = runs.compactMap { run in
-                guard run.event.caseInsensitiveCompare("push") == .orderedSame else {
-                    return nil
-                }
-
-                return PostMergeObservedWorkflowRun(
-                    id: run.id,
-                    title: run.displayTitle ?? run.name ?? "Workflow run",
-                    repository: watch.repository,
-                    url: run.htmlURL ?? runWebURL(repository: watch.repository, runID: run.id),
-                    event: run.event,
-                    status: run.status,
-                    conclusion: run.conclusion,
-                    createdAt: run.createdAt,
-                    actor: attentionActor(from: run.triggeringActor ?? run.actor)
-                )
-            }
+            workflowRuns = postMergeObservedWorkflowRuns(
+                from: runs,
+                repository: watch.repository
+            )
         } else {
             workflowRuns = []
         }
@@ -1580,36 +1603,33 @@ struct GitHubClient {
         login: String,
         observer: GitHubRateLimitObserver
     ) async throws -> [PullRequestSummary] {
-        let query = "is:open is:pr assignee:\(login) archived:false"
-
-        let response: SearchIssuesResponse = try await request(
-            path: "/search/issues",
-            queryItems: [
-                URLQueryItem(name: "q", value: query),
-                URLQueryItem(name: "sort", value: "updated"),
-                URLQueryItem(name: "order", value: "desc"),
-                URLQueryItem(name: "per_page", value: "20")
-            ],
+        async let openTask = searchPullRequests(
             token: token,
+            query: "is:open is:pr assignee:\(login) archived:false",
+            perPage: 20,
+            observer: observer
+        )
+        async let mergedTask = searchPullRequests(
+            token: token,
+            query: "is:merged is:pr assignee:\(login) archived:false",
+            perPage: 20,
             observer: observer
         )
 
-        return response.items.compactMap { issue in
-            guard let repository = repositoryFullName(from: issue.repositoryURL) else {
-                return nil
+        let open = try await openTask
+        let merged = try await mergedTask
+        let summaries = open + merged
+        var byKey = [String: PullRequestSummary]()
+
+        for summary in summaries {
+            if let existing = byKey[summary.ignoreKey], existing.updatedAt >= summary.updatedAt {
+                continue
             }
 
-            return PullRequestSummary(
-                id: issue.id,
-                ignoreKey: issue.htmlURL.absoluteString,
-                number: issue.number,
-                title: issue.title,
-                subtitle: "#\(issue.number) · \(repository)",
-                repository: repository,
-                url: issue.htmlURL,
-                updatedAt: issue.updatedAt
-            )
+            byKey[summary.ignoreKey] = summary
         }
+
+        return byKey.values.sorted { $0.updatedAt > $1.updatedAt }
     }
 
     private func fetchTrackedPullRequests(
@@ -1619,21 +1639,30 @@ struct GitHubClient {
     ) async throws -> [TrackedSubjectSummary] {
         async let authoredTask = searchTrackedSubjects(
             token: token,
-            query: "is:open is:pr author:\(login) archived:false",
+            queries: [
+                "is:open is:pr author:\(login) archived:false",
+                "is:merged is:pr author:\(login) archived:false"
+            ],
             type: .authoredPullRequest,
             perPage: trackedPullRequestLimit,
             observer: observer
         )
         async let reviewedTask = searchTrackedSubjects(
             token: token,
-            query: "is:open is:pr reviewed-by:\(login) archived:false",
+            queries: [
+                "is:open is:pr reviewed-by:\(login) archived:false",
+                "is:merged is:pr reviewed-by:\(login) archived:false"
+            ],
             type: .reviewedPullRequest,
             perPage: trackedPullRequestLimit,
             observer: observer
         )
         async let commentedTask = searchTrackedSubjects(
             token: token,
-            query: "is:open is:pr commenter:\(login) archived:false",
+            queries: [
+                "is:open is:pr commenter:\(login) archived:false",
+                "is:merged is:pr commenter:\(login) archived:false"
+            ],
             type: .commentedPullRequest,
             perPage: trackedPullRequestLimit,
             observer: observer
@@ -1653,21 +1682,21 @@ struct GitHubClient {
     ) async throws -> [TrackedSubjectSummary] {
         async let assignedTask = searchTrackedSubjects(
             token: token,
-            query: "is:open is:issue assignee:\(login) archived:false",
+            queries: ["is:open is:issue assignee:\(login) archived:false"],
             type: .assignedIssue,
             perPage: trackedIssueLimit,
             observer: observer
         )
         async let authoredTask = searchTrackedSubjects(
             token: token,
-            query: "is:open is:issue author:\(login) archived:false",
+            queries: ["is:open is:issue author:\(login) archived:false"],
             type: .authoredIssue,
             perPage: trackedIssueLimit,
             observer: observer
         )
         async let commentedTask = searchTrackedSubjects(
             token: token,
-            query: "is:open is:issue commenter:\(login) archived:false",
+            queries: ["is:open is:issue commenter:\(login) archived:false"],
             type: .commentedIssue,
             perPage: trackedIssueLimit,
             observer: observer
@@ -1682,11 +1711,67 @@ struct GitHubClient {
 
     private func searchTrackedSubjects(
         token: String,
-        query: String,
+        queries: [String],
         type: AttentionItemType,
         perPage: Int,
         observer: GitHubRateLimitObserver
     ) async throws -> [TrackedSubjectSummary] {
+        var summaries = [TrackedSubjectSummary]()
+
+        for query in queries {
+            let response: SearchIssuesResponse = try await request(
+                path: "/search/issues",
+                queryItems: [
+                    URLQueryItem(name: "q", value: query),
+                    URLQueryItem(name: "sort", value: "updated"),
+                    URLQueryItem(name: "order", value: "desc"),
+                    URLQueryItem(name: "per_page", value: "\(perPage)")
+                ],
+                token: token,
+                observer: observer
+            )
+
+            let resolution: GitHubSubjectResolution = query.contains("is:merged") ? .merged : .open
+            summaries.append(
+                contentsOf: response.items.compactMap { issue in
+                    guard let repository = repositoryFullName(from: issue.repositoryURL) else {
+                        return nil
+                    }
+
+                    return TrackedSubjectSummary(
+                        id: "\(repository)#\(issue.number)",
+                        ignoreKey: issue.htmlURL.absoluteString,
+                        type: type,
+                        number: issue.number,
+                        title: issue.title,
+                        subtitle: trackedSubjectSubtitle(for: type, repository: repository),
+                        repository: repository,
+                        url: issue.htmlURL,
+                        updatedAt: issue.updatedAt,
+                        resolution: resolution
+                    )
+                }
+            )
+        }
+
+        var byKey = [String: TrackedSubjectSummary]()
+        for summary in summaries {
+            if let existing = byKey[summary.ignoreKey], existing.updatedAt >= summary.updatedAt {
+                continue
+            }
+
+            byKey[summary.ignoreKey] = summary
+        }
+
+        return Array(byKey.values)
+    }
+
+    private func searchPullRequests(
+        token: String,
+        query: String,
+        perPage: Int,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [PullRequestSummary] {
         let response: SearchIssuesResponse = try await request(
             path: "/search/issues",
             queryItems: [
@@ -1699,21 +1784,22 @@ struct GitHubClient {
             observer: observer
         )
 
+        let resolution: GitHubSubjectResolution = query.contains("is:merged") ? .merged : .open
         return response.items.compactMap { issue in
             guard let repository = repositoryFullName(from: issue.repositoryURL) else {
                 return nil
             }
 
-            return TrackedSubjectSummary(
-                id: "\(repository)#\(issue.number)",
+            return PullRequestSummary(
+                id: issue.id,
                 ignoreKey: issue.htmlURL.absoluteString,
-                type: type,
                 number: issue.number,
                 title: issue.title,
-                subtitle: trackedSubjectSubtitle(for: type, repository: repository),
+                subtitle: "#\(issue.number) · \(repository)",
                 repository: repository,
                 url: issue.htmlURL,
-                updatedAt: issue.updatedAt
+                updatedAt: issue.updatedAt,
+                resolution: resolution
             )
         }
     }
@@ -2966,69 +3052,338 @@ struct GitHubClient {
 
     private func fetchPostMergeWorkflowPreview(
         token: String,
-        repository: String,
+        reference: PullRequestReference,
         branch: String,
+        mergeCommitSHA: String?,
         observer: GitHubRateLimitObserver
     ) async throws -> PullRequestPostMergeWorkflowPreview? {
-        let repositoryID = try parseRepositoryFullName(repository)
-        let response: WorkflowRunsResponse = try await request(
-            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/actions/runs",
-            queryItems: [
-                URLQueryItem(name: "event", value: "push"),
-                URLQueryItem(name: "branch", value: branch),
-                URLQueryItem(name: "per_page", value: "10")
-            ],
+        let predicted = try await fetchPredictedPostMergeWorkflows(
             token: token,
+            reference: reference,
+            branch: branch,
             observer: observer
         )
-
-        var workflowsByKey = [String: PullRequestPostMergeWorkflow]()
-
-        for run in response.workflowRuns {
-            let title = run.name ?? run.displayTitle ?? "Workflow"
-            let dedupeKey: String
-            if let workflowID = run.workflowID {
-                dedupeKey = "workflow:\(workflowID)"
-            } else {
-                dedupeKey = "name:\(title.lowercased())"
-            }
-
-            let workflow = PullRequestPostMergeWorkflow(
-                id: run.workflowID ?? run.id,
-                title: title,
-                url: run.htmlURL ?? repositoryActionsURL(repository: repository),
-                lastRunAt: run.createdAt
+        let observed: [PostMergeObservedWorkflowRun]
+        if let mergeCommitSHA {
+            let runs = try await fetchWorkflowRunsForCommit(
+                token: token,
+                repository: reference.repository,
+                commitSHA: mergeCommitSHA,
+                observer: observer
             )
-
-            if let existing = workflowsByKey[dedupeKey], existing.lastRunAt >= workflow.lastRunAt {
-                continue
-            }
-
-            workflowsByKey[dedupeKey] = workflow
+            observed = postMergeObservedWorkflowRuns(
+                from: runs,
+                repository: reference.repository
+            )
+        } else {
+            observed = []
         }
 
-        let workflows = workflowsByKey.values
-            .sorted { lhs, rhs in
-                if lhs.lastRunAt != rhs.lastRunAt {
-                    return lhs.lastRunAt > rhs.lastRunAt
-                }
-
-                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-            }
-
-        guard !workflows.isEmpty else {
+        guard !predicted.workflows.isEmpty || !observed.isEmpty else {
             return nil
         }
 
-        return PullRequestPostMergeWorkflowPreview(
+        return buildPostMergeWorkflowPreview(
             branch: branch,
-            workflows: Array(workflows.prefix(4)),
-            isBestEffort: true
+            predicted: predicted.workflows,
+            observed: observed,
+            isMerged: mergeCommitSHA != nil,
+            isBestEffort: predicted.isBestEffort
         )
     }
 
     private func repositoryActionsURL(repository: String) -> URL {
         URL(string: "https://github.com/\(repository)/actions")!
+    }
+
+    private func repositoryWorkflowURL(
+        repository: String,
+        path: String
+    ) -> URL {
+        let filename = URL(fileURLWithPath: path).lastPathComponent
+        return URL(string: "https://github.com/\(repository)/actions/workflows/\(filename)")!
+    }
+
+    private func fetchPredictedPostMergeWorkflows(
+        token: String,
+        reference: PullRequestReference,
+        branch: String,
+        observer: GitHubRateLimitObserver
+    ) async throws -> PredictedPostMergeWorkflowSet {
+        let workflows = try await fetchRepositoryWorkflows(
+            token: token,
+            repository: reference.repository,
+            observer: observer
+        )
+        guard !workflows.isEmpty else {
+            return PredictedPostMergeWorkflowSet(workflows: [], isBestEffort: false)
+        }
+
+        let changedFiles = try await fetchPullRequestChangedFiles(
+            token: token,
+            reference: reference,
+            observer: observer
+        )
+        guard !changedFiles.isEmpty else {
+            return PredictedPostMergeWorkflowSet(workflows: [], isBestEffort: false)
+        }
+
+        return await withTaskGroup(of: PredictedPostMergeWorkflowOutcome.self) { group in
+            for workflow in workflows {
+                group.addTask {
+                    do {
+                        guard
+                            let content = try await self.fetchRepositoryFileContent(
+                                token: token,
+                                repository: reference.repository,
+                                path: workflow.path,
+                                ref: branch,
+                                observer: observer
+                            ),
+                            let definition = GitHubWorkflowFileParser.parse(content)
+                        else {
+                            return .bestEffortOnly
+                        }
+
+                        guard let pushTrigger = definition.pushTrigger else {
+                            return .ignored
+                        }
+
+                        guard GitHubWorkflowPathFilterPolicy.matches(
+                            trigger: pushTrigger,
+                            branch: branch,
+                            changedFiles: changedFiles
+                        ) else {
+                            return .ignored
+                        }
+
+                        let title = definition.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return .matched(
+                            PredictedPostMergeWorkflow(
+                                id: workflow.id,
+                                title: title?.isEmpty == false ? title! : workflow.name,
+                                url: workflow.htmlURL ?? self.repositoryWorkflowURL(
+                                    repository: reference.repository,
+                                    path: workflow.path
+                                )
+                            )
+                        )
+                    } catch {
+                        return .bestEffortOnly
+                    }
+                }
+            }
+
+            var predicted = [PredictedPostMergeWorkflow]()
+            var isBestEffort = false
+
+            for await outcome in group {
+                switch outcome {
+                case let .matched(workflow):
+                    predicted.append(workflow)
+                case .bestEffortOnly:
+                    isBestEffort = true
+                case .ignored:
+                    break
+                }
+            }
+
+            predicted.sort { lhs, rhs in
+                lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+            return PredictedPostMergeWorkflowSet(
+                workflows: predicted,
+                isBestEffort: isBestEffort
+            )
+        }
+    }
+
+    private func fetchRepositoryWorkflows(
+        token: String,
+        repository: String,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [RepositoryWorkflow] {
+        let repositoryID = try parseRepositoryFullName(repository)
+        let response: RepositoryWorkflowsResponse = try await request(
+            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/actions/workflows",
+            token: token,
+            observer: observer
+        )
+
+        return response.workflows.filter {
+            $0.state.caseInsensitiveCompare("active") == .orderedSame
+        }
+    }
+
+    private func fetchPullRequestChangedFiles(
+        token: String,
+        reference: PullRequestReference,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [String] {
+        var changedFiles = [String]()
+        var page = 1
+
+        while true {
+            let files: [PullRequestFile] = try await request(
+                path: "/repos/\(reference.owner)/\(reference.name)/pulls/\(reference.number)/files",
+                queryItems: [
+                    URLQueryItem(name: "per_page", value: "100"),
+                    URLQueryItem(name: "page", value: "\(page)")
+                ],
+                token: token,
+                observer: observer
+            )
+
+            changedFiles.append(contentsOf: files.map(\.filename))
+
+            guard files.count == 100 else {
+                break
+            }
+
+            page += 1
+        }
+
+        return changedFiles
+    }
+
+    private func fetchRepositoryFileContent(
+        token: String,
+        repository: String,
+        path: String,
+        ref: String,
+        observer: GitHubRateLimitObserver
+    ) async throws -> String? {
+        let repositoryID = try parseRepositoryFullName(repository)
+
+        do {
+            let file: RepositoryContentFile = try await request(
+                path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/contents/\(path)",
+                queryItems: [
+                    URLQueryItem(name: "ref", value: ref)
+                ],
+                token: token,
+                observer: observer
+            )
+
+            guard file.type == "file", file.encoding == "base64", let encoded = file.content else {
+                return nil
+            }
+
+            let normalized = encoded.replacingOccurrences(of: "\n", with: "")
+            guard
+                let data = Data(base64Encoded: normalized),
+                let content = String(data: data, encoding: .utf8)
+            else {
+                return nil
+            }
+
+            return content
+        } catch let GitHubClientError.api(statusCode, _) where statusCode == 404 {
+            return nil
+        }
+    }
+
+    private func postMergeObservedWorkflowRuns(
+        from runs: [WorkflowRun],
+        repository: String
+    ) -> [PostMergeObservedWorkflowRun] {
+        runs.compactMap { run in
+            guard run.event.caseInsensitiveCompare("push") == .orderedSame else {
+                return nil
+            }
+
+            return PostMergeObservedWorkflowRun(
+                id: run.id,
+                workflowID: run.workflowID,
+                title: run.displayTitle ?? run.name ?? "Workflow run",
+                repository: repository,
+                url: run.htmlURL ?? runWebURL(repository: repository, runID: run.id),
+                event: run.event,
+                status: run.status,
+                conclusion: run.conclusion,
+                createdAt: run.createdAt,
+                actor: attentionActor(from: run.triggeringActor ?? run.actor)
+            )
+        }
+    }
+
+    private func buildPostMergeWorkflowPreview(
+        branch: String,
+        predicted: [PredictedPostMergeWorkflow],
+        observed: [PostMergeObservedWorkflowRun],
+        isMerged: Bool,
+        isBestEffort: Bool
+    ) -> PullRequestPostMergeWorkflowPreview? {
+        var latestObservedByKey = [String: PostMergeObservedWorkflowRun]()
+        for run in observed {
+            let key = run.workflowID.map { "workflow:\($0)" } ?? "name:\(run.title.lowercased())"
+            if let existing = latestObservedByKey[key], existing.createdAt >= run.createdAt {
+                continue
+            }
+
+            latestObservedByKey[key] = run
+        }
+
+        var workflows = [PullRequestPostMergeWorkflow]()
+        for workflow in predicted {
+            let key = "workflow:\(workflow.id)"
+            let fallbackKey = "name:\(workflow.title.lowercased())"
+            let observedRun = latestObservedByKey.removeValue(forKey: key) ??
+                latestObservedByKey.removeValue(forKey: fallbackKey)
+
+            workflows.append(
+                PullRequestPostMergeWorkflow(
+                    id: key,
+                    title: workflow.title,
+                    url: observedRun?.url ?? workflow.url,
+                    status: observedRun.map {
+                        PullRequestPostMergeWorkflowStatus.observed(
+                            status: $0.status,
+                            conclusion: $0.conclusion
+                        )
+                    } ?? (isMerged ? .waiting : .expected),
+                    timestamp: observedRun?.createdAt
+                )
+            )
+        }
+
+        for run in latestObservedByKey.values {
+            workflows.append(
+                PullRequestPostMergeWorkflow(
+                    id: run.workflowID.map { "workflow:\($0)" } ?? "run:\(run.id)",
+                    title: run.title,
+                    url: run.url,
+                    status: PullRequestPostMergeWorkflowStatus.observed(
+                        status: run.status,
+                        conclusion: run.conclusion
+                    ),
+                    timestamp: run.createdAt
+                )
+            )
+        }
+
+        guard !workflows.isEmpty else {
+            return nil
+        }
+
+        workflows.sort { lhs, rhs in
+            switch (lhs.timestamp, rhs.timestamp) {
+            case let (.some(lhsTimestamp), .some(rhsTimestamp)) where lhsTimestamp != rhsTimestamp:
+                return lhsTimestamp > rhsTimestamp
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            default:
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+        }
+
+        return PullRequestPostMergeWorkflowPreview(
+            mode: isMerged ? .observed(branch: branch) : .predicted(branch: branch),
+            workflows: Array(workflows.prefix(6)),
+            isBestEffort: isBestEffort
+        )
     }
 
     private func workflowSubtitle(
@@ -3615,6 +3970,7 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
     let mergeable: String?
     let viewerDidAuthor: Bool
     let headRefOID: String
+    let mergeCommit: PullRequestFocusGraphQLMergeCommit?
     let reviewRequests: PullRequestFocusGraphQLReviewRequestConnection
     let author: PullRequestFocusGraphQLActor?
     let timelineItems: PullRequestFocusGraphQLConnection<PullRequestFocusGraphQLAssignedEvent>
@@ -3636,6 +3992,7 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
         case mergeable
         case viewerDidAuthor
         case headRefOID = "headRefOid"
+        case mergeCommit
         case reviewRequests
         case author
         case timelineItems
@@ -3643,6 +4000,10 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
         case reviews
         case commits
     }
+}
+
+private struct PullRequestFocusGraphQLMergeCommit: Decodable {
+    let oid: String
 }
 
 private struct EnqueuePullRequestMutationVariables: Encodable {
@@ -4190,6 +4551,53 @@ private struct WorkflowRun: Decodable {
         case actor
         case triggeringActor = "triggering_actor"
     }
+}
+
+private struct RepositoryWorkflowsResponse: Decodable {
+    let workflows: [RepositoryWorkflow]
+}
+
+private struct RepositoryWorkflow: Decodable {
+    let id: Int
+    let name: String
+    let path: String
+    let state: String
+    let htmlURL: URL?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case path
+        case state
+        case htmlURL = "html_url"
+    }
+}
+
+private struct RepositoryContentFile: Decodable {
+    let type: String
+    let content: String?
+    let encoding: String?
+}
+
+private struct PullRequestFile: Decodable {
+    let filename: String
+}
+
+private struct PredictedPostMergeWorkflowSet {
+    let workflows: [PredictedPostMergeWorkflow]
+    let isBestEffort: Bool
+}
+
+private struct PredictedPostMergeWorkflow {
+    let id: Int
+    let title: String
+    let url: URL
+}
+
+private enum PredictedPostMergeWorkflowOutcome {
+    case matched(PredictedPostMergeWorkflow)
+    case bestEffortOnly
+    case ignored
 }
 
 private struct GitHubAPIError: Decodable {

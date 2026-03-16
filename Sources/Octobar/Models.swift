@@ -755,6 +755,7 @@ struct PostMergeWatch: Identifiable, Hashable, Codable, Sendable {
 
 struct PostMergeObservedWorkflowRun: Hashable, Sendable {
     let id: Int
+    let workflowID: Int?
     let title: String
     let repository: String
     let url: URL
@@ -1079,31 +1080,161 @@ struct PullRequestFocus: Hashable, Sendable {
     let emptyStateDetail: String
 }
 
+enum PullRequestPostMergeWorkflowStatus: Hashable, Sendable {
+    case expected
+    case waiting
+    case queued
+    case inProgress
+    case actionRequired
+    case succeeded
+    case failed
+    case completed(String)
+
+    static func observed(status: String?, conclusion: String?) -> PullRequestPostMergeWorkflowStatus {
+        let normalizedStatus = (status ?? "").lowercased()
+        let normalizedConclusion = (conclusion ?? "").lowercased()
+
+        if normalizedStatus == "action_required" || normalizedConclusion == "action_required" {
+            return .actionRequired
+        }
+
+        if normalizedStatus != "completed" {
+            switch normalizedStatus {
+            case "queued", "requested", "pending", "waiting":
+                return .queued
+            default:
+                return .inProgress
+            }
+        }
+
+        switch normalizedConclusion {
+        case "success":
+            return .succeeded
+        case "failure", "timed_out", "startup_failure":
+            return .failed
+        case "cancelled":
+            return .completed("Cancelled")
+        case "skipped":
+            return .completed("Skipped")
+        case "neutral":
+            return .completed("Completed")
+        default:
+            return .completed("Completed")
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .expected:
+            return "Will run on merge"
+        case .waiting:
+            return "No run observed yet"
+        case .queued:
+            return "Queued"
+        case .inProgress:
+            return "Running"
+        case .actionRequired:
+            return "Waiting for approval"
+        case .succeeded:
+            return "Succeeded"
+        case .failed:
+            return "Failed"
+        case let .completed(label):
+            return label
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .expected, .waiting:
+            return "arrow.triangle.branch"
+        case .queued:
+            return "clock"
+        case .inProgress:
+            return "hourglass"
+        case .actionRequired:
+            return "hand.raised"
+        case .succeeded:
+            return "checkmark.circle.fill"
+        case .failed:
+            return "xmark.octagon.fill"
+        case .completed:
+            return "checkmark.circle"
+        }
+    }
+
+    var accent: PullRequestFocusEntryAccent {
+        switch self {
+        case .expected, .waiting:
+            return .neutral
+        case .queued, .inProgress, .actionRequired:
+            return .warning
+        case .succeeded:
+            return .success
+        case .failed:
+            return .failure
+        case .completed:
+            return .resolved
+        }
+    }
+}
+
+enum PullRequestPostMergeWorkflowPreviewMode: Hashable, Sendable {
+    case predicted(branch: String)
+    case observed(branch: String)
+}
+
 struct PullRequestPostMergeWorkflowPreview: Hashable, Sendable {
-    let branch: String
+    let mode: PullRequestPostMergeWorkflowPreviewMode
     let workflows: [PullRequestPostMergeWorkflow]
     let isBestEffort: Bool
 
     var title: String {
-        workflows.count == 1 ? "Likely post-merge workflow" : "Likely post-merge workflows"
+        let singularTitle: String
+        let pluralTitle: String
+
+        switch mode {
+        case .predicted:
+            singularTitle = "Will run on merge"
+            pluralTitle = "Will run on merge"
+        case .observed:
+            singularTitle = "Post-merge workflow"
+            pluralTitle = "Post-merge workflows"
+        }
+
+        return workflows.count == 1 ? singularTitle : pluralTitle
     }
 
     var detail: String {
-        let workflowCount = workflows.count
-        let workflowLabel = workflowCount == 1 ? "workflow" : "workflows"
-        return "Recent merges to \(branch) triggered \(workflowCount) push \(workflowLabel)."
+        let branch: String
+        switch mode {
+        case let .predicted(value), let .observed(value):
+            branch = value
+        }
+
+        switch mode {
+        case .predicted:
+            return "These workflows should run when this pull request merges into \(branch)."
+        case .observed:
+            return "Tracking the workflows GitHub observed for the merge into \(branch)."
+        }
     }
 
-    var footnote: String {
-        "Based on recent push runs to \(branch). Path filters may still skip them for this pull request."
+    var footnote: String? {
+        guard isBestEffort else {
+            return nil
+        }
+
+        return "Some workflow files could not be parsed, so this list may be incomplete."
     }
 }
 
 struct PullRequestPostMergeWorkflow: Identifiable, Hashable, Sendable {
-    let id: Int
+    let id: String
     let title: String
     let url: URL
-    let lastRunAt: Date
+    let status: PullRequestPostMergeWorkflowStatus
+    let timestamp: Date?
 }
 
 enum PullRequestMergeMethod: String, Hashable, Sendable {
@@ -1824,6 +1955,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     let url: URL
     let actor: AttentionActor?
     let detail: AttentionDetail
+    let isHistoricalLogEntry: Bool
     var isUnread: Bool
 
     init(
@@ -1838,6 +1970,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         url: URL,
         actor: AttentionActor? = nil,
         detail: AttentionDetail? = nil,
+        isHistoricalLogEntry: Bool = false,
         isUnread: Bool = true
     ) {
         self.id = id
@@ -1856,6 +1989,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             url: url,
             actor: actor
         )
+        self.isHistoricalLogEntry = isHistoricalLogEntry
         self.isUnread = isUnread
     }
 
@@ -2128,6 +2262,7 @@ struct PullRequestSummary: Identifiable, Hashable, Sendable {
     let repository: String
     let url: URL
     let updatedAt: Date
+    let resolution: GitHubSubjectResolution
 }
 
 struct TrackedSubjectSummary: Identifiable, Hashable, Sendable {
@@ -2140,6 +2275,7 @@ struct TrackedSubjectSummary: Identifiable, Hashable, Sendable {
     let repository: String
     let url: URL
     let updatedAt: Date
+    let resolution: GitHubSubjectResolution
 }
 
 struct ReadyToMergeSummary: Identifiable, Hashable, Sendable {
@@ -2578,6 +2714,12 @@ enum AttentionItemVisibilityPolicy {
     ) -> [AttentionItem] {
         items.filter { !ignoredKeys.contains($0.ignoreKey) }
     }
+
+    static func excludingHistoricalLogEntries(
+        _ items: [AttentionItem]
+    ) -> [AttentionItem] {
+        items.filter { !$0.isHistoricalLogEntry }
+    }
 }
 
 enum NotificationAttentionPolicy {
@@ -2687,5 +2829,430 @@ enum PullRequestAttentionPolicy {
         }
 
         return mergedAt >= now.addingTimeInterval(-86_400)
+    }
+}
+
+struct GitHubWorkflowPushTrigger: Hashable, Sendable {
+    let branches: [String]
+    let branchesIgnore: [String]
+    let paths: [String]
+    let pathsIgnore: [String]
+
+    static let `default` = GitHubWorkflowPushTrigger(
+        branches: [],
+        branchesIgnore: [],
+        paths: [],
+        pathsIgnore: []
+    )
+}
+
+struct GitHubWorkflowFileDefinition: Hashable, Sendable {
+    let name: String?
+    let pushTrigger: GitHubWorkflowPushTrigger?
+}
+
+enum GitHubWorkflowFileParser {
+    static func parse(_ content: String) -> GitHubWorkflowFileDefinition? {
+        let lines = content.split(whereSeparator: \.isNewline).map(String.init)
+        var parsedLines = [ParsedLine]()
+        parsedLines.reserveCapacity(lines.count)
+
+        for rawLine in lines {
+            guard let parsedLine = ParsedLine(rawLine) else {
+                continue
+            }
+            parsedLines.append(parsedLine)
+        }
+
+        guard !parsedLines.isEmpty else {
+            return nil
+        }
+
+        var workflowName: String?
+        var onLineIndex: Int?
+
+        for (index, line) in parsedLines.enumerated() {
+            guard line.indent == 0, let keyValue = line.keyValue else {
+                continue
+            }
+
+            let key = normalizedKey(keyValue.key)
+            if key == "name", workflowName == nil {
+                workflowName = scalarValues(from: keyValue.value).first
+            } else if key == "on" {
+                onLineIndex = index
+                break
+            }
+        }
+
+        guard let onLineIndex else {
+            return GitHubWorkflowFileDefinition(name: workflowName, pushTrigger: nil)
+        }
+
+        let onLine = parsedLines[onLineIndex]
+        let pushTrigger: GitHubWorkflowPushTrigger?
+        if let value = onLine.keyValue?.value, !value.isEmpty {
+            let events = scalarValues(from: value).map { $0.lowercased() }
+            pushTrigger = events.contains("push") ? .default : nil
+        } else {
+            pushTrigger = parseOnBlock(
+                parsedLines,
+                startIndex: onLineIndex + 1,
+                parentIndent: onLine.indent
+            )
+        }
+
+        return GitHubWorkflowFileDefinition(name: workflowName, pushTrigger: pushTrigger)
+    }
+
+    private static func parseOnBlock(
+        _ lines: [ParsedLine],
+        startIndex: Int,
+        parentIndent: Int
+    ) -> GitHubWorkflowPushTrigger? {
+        var pushTrigger: GitHubWorkflowPushTrigger?
+
+        var index = startIndex
+        while index < lines.count {
+            let line = lines[index]
+            guard line.indent > parentIndent else {
+                break
+            }
+
+            guard let keyValue = line.keyValue else {
+                index += 1
+                continue
+            }
+
+            let key = normalizedKey(keyValue.key)
+            if key == "push" {
+                if keyValue.value.isEmpty {
+                    pushTrigger = parsePushBlock(
+                        lines,
+                        startIndex: index + 1,
+                        parentIndent: line.indent
+                    ) ?? .default
+                } else {
+                    pushTrigger = .default
+                }
+                break
+            }
+
+            index += 1
+        }
+
+        return pushTrigger
+    }
+
+    private static func parsePushBlock(
+        _ lines: [ParsedLine],
+        startIndex: Int,
+        parentIndent: Int
+    ) -> GitHubWorkflowPushTrigger? {
+        var branches = [String]()
+        var branchesIgnore = [String]()
+        var paths = [String]()
+        var pathsIgnore = [String]()
+        var sawFilter = false
+
+        var index = startIndex
+        while index < lines.count {
+            let line = lines[index]
+            guard line.indent > parentIndent else {
+                break
+            }
+
+            guard let keyValue = line.keyValue else {
+                index += 1
+                continue
+            }
+
+            let key = normalizedKey(keyValue.key)
+            let values: [String]
+            if keyValue.value.isEmpty {
+                let sequence = blockSequence(
+                    lines,
+                    startIndex: index + 1,
+                    parentIndent: line.indent
+                )
+                values = sequence.values
+                index = sequence.nextIndex
+            } else {
+                values = scalarValues(from: keyValue.value)
+                index += 1
+            }
+
+            switch key {
+            case "branches":
+                branches = values
+                sawFilter = true
+            case "branches-ignore":
+                branchesIgnore = values
+                sawFilter = true
+            case "paths":
+                paths = values
+                sawFilter = true
+            case "paths-ignore":
+                pathsIgnore = values
+                sawFilter = true
+            default:
+                break
+            }
+        }
+
+        guard sawFilter else {
+            return nil
+        }
+
+        return GitHubWorkflowPushTrigger(
+            branches: branches,
+            branchesIgnore: branchesIgnore,
+            paths: paths,
+            pathsIgnore: pathsIgnore
+        )
+    }
+
+    private static func normalizedKey(_ key: String) -> String {
+        normalizeScalar(key).lowercased()
+    }
+
+    private static func scalarValues(from rawValue: String) -> [String] {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return []
+        }
+
+        if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
+            let inner = String(trimmed.dropFirst().dropLast())
+            return splitCommaSeparated(inner).map(normalizeScalar)
+        }
+
+        return [normalizeScalar(trimmed)]
+    }
+
+    private static func normalizeScalar(_ rawValue: String) -> String {
+        rawValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    }
+
+    private static func splitCommaSeparated(_ value: String) -> [String] {
+        var result = [String]()
+        var current = ""
+        var insideSingleQuotes = false
+        var insideDoubleQuotes = false
+
+        for character in value {
+            switch character {
+            case "'" where !insideDoubleQuotes:
+                insideSingleQuotes.toggle()
+                current.append(character)
+            case "\"" where !insideSingleQuotes:
+                insideDoubleQuotes.toggle()
+                current.append(character)
+            case "," where !insideSingleQuotes && !insideDoubleQuotes:
+                result.append(current)
+                current = ""
+            default:
+                current.append(character)
+            }
+        }
+
+        if !current.isEmpty {
+            result.append(current)
+        }
+
+        return result
+    }
+
+    private static func blockSequence(
+        _ lines: [ParsedLine],
+        startIndex: Int,
+        parentIndent: Int
+    ) -> (values: [String], nextIndex: Int) {
+        var values = [String]()
+        var index = startIndex
+
+        while index < lines.count {
+            let line = lines[index]
+            guard line.indent > parentIndent else {
+                break
+            }
+
+            if let listItem = line.listItem {
+                values.append(normalizeScalar(listItem))
+                index += 1
+                continue
+            }
+
+            if line.keyValue != nil, line.indent == parentIndent + 2 {
+                break
+            }
+
+            index += 1
+        }
+
+        return (values, index)
+    }
+
+    private struct ParsedLine {
+        let indent: Int
+        let content: String
+
+        init?(_ rawLine: String) {
+            let expanded = rawLine.replacingOccurrences(of: "\t", with: "  ")
+            let withoutComment = Self.removingComment(from: expanded)
+            let trimmed = withoutComment.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                return nil
+            }
+
+            indent = withoutComment.prefix { $0 == " " }.count
+            content = trimmed
+        }
+
+        var keyValue: (key: String, value: String)? {
+            var insideSingleQuotes = false
+            var insideDoubleQuotes = false
+
+            for character in content {
+                switch character {
+                case "'" where !insideDoubleQuotes:
+                    insideSingleQuotes.toggle()
+                case "\"" where !insideSingleQuotes:
+                    insideDoubleQuotes.toggle()
+                case ":" where !insideSingleQuotes && !insideDoubleQuotes:
+                    let parts = content.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                    guard parts.count == 2 else {
+                        return nil
+                    }
+
+                    return (
+                        key: String(parts[0]),
+                        value: String(parts[1])
+                    )
+                default:
+                    break
+                }
+            }
+
+            return nil
+        }
+
+        var listItem: String? {
+            guard content.hasPrefix("- ") else {
+                return nil
+            }
+
+            return String(content.dropFirst(2))
+        }
+
+        private static func removingComment(from line: String) -> String {
+            var result = ""
+            var insideSingleQuotes = false
+            var insideDoubleQuotes = false
+            var previous: Character?
+
+            for character in line {
+                switch character {
+                case "'" where !insideDoubleQuotes:
+                    insideSingleQuotes.toggle()
+                    result.append(character)
+                case "\"" where !insideSingleQuotes:
+                    insideDoubleQuotes.toggle()
+                    result.append(character)
+                case "#" where !insideSingleQuotes && !insideDoubleQuotes && (previous == nil || previous?.isWhitespace == true):
+                    return result
+                default:
+                    result.append(character)
+                }
+
+                previous = character
+            }
+
+            return result
+        }
+    }
+}
+
+enum GitHubWorkflowPathFilterPolicy {
+    static func matches(
+        trigger: GitHubWorkflowPushTrigger,
+        branch: String,
+        changedFiles: [String]
+    ) -> Bool {
+        if !trigger.branches.isEmpty &&
+            !matchesOrderedPatterns(trigger.branches, value: branch) {
+            return false
+        }
+
+        if trigger.branchesIgnore.contains(where: { matchesPattern($0, value: branch) }) {
+            return false
+        }
+
+        if !trigger.paths.isEmpty {
+            guard changedFiles.contains(where: { matchesOrderedPatterns(trigger.paths, value: $0) }) else {
+                return false
+            }
+        }
+
+        if !trigger.pathsIgnore.isEmpty {
+            let allIgnored = changedFiles.allSatisfy { path in
+                trigger.pathsIgnore.contains(where: { matchesPattern($0, value: path) })
+            }
+            if allIgnored {
+                return false
+            }
+        }
+
+        return true
+    }
+
+    private static func matchesOrderedPatterns(
+        _ patterns: [String],
+        value: String
+    ) -> Bool {
+        var isIncluded = false
+        var sawPositive = false
+
+        for pattern in patterns {
+            let normalizedPattern = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedPattern.isEmpty else {
+                continue
+            }
+
+            if normalizedPattern.hasPrefix("!") {
+                let candidate = String(normalizedPattern.dropFirst())
+                if matchesPattern(candidate, value: value) {
+                    isIncluded = false
+                }
+                continue
+            }
+
+            sawPositive = true
+            if matchesPattern(normalizedPattern, value: value) {
+                isIncluded = true
+            }
+        }
+
+        return sawPositive ? isIncluded : false
+    }
+
+    private static func matchesPattern(
+        _ pattern: String,
+        value: String
+    ) -> Bool {
+        let regexPattern = regex(for: pattern)
+        return value.range(of: regexPattern, options: .regularExpression) != nil
+    }
+
+    private static func regex(for pattern: String) -> String {
+        let escaped = NSRegularExpression.escapedPattern(for: pattern)
+        let placeholder = "__DOUBLE_STAR__"
+        let withDoubleStars = escaped.replacingOccurrences(of: "\\*\\*", with: placeholder)
+        let withSingleStars = withDoubleStars.replacingOccurrences(of: "\\*", with: "[^/]*")
+        let withQuestionMarks = withSingleStars.replacingOccurrences(of: "\\?", with: "[^/]")
+        let restored = withQuestionMarks.replacingOccurrences(of: placeholder, with: ".*")
+        return "^\(restored)$"
     }
 }

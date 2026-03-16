@@ -63,7 +63,7 @@ struct MenuBarContentView: View {
 
     private var attentionList: some View {
         Group {
-            if model.attentionItems.isEmpty {
+            if model.actionableAttentionItems.isEmpty {
                 Text("Inbox is clear right now.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -71,7 +71,7 @@ struct MenuBarContentView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(model.combinedAttentionItems.prefix(30)) { item in
+                        ForEach(model.actionableAttentionItems.prefix(30)) { item in
                             HStack(alignment: .top, spacing: 10) {
                                 eventBadge(for: item.type)
 

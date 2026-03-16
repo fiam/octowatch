@@ -370,6 +370,176 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testHistoricalLogEntriesStayOutOfActionableAttention() {
+        let historicalItem = AttentionItem(
+            id: "tracked-pr:1:merged",
+            ignoreKey: "https://github.com/acme/example/pull/1",
+            type: .authoredPullRequest,
+            title: "Merged PR",
+            subtitle: "acme/example · Created by you",
+            repository: "acme/example",
+            timestamp: Date(timeIntervalSince1970: 200),
+            url: URL(string: "https://github.com/acme/example/pull/1")!,
+            isHistoricalLogEntry: true,
+            isUnread: false
+        )
+        let activeItem = AttentionItem(
+            id: "tracked-pr:2",
+            ignoreKey: "https://github.com/acme/example/pull/2",
+            type: .reviewRequested,
+            title: "Needs review",
+            subtitle: "acme/example · Review requested",
+            repository: "acme/example",
+            timestamp: Date(timeIntervalSince1970: 201),
+            url: URL(string: "https://github.com/acme/example/pull/2")!
+        )
+
+        let actionable = AttentionItemVisibilityPolicy.excludingHistoricalLogEntries(
+            [historicalItem, activeItem]
+        )
+
+        XCTAssertEqual(actionable.map(\.id), ["tracked-pr:2"])
+    }
+
+    func testWorkflowFileParserReadsQuotedOnBlockWithFilters() {
+        let workflow = GitHubWorkflowFileParser.parse(
+            """
+            name: Deploy
+            'on':
+              push:
+                branches:
+                  - main
+                paths:
+                  - Sources/**
+                  - Package.swift
+            """
+        )
+
+        XCTAssertEqual(workflow?.name, "Deploy")
+        XCTAssertEqual(workflow?.pushTrigger?.branches, ["main"])
+        XCTAssertEqual(
+            workflow?.pushTrigger?.paths,
+            ["Sources/**", "Package.swift"]
+        )
+    }
+
+    func testWorkflowFileParserRecognizesInlinePushEvents() {
+        let workflow = GitHubWorkflowFileParser.parse(
+            """
+            name: CI
+            on: [pull_request, push]
+            """
+        )
+
+        XCTAssertEqual(workflow?.name, "CI")
+        XCTAssertEqual(workflow?.pushTrigger, .default)
+    }
+
+    func testWorkflowPathFilterPolicyMatchesBranchAndPaths() {
+        let trigger = GitHubWorkflowPushTrigger(
+            branches: ["main"],
+            branchesIgnore: [],
+            paths: ["Sources/**", "!Sources/Generated/**"],
+            pathsIgnore: []
+        )
+
+        XCTAssertTrue(
+            GitHubWorkflowPathFilterPolicy.matches(
+                trigger: trigger,
+                branch: "main",
+                changedFiles: ["Sources/Octobar/AppModel.swift"]
+            )
+        )
+        XCTAssertFalse(
+            GitHubWorkflowPathFilterPolicy.matches(
+                trigger: trigger,
+                branch: "release/1.0",
+                changedFiles: ["Sources/Octobar/AppModel.swift"]
+            )
+        )
+        XCTAssertFalse(
+            GitHubWorkflowPathFilterPolicy.matches(
+                trigger: trigger,
+                branch: "main",
+                changedFiles: ["Sources/Generated/API.swift"]
+            )
+        )
+    }
+
+    func testWorkflowPathFilterPolicyRespectsPathsIgnore() {
+        let trigger = GitHubWorkflowPushTrigger(
+            branches: [],
+            branchesIgnore: [],
+            paths: [],
+            pathsIgnore: ["docs/**", "*.md"]
+        )
+
+        XCTAssertFalse(
+            GitHubWorkflowPathFilterPolicy.matches(
+                trigger: trigger,
+                branch: "main",
+                changedFiles: ["docs/readme.md", "CHANGELOG.md"]
+            )
+        )
+        XCTAssertTrue(
+            GitHubWorkflowPathFilterPolicy.matches(
+                trigger: trigger,
+                branch: "main",
+                changedFiles: ["docs/readme.md", "Sources/Octobar/AppModel.swift"]
+            )
+        )
+    }
+
+    func testPostMergeWorkflowStatusMapsObservedWorkflowStates() {
+        XCTAssertEqual(
+            PullRequestPostMergeWorkflowStatus.observed(
+                status: "completed",
+                conclusion: "success"
+            ),
+            .succeeded
+        )
+        XCTAssertEqual(
+            PullRequestPostMergeWorkflowStatus.observed(
+                status: "in_progress",
+                conclusion: nil
+            ),
+            .inProgress
+        )
+        XCTAssertEqual(
+            PullRequestPostMergeWorkflowStatus.observed(
+                status: "completed",
+                conclusion: "cancelled"
+            ),
+            .completed("Cancelled")
+        )
+    }
+
+    func testPostMergeWorkflowPreviewUsesObservedCopyAndOptionalFootnote() {
+        let preview = PullRequestPostMergeWorkflowPreview(
+            mode: .observed(branch: "main"),
+            workflows: [
+                PullRequestPostMergeWorkflow(
+                    id: "workflow:1",
+                    title: "Deploy",
+                    url: URL(string: "https://github.com/acme/example/actions/runs/1")!,
+                    status: .succeeded,
+                    timestamp: Date(timeIntervalSince1970: 300)
+                )
+            ],
+            isBestEffort: true
+        )
+
+        XCTAssertEqual(preview.title, "Post-merge workflow")
+        XCTAssertEqual(
+            preview.detail,
+            "Tracking the workflows GitHub observed for the merge into main."
+        )
+        XCTAssertEqual(
+            preview.footnote,
+            "Some workflow files could not be parsed, so this list may be incomplete."
+        )
+    }
+
     func testIgnoringSubjectRemovesAllMatchingAttentionItems() {
         let ignoredKey = "https://github.com/acme/example/pull/42"
         let keptKey = "https://github.com/acme/example/pull/43"
@@ -1471,6 +1641,7 @@ final class AttentionClassificationTests: XCTestCase {
         )
         let run = PostMergeObservedWorkflowRun(
             id: 42,
+            workflowID: 7,
             title: "deploy",
             repository: "acme/cloud-infra-terraform",
             url: URL(string: "https://github.com/acme/cloud-infra-terraform/actions/runs/42")!,
@@ -1515,6 +1686,7 @@ final class AttentionClassificationTests: XCTestCase {
         )
         let run = PostMergeObservedWorkflowRun(
             id: 43,
+            workflowID: 7,
             title: "deploy",
             repository: "acme/cloud-infra-terraform",
             url: URL(string: "https://github.com/acme/cloud-infra-terraform/actions/runs/43")!,
