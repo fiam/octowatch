@@ -127,11 +127,15 @@ final class AppModel: ObservableObject {
     }
 
     var actionableCount: Int {
-        attentionItems.count
+        combinedAttentionItems.count
     }
 
     var unreadCount: Int {
-        attentionItems.filter { $0.isUnread }.count
+        combinedAttentionItems.filter { $0.isUnread }.count
+    }
+
+    var combinedAttentionItems: [AttentionItem] {
+        AttentionCombinedViewPolicy.collapsingDuplicates(in: attentionItems)
     }
 
     var relativeLastUpdated: String {

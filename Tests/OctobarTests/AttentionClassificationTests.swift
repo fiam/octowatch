@@ -195,6 +195,71 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(AttentionItemType.assignedIssue.defaultStream, .issues)
     }
 
+    func testCombinedAttentionViewPrefersNotificationDuplicateOverDirectPullRequestItem() {
+        let url = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/pull/638")!
+        let directItem = AttentionItem(
+            id: "pr:638",
+            ignoreKey: url.absoluteString,
+            stream: .pullRequests,
+            type: .assignedPullRequest,
+            title: "[cloud-uc-services/cp] deploying uc-cp/uc-cp-api:873",
+            subtitle: "#638 · ExampleOrg/cloud-uc-manifests",
+            repository: "ExampleOrg/cloud-uc-manifests",
+            timestamp: Date(timeIntervalSince1970: 100),
+            url: url
+        )
+        let notificationItem = AttentionItem(
+            id: "notif:638",
+            ignoreKey: url.absoluteString,
+            stream: .notifications,
+            type: .assignedPullRequest,
+            title: "[cloud-uc-services/cp] deploying uc-cp/uc-cp-api:873",
+            subtitle: "testcontainers-manifests-deploy[bot] · ExampleOrg/cloud-uc-manifests · Assigned pull request",
+            repository: "ExampleOrg/cloud-uc-manifests",
+            timestamp: Date(timeIntervalSince1970: 101),
+            url: url,
+            actor: AttentionActor(login: "testcontainers-manifests-deploy[bot]", avatarURL: nil, isBot: true)
+        )
+
+        let combined = AttentionCombinedViewPolicy.collapsingDuplicates(
+            in: [notificationItem, directItem]
+        )
+
+        XCTAssertEqual(combined.map(\.id), ["notif:638"])
+    }
+
+    func testCombinedAttentionViewKeepsDistinctAttentionTypesForSamePullRequest() {
+        let url = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/pull/638")!
+        let reviewRequest = AttentionItem(
+            id: "notif:review",
+            ignoreKey: url.absoluteString,
+            stream: .notifications,
+            type: .reviewRequested,
+            title: "Review me",
+            subtitle: "ExampleOrg/cloud-uc-manifests · Review requested",
+            repository: "ExampleOrg/cloud-uc-manifests",
+            timestamp: Date(timeIntervalSince1970: 100),
+            url: url
+        )
+        let readyToMerge = AttentionItem(
+            id: "ready:638",
+            ignoreKey: url.absoluteString,
+            stream: .pullRequests,
+            type: .readyToMerge,
+            title: "Review me",
+            subtitle: "ExampleOrg/cloud-uc-manifests · Ready to merge",
+            repository: "ExampleOrg/cloud-uc-manifests",
+            timestamp: Date(timeIntervalSince1970: 101),
+            url: url
+        )
+
+        let combined = AttentionCombinedViewPolicy.collapsingDuplicates(
+            in: [reviewRequest, readyToMerge]
+        )
+
+        XCTAssertEqual(combined.map(\.id), ["notif:review", "ready:638"])
+    }
+
     func testTrackedPullRequestPriorityPrefersAuthoredOverReviewedAndCommented() {
         XCTAssertTrue(
             TrackedSubjectAttentionPolicy.shouldReplace(
@@ -1146,7 +1211,7 @@ final class AttentionClassificationTests: XCTestCase {
         )
 
         XCTAssertEqual(summary?.title, "Merged")
-        XCTAssertEqual(summary?.accent, .success)
+        XCTAssertEqual(summary?.accent, .resolved)
     }
 
     func testPullRequestStatusSummaryShowsQueuedState() {
@@ -1191,7 +1256,7 @@ final class AttentionClassificationTests: XCTestCase {
 
         XCTAssertEqual(summary?.title, "Merged")
         XCTAssertEqual(summary?.detail, "This pull request has already been merged.")
-        XCTAssertEqual(summary?.accent, .success)
+        XCTAssertEqual(summary?.accent, .resolved)
     }
 
     func testPullRequestStatusSummaryPrefersMergedResolutionOverQueuedOutcome() {
@@ -1217,7 +1282,7 @@ final class AttentionClassificationTests: XCTestCase {
 
         XCTAssertEqual(summary?.title, "Merged")
         XCTAssertEqual(summary?.detail, "This pull request has already been merged.")
-        XCTAssertEqual(summary?.accent, .success)
+        XCTAssertEqual(summary?.accent, .resolved)
     }
 
     func testPullRequestStatusSummaryShowsClosedResolutionEvenWithoutMutationAction() {

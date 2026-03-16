@@ -198,7 +198,7 @@ struct AttentionWindowView: View {
 
     private var streamItems: [AttentionItem] {
         guard let stream = streamFilter.stream else {
-            return model.attentionItems
+            return model.combinedAttentionItems
         }
 
         return model.attentionItems.filter { $0.stream == stream }
@@ -1081,7 +1081,7 @@ private struct PullRequestFocusView: View {
         if let outcome = displayedMergeOutcome {
             switch outcome {
             case .merged:
-                return .green
+                return .mint
             case .queued:
                 return .orange
             }
@@ -1619,6 +1619,8 @@ private func color(for accent: PullRequestFocusEntryAccent) -> Color {
         return .red
     case .success:
         return .green
+    case .resolved:
+        return .mint
     case .change:
         return .teal
     }

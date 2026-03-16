@@ -28,6 +28,64 @@ enum AttentionStream: String, CaseIterable, Hashable, Sendable {
     }
 }
 
+private struct AttentionCombinedDisplayKey: Hashable {
+    let ignoreKey: String
+    let type: AttentionItemType
+}
+
+enum AttentionCombinedViewPolicy {
+    static func collapsingDuplicates(in items: [AttentionItem]) -> [AttentionItem] {
+        var preferredByKey = [AttentionCombinedDisplayKey: AttentionItem]()
+
+        for item in items {
+            let key = AttentionCombinedDisplayKey(ignoreKey: item.ignoreKey, type: item.type)
+            if let existing = preferredByKey[key], !shouldReplace(existing: existing, with: item) {
+                continue
+            }
+
+            preferredByKey[key] = item
+        }
+
+        var emitted = Set<AttentionItem.ID>()
+        return items.compactMap { item in
+            let key = AttentionCombinedDisplayKey(ignoreKey: item.ignoreKey, type: item.type)
+            guard let preferred = preferredByKey[key], preferred.id == item.id else {
+                return nil
+            }
+
+            guard emitted.insert(item.id).inserted else {
+                return nil
+            }
+
+            return item
+        }
+    }
+
+    private static func shouldReplace(existing: AttentionItem, with candidate: AttentionItem) -> Bool {
+        if existing.stream != .notifications && candidate.stream == .notifications {
+            return true
+        }
+
+        if existing.stream == .notifications && candidate.stream != .notifications {
+            return false
+        }
+
+        if existing.isUnread != candidate.isUnread {
+            return candidate.isUnread
+        }
+
+        if existing.timestamp != candidate.timestamp {
+            return candidate.timestamp > existing.timestamp
+        }
+
+        if existing.actor == nil && candidate.actor != nil {
+            return true
+        }
+
+        return candidate.detail.evidence.count > existing.detail.evidence.count
+    }
+}
+
 enum AttentionItemType: String, Hashable, Sendable {
     case assignedPullRequest
     case authoredPullRequest
@@ -967,6 +1025,7 @@ enum PullRequestFocusEntryAccent: String, Hashable, Sendable {
     case warning
     case failure
     case success
+    case resolved
     case change
 }
 
@@ -1649,7 +1708,7 @@ extension PullRequestStatusSummary {
                 title: "Merged",
                 detail: "This pull request has already been merged.",
                 iconName: "checkmark.circle.fill",
-                accent: .success
+                accent: .resolved
             )
         case .closed:
             return PullRequestStatusSummary(
@@ -1669,7 +1728,7 @@ extension PullRequestStatusSummary {
                     title: "Merged",
                     detail: "This pull request has been merged.",
                     iconName: "checkmark.circle.fill",
-                    accent: .success
+                    accent: .resolved
                 )
             case .queued:
                 return PullRequestStatusSummary(

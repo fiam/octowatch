@@ -71,7 +71,7 @@ struct MenuBarContentView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(model.attentionItems.prefix(30)) { item in
+                        ForEach(model.combinedAttentionItems.prefix(30)) { item in
                             HStack(alignment: .top, spacing: 10) {
                                 eventBadge(for: item.type)
 
