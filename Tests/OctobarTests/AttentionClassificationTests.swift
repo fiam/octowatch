@@ -477,6 +477,30 @@ final class AttentionClassificationTests: XCTestCase {
                 state: "open",
                 merged: false,
                 isDraft: false,
+                mergeable: false,
+                mergeableState: "clean",
+                pendingReviewRequests: 0,
+                approvalCount: 1,
+                hasChangesRequested: false
+            )
+        )
+        XCTAssertFalse(
+            AuthoredPullRequestAttentionPolicy.shouldSurfaceReadyToMerge(
+                state: "open",
+                merged: false,
+                isDraft: false,
+                mergeable: true,
+                mergeableState: "blocked",
+                pendingReviewRequests: 0,
+                approvalCount: 1,
+                hasChangesRequested: false
+            )
+        )
+        XCTAssertFalse(
+            AuthoredPullRequestAttentionPolicy.shouldSurfaceReadyToMerge(
+                state: "open",
+                merged: false,
+                isDraft: false,
                 mergeable: true,
                 mergeableState: "dirty",
                 pendingReviewRequests: 0,
@@ -564,36 +588,31 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(facts.map(\.actor.login), ["renovate-custom-app", "fiam"])
     }
 
-    func testAuthoredPullRequestActionsIncludeMergeAndView() {
+    func testAuthoredPullRequestActionsKeepViewAsSecondaryWhenMutationPrimaryExists() {
         let actions = AttentionAction.pullRequestActions(
             reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 639),
-            sourceType: .readyToMerge,
             mode: .authored,
-            reviewDecision: "APPROVED",
-            mergeable: "MERGEABLE",
             checkSummary: PullRequestCheckSummary(
                 passedCount: 8,
                 skippedCount: 1,
                 failedCount: 0,
                 pendingCount: 0
             ),
-            hasNewCommits: false
+            hasNewCommits: false,
+            hasPrimaryMutationAction: true
         )
 
-        XCTAssertEqual(actions.map(\.id), ["merge", "view-pr", "open-files", "open-checks"])
-        XCTAssertEqual(actions.first?.isPrimary, true)
-        XCTAssertEqual(actions.dropFirst().first?.isPrimary, false)
+        XCTAssertEqual(actions.map(\.id), ["view-pr", "open-files", "open-checks"])
+        XCTAssertEqual(actions.first?.isPrimary, false)
     }
 
-    func testAssignedPullRequestActionsUseViewAsPrimary() {
+    func testAssignedPullRequestActionsUseViewAsPrimaryWhenNoMutationExists() {
         let actions = AttentionAction.pullRequestActions(
             reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 638),
-            sourceType: .assignedPullRequest,
             mode: .generic,
-            reviewDecision: nil,
-            mergeable: nil,
             checkSummary: .empty,
-            hasNewCommits: false
+            hasNewCommits: false,
+            hasPrimaryMutationAction: false
         )
 
         XCTAssertEqual(actions.map(\.id), ["view-pr", "open-files"])
@@ -601,13 +620,37 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(actions.first?.isPrimary, true)
     }
 
+    func testAuthoredPullRequestActionsUseViewAsPrimaryWhenMergeActionBlocked() {
+        let actions = AttentionAction.pullRequestActions(
+            reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 643),
+            mode: .authored,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 7,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            hasNewCommits: false,
+            hasPrimaryMutationAction: false
+        )
+
+        XCTAssertEqual(actions.map(\.id), ["view-pr", "open-files", "open-checks"])
+        XCTAssertEqual(actions.first?.title, "View on GitHub")
+        XCTAssertEqual(actions.first?.isPrimary, true)
+    }
+
     func testBotAssignedReviewMergeActionEnablesApproveAndMergeWhenClean() {
-        let action = PullRequestReviewMergeAction.makeBotAssignedAction(
+        let action = PullRequestReviewMergeAction.makeAction(
             sourceType: .assignedPullRequest,
+            mode: .generic,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            viewerPermission: "WRITE",
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "REVIEW_REQUIRED",
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 0,
             checkSummary: PullRequestCheckSummary(
                 passedCount: 12,
                 skippedCount: 2,
@@ -623,13 +666,72 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertNil(action?.disabledReason)
     }
 
-    func testBotAssignedReviewMergeActionDisablesOnFailures() {
-        let action = PullRequestReviewMergeAction.makeBotAssignedAction(
-            sourceType: .assignedPullRequest,
+    func testBotReviewRequestedActionEnablesApproveAndMergeForCurrentRequest() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .reviewRequested,
+            mode: .generic,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            viewerPermission: "WRITE",
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "REVIEW_REQUIRED",
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 1,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 5,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.title, "Approve and Merge")
+        XCTAssertEqual(action?.requiresApproval, true)
+        XCTAssertEqual(action?.isEnabled, true)
+        XCTAssertNil(action?.disabledReason)
+    }
+
+    func testBotTeamReviewRequestedActionEnablesApproveAndMergeForCurrentRequest() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .teamReviewRequested,
+            mode: .generic,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            viewerPermission: "MAINTAIN",
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "REVIEW_REQUIRED",
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 1,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 5,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.title, "Approve and Merge")
+        XCTAssertEqual(action?.requiresApproval, true)
+        XCTAssertEqual(action?.isEnabled, true)
+        XCTAssertNil(action?.disabledReason)
+    }
+
+    func testBotAssignedReviewMergeActionDisablesOnFailures() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .assignedPullRequest,
+            mode: .generic,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            viewerPermission: "WRITE",
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "REVIEW_REQUIRED",
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 0,
             checkSummary: PullRequestCheckSummary(
                 passedCount: 8,
                 skippedCount: 3,
@@ -643,13 +745,199 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(action?.disabledReason, "Some checks are failing.")
     }
 
-    func testPullRequestStatusSummaryShowsReadyToApproveAndMerge() {
-        let action = PullRequestReviewMergeAction.makeBotAssignedAction(
+    func testBotAssignedReviewMergeActionDisablesWhenOtherReviewsAreStillRequested() {
+        let action = PullRequestReviewMergeAction.makeAction(
             sourceType: .assignedPullRequest,
+            mode: .generic,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            viewerPermission: "MAINTAIN",
             mergeable: "MERGEABLE",
             isDraft: false,
             reviewDecision: "REVIEW_REQUIRED",
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 2,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 8,
+                skippedCount: 3,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.isEnabled, false)
+        XCTAssertEqual(action?.disabledReason, "Reviews are still requested on this pull request.")
+    }
+
+    func testBotAssignedReviewMergeActionDisablesWithoutWritePermission() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .assignedPullRequest,
+            mode: .generic,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            viewerPermission: "READ",
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "REVIEW_REQUIRED",
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 0,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 12,
+                skippedCount: 2,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.isEnabled, false)
+        XCTAssertEqual(
+            action?.disabledReason,
+            "You do not have permission to review and merge pull requests in this repository."
+        )
+    }
+
+    func testAuthoredMergeActionRequiresApprovalAndMergePermission() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .readyToMerge,
+            mode: .authored,
+            author: AttentionActor(login: "alberto", avatarURL: nil, isBot: false),
+            viewerPermission: "WRITE",
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "APPROVED",
+            approvalCount: 1,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 0,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 8,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.title, "Merge Pull Request")
+        XCTAssertEqual(action?.requiresApproval, false)
+        XCTAssertEqual(action?.isEnabled, true)
+    }
+
+    func testAuthoredMergeActionDisablesWhenReviewIsStillRequested() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .readyToMerge,
+            mode: .authored,
+            author: AttentionActor(login: "alberto", avatarURL: nil, isBot: false),
+            viewerPermission: "WRITE",
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "APPROVED",
+            approvalCount: 1,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 2,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 8,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.isEnabled, false)
+        XCTAssertEqual(action?.disabledReason, "Reviews are still requested on this pull request.")
+    }
+
+    func testBotReviewRequestedActionDisablesWhenOtherReviewRequestsRemain() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .reviewRequested,
+            mode: .generic,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            viewerPermission: "WRITE",
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "REVIEW_REQUIRED",
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 2,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 5,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.isEnabled, false)
+        XCTAssertEqual(action?.disabledReason, "Reviews are still requested on this pull request.")
+    }
+
+    func testBotAssignedActionEnablesApproveAndMergeWhenCurrentReviewRequestIsSatisfiable() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .assignedPullRequest,
+            mode: .generic,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            viewerPermission: "WRITE",
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "REVIEW_REQUIRED",
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 1,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 9,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.title, "Approve and Merge")
+        XCTAssertEqual(action?.isEnabled, true)
+        XCTAssertNil(action?.disabledReason)
+    }
+
+    func testAuthoredMergeActionDisablesWhenApprovalIsStillMissing() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .authoredPullRequest,
+            mode: .authored,
+            author: AttentionActor(login: "alberto", avatarURL: nil, isBot: false),
+            viewerPermission: "WRITE",
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "REVIEW_REQUIRED",
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 0,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 7,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.title, "Merge Pull Request")
+        XCTAssertEqual(action?.isEnabled, false)
+        XCTAssertEqual(action?.disabledReason, "This pull request still needs an approving review.")
+    }
+
+    func testPullRequestStatusSummaryShowsReadyToApproveAndMerge() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .assignedPullRequest,
+            mode: .generic,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            viewerPermission: "WRITE",
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "REVIEW_REQUIRED",
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 0,
             checkSummary: PullRequestCheckSummary(
                 passedCount: 12,
                 skippedCount: 2,
@@ -674,6 +962,82 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(summary?.title, "Ready to approve and merge")
         XCTAssertEqual(summary?.detail, "12 passed · 2 skipped")
         XCTAssertEqual(summary?.accent, .success)
+    }
+
+    func testPullRequestStatusSummaryShowsReviewRequestBlocker() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .readyToMerge,
+            mode: .authored,
+            author: AttentionActor(login: "alberto", avatarURL: nil, isBot: false),
+            viewerPermission: "WRITE",
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "APPROVED",
+            approvalCount: 1,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 1,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 8,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        let summary = PullRequestStatusSummary.build(
+            mode: .authored,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 8,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0,
+            reviewMergeAction: action
+        )
+
+        XCTAssertEqual(summary?.title, "Waiting on review")
+        XCTAssertEqual(summary?.detail, "A review is still requested on this pull request.")
+        XCTAssertEqual(summary?.accent, .warning)
+    }
+
+    func testPullRequestStatusSummaryShowsApprovalBlockerForAuthoredPullRequest() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .authoredPullRequest,
+            mode: .authored,
+            author: AttentionActor(login: "alberto", avatarURL: nil, isBot: false),
+            viewerPermission: "WRITE",
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "REVIEW_REQUIRED",
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 0,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 7,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        let summary = PullRequestStatusSummary.build(
+            mode: .authored,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 7,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0,
+            reviewMergeAction: action
+        )
+
+        XCTAssertEqual(summary?.title, "Waiting on review")
+        XCTAssertEqual(summary?.detail, "This pull request still needs an approving review.")
+        XCTAssertEqual(summary?.accent, .warning)
     }
 
     func testPullRequestStatusSummaryShowsFailedChecks() {

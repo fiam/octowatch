@@ -679,6 +679,82 @@ struct PullRequestReviewMergeAction: Hashable, Sendable {
     let requiresApproval: Bool
     let isEnabled: Bool
     let disabledReason: String?
+
+    var blockedStatusSummary: PullRequestStatusSummary? {
+        guard let disabledReason, !isEnabled else {
+            return nil
+        }
+
+        switch disabledReason {
+        case "This pull request is still a draft.":
+            return PullRequestStatusSummary(
+                title: "Draft pull request",
+                detail: disabledReason,
+                iconName: "pencil.circle.fill",
+                accent: .warning
+            )
+        case "GitHub does not consider this pull request mergeable yet.":
+            return PullRequestStatusSummary(
+                title: "Merge is blocked",
+                detail: disabledReason,
+                iconName: "arrow.triangle.branch",
+                accent: .warning
+            )
+        case "Changes have been requested on this pull request.":
+            return PullRequestStatusSummary(
+                title: "Changes requested",
+                detail: disabledReason,
+                iconName: "exclamationmark.bubble.fill",
+                accent: .failure
+            )
+        case "Resolve the open review conversations first.":
+            return PullRequestStatusSummary(
+                title: "Resolve conversations",
+                detail: disabledReason,
+                iconName: "bubble.left.and.exclamationmark.bubble.right.fill",
+                accent: .warning
+            )
+        case "A review is still requested on this pull request.",
+             "Reviews are still requested on this pull request.",
+             "This pull request still needs an approving review.":
+            return PullRequestStatusSummary(
+                title: "Waiting on review",
+                detail: disabledReason,
+                iconName: "person.badge.key.fill",
+                accent: .warning
+            )
+        case "You do not have permission to review and merge pull requests in this repository.",
+             "You do not have permission to merge pull requests in this repository.":
+            return PullRequestStatusSummary(
+                title: "Merge unavailable",
+                detail: disabledReason,
+                iconName: "lock.circle.fill",
+                accent: .warning
+            )
+        default:
+            return PullRequestStatusSummary(
+                title: "Merge unavailable",
+                detail: disabledReason,
+                iconName: "exclamationmark.circle.fill",
+                accent: .warning
+            )
+        }
+    }
+}
+
+enum PullRequestRepositoryPermissionPolicy {
+    static func canMergeOrApprove(viewerPermission: String?) -> Bool {
+        guard let viewerPermission else {
+            return false
+        }
+
+        switch viewerPermission.uppercased() {
+        case "ADMIN", "MAINTAIN", "WRITE":
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 struct PullRequestStatusSummary: Hashable, Sendable {
@@ -850,21 +926,49 @@ enum TrackedSubjectAttentionPolicy {
 }
 
 extension PullRequestReviewMergeAction {
-    static func makeBotAssignedAction(
+    static func makeAction(
         sourceType: AttentionItemType,
+        mode: PullRequestFocusMode,
         author: AttentionActor?,
+        viewerPermission: String?,
         mergeable: String?,
         isDraft: Bool,
         reviewDecision: String?,
+        approvalCount: Int,
+        hasChangesRequested: Bool,
+        pendingReviewRequestCount: Int,
         checkSummary: PullRequestCheckSummary,
         openThreadCount: Int
     ) -> PullRequestReviewMergeAction? {
-        guard sourceType == .assignedPullRequest, author?.isBotAccount == true else {
+        let isBotReviewablePullRequest =
+            [
+                AttentionItemType.assignedPullRequest,
+                .reviewRequested,
+                .teamReviewRequested
+            ].contains(sourceType) && author?.isBotAccount == true
+        let isMergeCandidateFromYourPullRequest = mode == .authored
+
+        guard isBotReviewablePullRequest || isMergeCandidateFromYourPullRequest else {
             return nil
         }
 
-        let requiresApproval = reviewDecision?.caseInsensitiveCompare("APPROVED") != .orderedSame
+        let hasApproval = reviewDecision?.caseInsensitiveCompare("APPROVED") == .orderedSame ||
+            approvalCount > 0
+        let requiresApproval = isBotReviewablePullRequest && !hasApproval
         let title = requiresApproval ? "Approve and Merge" : "Merge Pull Request"
+        let allowsCurrentReviewRequestToBeSatisfied =
+            requiresApproval && pendingReviewRequestCount == 1
+
+        if !PullRequestRepositoryPermissionPolicy.canMergeOrApprove(viewerPermission: viewerPermission) {
+            return PullRequestReviewMergeAction(
+                title: title,
+                requiresApproval: requiresApproval,
+                isEnabled: false,
+                disabledReason: requiresApproval
+                    ? "You do not have permission to review and merge pull requests in this repository."
+                    : "You do not have permission to merge pull requests in this repository."
+            )
+        }
 
         if isDraft {
             return PullRequestReviewMergeAction(
@@ -881,6 +985,26 @@ extension PullRequestReviewMergeAction {
                 requiresApproval: requiresApproval,
                 isEnabled: false,
                 disabledReason: "GitHub does not consider this pull request mergeable yet."
+            )
+        }
+
+        if hasChangesRequested {
+            return PullRequestReviewMergeAction(
+                title: title,
+                requiresApproval: requiresApproval,
+                isEnabled: false,
+                disabledReason: "Changes have been requested on this pull request."
+            )
+        }
+
+        if pendingReviewRequestCount > 0 && !allowsCurrentReviewRequestToBeSatisfied {
+            return PullRequestReviewMergeAction(
+                title: title,
+                requiresApproval: requiresApproval,
+                isEnabled: false,
+                disabledReason: pendingReviewRequestCount == 1
+                    ? "A review is still requested on this pull request."
+                    : "Reviews are still requested on this pull request."
             )
         }
 
@@ -911,6 +1035,15 @@ extension PullRequestReviewMergeAction {
             )
         }
 
+        if !requiresApproval && !hasApproval {
+            return PullRequestReviewMergeAction(
+                title: title,
+                requiresApproval: requiresApproval,
+                isEnabled: false,
+                disabledReason: "This pull request still needs an approving review."
+            )
+        }
+
         return PullRequestReviewMergeAction(
             title: title,
             requiresApproval: requiresApproval,
@@ -923,29 +1056,12 @@ extension PullRequestReviewMergeAction {
 extension AttentionAction {
     static func pullRequestActions(
         reference: PullRequestReference,
-        sourceType: AttentionItemType,
         mode: PullRequestFocusMode,
-        reviewDecision: String?,
-        mergeable: String?,
         checkSummary: PullRequestCheckSummary,
-        hasNewCommits: Bool
+        hasNewCommits: Bool,
+        hasPrimaryMutationAction: Bool
     ) -> [AttentionAction] {
         var actions = [AttentionAction]()
-        let canMergeOnGitHub = mode == .authored &&
-            reviewDecision?.caseInsensitiveCompare("APPROVED") == .orderedSame &&
-            mergeable?.caseInsensitiveCompare("MERGEABLE") == .orderedSame
-
-        if canMergeOnGitHub {
-            actions.append(
-                AttentionAction(
-                    id: "merge",
-                    title: "Merge on GitHub",
-                    iconName: "checkmark.circle",
-                    url: reference.pullRequestURL,
-                    isPrimary: true
-                )
-            )
-        }
 
         actions.append(
             AttentionAction(
@@ -953,7 +1069,7 @@ extension AttentionAction {
                 title: "View on GitHub",
                 iconName: "arrow.up.right.square",
                 url: reference.pullRequestURL,
-                isPrimary: !canMergeOnGitHub
+                isPrimary: !hasPrimaryMutationAction
             )
         )
 
@@ -1028,13 +1144,17 @@ extension PullRequestStatusSummary {
             )
         }
 
+        if let blockedSummary = reviewMergeAction?.blockedStatusSummary {
+            return blockedSummary
+        }
+
         if mode == .authored && openThreadCount == 0 {
             return PullRequestStatusSummary(
-                title: "Ready to merge",
+                title: "Checks look good",
                 detail: checkSummary.totalCount > 0
                     ? checkSummary.detail
                     : "There are no unresolved conversations or failing checks.",
-                iconName: "checkmark.circle.fill",
+                iconName: "checkmark.circle",
                 accent: .success
             )
         }

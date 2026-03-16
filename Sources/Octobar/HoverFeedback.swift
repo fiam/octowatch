@@ -15,6 +15,10 @@ private struct InteractiveHoverModifier: ViewModifier {
                         .fill(Color.primary.opacity(isHovering ? backgroundOpacity : 0))
                 }
             }
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(Color.primary.opacity(isHovering ? backgroundOpacity * 1.15 : 0), lineWidth: 1)
+            }
             .animation(.easeInOut(duration: 0.12), value: isHovering)
             .onHover { hovering in
                 isHovering = hovering
@@ -67,6 +71,7 @@ extension View {
                 cornerRadius: cornerRadius
             )
         )
+        .modifier(PointerCursorHoverModifier())
     }
 
     func appLinkHover() -> some View {

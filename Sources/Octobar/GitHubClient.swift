@@ -54,6 +54,7 @@ struct GitHubClient {
     private static let pullRequestFocusQuery = """
     query PullRequestFocus($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) {
+        viewerPermission
         pullRequest(number: $number) {
           title
           bodyHTML
@@ -64,6 +65,9 @@ struct GitHubClient {
           mergeable
           viewerDidAuthor
           headRefOid
+          reviewRequests(first: 20) {
+            totalCount
+          }
           author {
             __typename
             login
@@ -740,6 +744,7 @@ struct GitHubClient {
             reviews: reviews,
             excluding: login
         )
+        let pendingReviewRequestCount = pullRequest.reviewRequests.totalCount
         let latestAssignment = pullRequest.timelineItems.nodes
             .compactMap { $0 }
             .filter {
@@ -818,12 +823,17 @@ struct GitHubClient {
             failedChecks: checkInsights.failingEntries
         )
         let openThreadCount = openThreads.count + outdatedThreads.count
-        let reviewMergeAction = PullRequestReviewMergeAction.makeBotAssignedAction(
+        let reviewMergeAction = PullRequestReviewMergeAction.makeAction(
             sourceType: sourceType,
+            mode: focusMode,
             author: author,
+            viewerPermission: response.repository?.viewerPermission,
             mergeable: pullRequest.mergeable,
             isDraft: pullRequest.isDraft,
             reviewDecision: pullRequest.reviewDecision,
+            approvalCount: approvalSummary.approvalCount,
+            hasChangesRequested: approvalSummary.hasChangesRequested,
+            pendingReviewRequestCount: pendingReviewRequestCount,
             checkSummary: checkInsights.summary,
             openThreadCount: openThreadCount
         )
@@ -835,12 +845,10 @@ struct GitHubClient {
         )
         let actions = AttentionAction.pullRequestActions(
             reference: reference,
-            sourceType: sourceType,
             mode: focusMode,
-            reviewDecision: pullRequest.reviewDecision,
-            mergeable: pullRequest.mergeable,
             checkSummary: checkInsights.summary,
-            hasNewCommits: !commitsSinceReview.isEmpty
+            hasNewCommits: !commitsSinceReview.isEmpty,
+            hasPrimaryMutationAction: reviewMergeAction?.isEnabled == true
         )
 
         let focus = PullRequestFocus(
@@ -3117,6 +3125,7 @@ private struct PullRequestFocusQueryData: Decodable {
 }
 
 private struct PullRequestFocusGraphQLRepository: Decodable {
+    let viewerPermission: String?
     let pullRequest: PullRequestFocusGraphQLPullRequest?
 }
 
@@ -3130,6 +3139,7 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
     let mergeable: String?
     let viewerDidAuthor: Bool
     let headRefOID: String
+    let reviewRequests: PullRequestFocusGraphQLReviewRequestConnection
     let author: PullRequestFocusGraphQLActor?
     let timelineItems: PullRequestFocusGraphQLConnection<PullRequestFocusGraphQLAssignedEvent>
     let reviewThreads: PullRequestFocusGraphQLConnection<PullRequestFocusGraphQLReviewThread>
@@ -3146,12 +3156,17 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
         case mergeable
         case viewerDidAuthor
         case headRefOID = "headRefOid"
+        case reviewRequests
         case author
         case timelineItems
         case reviewThreads
         case reviews
         case commits
     }
+}
+
+private struct PullRequestFocusGraphQLReviewRequestConnection: Decodable {
+    let totalCount: Int
 }
 
 private struct PullRequestFocusGraphQLConnection<Node: Decodable>: Decodable {
