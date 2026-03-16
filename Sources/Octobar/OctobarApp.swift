@@ -11,6 +11,11 @@ struct OctowatchApp: App {
         }
         .defaultSize(width: 1080, height: 720)
 
+        Window("Ignored Items", id: AppSceneID.ignoredItemsWindow) {
+            IgnoredItemsView(model: model)
+        }
+        .defaultSize(width: 720, height: 520)
+
         Settings {
             SettingsView(model: model)
         }

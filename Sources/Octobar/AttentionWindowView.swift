@@ -92,7 +92,7 @@ struct AttentionWindowView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            ZStack {
+            ZStack(alignment: .bottom) {
                 if showsInitialLoadingState {
                     loadingView
                         .transition(.opacity.combined(with: .scale(scale: 0.985)))
@@ -103,6 +103,16 @@ struct AttentionWindowView: View {
                         detailPane(relativeTo: context.date)
                     }
                     .transition(.opacity)
+                }
+
+                if let ignoreUndoState = model.ignoreUndoState {
+                    IgnoreUndoBanner(
+                        ignoredItem: ignoreUndoState.subject,
+                        onUndo: model.undoRecentIgnore,
+                        onDismiss: model.dismissIgnoreUndo
+                    )
+                    .padding(.bottom, 20)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
         }
@@ -129,6 +139,7 @@ struct AttentionWindowView: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: showsInitialLoadingState)
+        .animation(.easeInOut(duration: 0.18), value: model.ignoreUndoState?.id)
         .task(id: pullRequestFocusTaskID) {
             await loadPullRequestFocusForSelection()
         }
@@ -880,6 +891,60 @@ private struct AttentionDetailView: View {
                 onPerformReviewMerge: onPerformReviewMerge
             )
         }
+    }
+}
+
+private struct IgnoreUndoBanner: View {
+    let ignoredItem: IgnoredAttentionSubject
+    let onUndo: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "eye.slash")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .background(
+                    Circle()
+                        .fill(Color.secondary.opacity(0.12))
+                )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Ignored \(ignoredItem.title)")
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+
+                Text("Undo is available for a few seconds.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 12)
+
+            Button("Undo", action: onUndo)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .appInteractiveHover()
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .appInteractiveHover(backgroundOpacity: 0.08, cornerRadius: 999)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: 420)
+        .background(.regularMaterial, in: Capsule(style: .continuous))
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.12), radius: 12, y: 6)
     }
 }
 

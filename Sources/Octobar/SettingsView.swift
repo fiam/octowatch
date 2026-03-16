@@ -7,15 +7,9 @@ struct SettingsView: View {
     }
 
     @ObservedObject var model: AppModel
-    @Environment(\.openURL) private var openURL
+    @Environment(\.openWindow) private var openWindow
     @FocusState private var tokenFieldFocused: Bool
     @State private var selectedTokenSource: TokenSource = .personalAccessToken
-
-    private let relativeFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter
-    }()
 
     var body: some View {
         ZStack {
@@ -173,39 +167,15 @@ struct SettingsView: View {
             Divider()
                 .padding(.horizontal, 20)
 
-            if model.ignoredItems.isEmpty {
-                settingsRow(
-                    title: "No ignored items",
-                    subtitle: "Ignored pull requests and issues will appear here so you can restore them later."
-                ) {
-                    EmptyView()
+            settingsRow(
+                title: "Manage Ignored Items",
+                subtitle: ignoredItemsManagementSubtitle
+            ) {
+                Button("Open Ignored Items") {
+                    openWindow(id: AppSceneID.ignoredItemsWindow)
                 }
-            } else {
-                ForEach(Array(model.ignoredItems.enumerated()), id: \.element.id) { index, ignoredItem in
-                    if index > 0 {
-                        Divider()
-                            .padding(.leading, 20)
-                    }
-
-                    settingsRow(
-                        title: ignoredItem.title,
-                        subtitle: ignoredItemSubtitle(for: ignoredItem)
-                    ) {
-                        HStack(spacing: 10) {
-                            Button("Open") {
-                                openURL(ignoredItem.url)
-                            }
-                            .buttonStyle(.bordered)
-                            .appInteractiveHover()
-
-                            Button("Unignore") {
-                                model.unignore(ignoredItem)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .appInteractiveHover()
-                        }
-                    }
-                }
+                .buttonStyle(.borderedProminent)
+                .appInteractiveHover()
             }
         }
     }
@@ -324,6 +294,14 @@ struct SettingsView: View {
             : "\(count) items are currently hidden from the inbox."
     }
 
+    private var ignoredItemsManagementSubtitle: String {
+        if model.ignoredItems.isEmpty {
+            return "Open a separate window to review ignored pull requests and issues as they accumulate."
+        }
+
+        return "Open a separate window to restore hidden pull requests and issues without crowding settings."
+    }
+
     private var tokenSourceSelection: Binding<TokenSource> {
         Binding(
             get: {
@@ -378,15 +356,6 @@ struct SettingsView: View {
 
         return "\(minutes) minutes"
     }
-
-    private func ignoredItemSubtitle(for ignoredItem: IgnoredAttentionSubject) -> String {
-        let relative = relativeFormatter.localizedString(
-            for: ignoredItem.ignoredAt,
-            relativeTo: Date()
-        )
-        return "\(ignoredItem.subtitle) · Ignored \(relative)"
-    }
-
     private func settingsCard<Content: View>(
         @ViewBuilder content: () -> Content
     ) -> some View {

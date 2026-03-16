@@ -298,6 +298,39 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(placeholder.subtitle, "acme/example")
     }
 
+    func testCanonicalIgnoreKeyPlaceholderBuildsReadableSummary() {
+        let placeholder = IgnoredAttentionSubject.placeholder(
+            for: "https://github.com/acme/example/issues/77"
+        )
+
+        XCTAssertEqual(
+            placeholder.ignoreKey,
+            "https://github.com/acme/example/issues/77"
+        )
+        XCTAssertEqual(placeholder.title, "Issue #77")
+        XCTAssertEqual(placeholder.subtitle, "acme/example")
+        XCTAssertEqual(
+            placeholder.url.absoluteString,
+            "https://github.com/acme/example/issues/77"
+        )
+    }
+
+    func testIgnoreUndoStateUsesIgnoredSubjectIdentity() {
+        let subject = IgnoredAttentionSubject(
+            ignoreKey: "https://github.com/acme/example/pull/42",
+            title: "Example",
+            subtitle: "acme/example",
+            url: URL(string: "https://github.com/acme/example/pull/42")!,
+            ignoredAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let state = IgnoreUndoState(
+            subject: subject,
+            expiresAt: Date(timeIntervalSince1970: 1_700_000_008)
+        )
+
+        XCTAssertEqual(state.id, subject.id)
+    }
+
     func testRateLimitUsesGitHubPollHintWhenHigherThanConfiguredInterval() {
         let rateLimit = GitHubRateLimit(
             limit: 5_000,

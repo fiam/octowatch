@@ -2,6 +2,7 @@ import Foundation
 
 enum AppSceneID {
     static let mainWindow = "main-window"
+    static let ignoredItemsWindow = "ignored-items-window"
 }
 
 extension Notification.Name {

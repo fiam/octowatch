@@ -1724,6 +1724,13 @@ struct IgnoredAttentionSubject: Identifiable, Hashable, Codable, Sendable {
     }
 }
 
+struct IgnoreUndoState: Identifiable, Hashable, Sendable {
+    let subject: IgnoredAttentionSubject
+    let expiresAt: Date
+
+    var id: String { subject.id }
+}
+
 enum AttentionItemVisibilityPolicy {
     static func excludingIgnoredSubjects(
         _ items: [AttentionItem],

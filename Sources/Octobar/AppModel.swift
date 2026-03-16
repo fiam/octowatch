@@ -22,6 +22,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var usingGitHubCLIToken = false
     @Published private(set) var isValidatingToken = false
     @Published private(set) var ignoredItems: [IgnoredAttentionSubject] = []
+    @Published private(set) var ignoreUndoState: IgnoreUndoState?
     @Published private(set) var pollIntervalSeconds = 60
     @Published private(set) var autoMarkReadSetting: AutoMarkReadSetting = .threeSeconds
 
@@ -50,6 +51,7 @@ final class AppModel: ObservableObject {
     private var teamMembershipCache = TeamMembershipCache.default
     private var pullRequestFocusCache = [String: PullRequestFocusCacheEntry]()
     private var ignoredItemsByKey = [String: IgnoredAttentionSubject]()
+    private var ignoreUndoDismissTask: Task<Void, Never>?
     private var readStateByItemID: [String: Date] = [:]
     private var suppressedTransitionNotificationKeys = Set<String>()
     private let relativeDateFormatter: RelativeDateTimeFormatter = {
@@ -105,6 +107,7 @@ final class AppModel: ObservableObject {
 
     deinit {
         pollingTask?.cancel()
+        ignoreUndoDismissTask?.cancel()
     }
 
     var hasToken: Bool {
@@ -218,6 +221,7 @@ final class AppModel: ObservableObject {
         teamMembershipCache = .default
         pullRequestFocusCache = [:]
         suppressedTransitionNotificationKeys = []
+        clearIgnoreUndoState()
         UserDefaults.standard.removeObject(forKey: notificationScanStateStoreKey)
         UserDefaults.standard.removeObject(forKey: teamMembershipStoreKey)
 
@@ -349,6 +353,7 @@ final class AppModel: ObservableObject {
         ignoredItemsByKey[item.ignoreKey] = summary
         syncIgnoredItems()
         persistIgnoredItems()
+        presentIgnoreUndo(for: summary)
 
         attentionItems.removeAll { $0.ignoreKey == item.ignoreKey }
         knownItemIDs = Set(attentionItems.map(\.id))
@@ -359,9 +364,26 @@ final class AppModel: ObservableObject {
         syncIgnoredItems()
         persistIgnoredItems()
 
+        if ignoreUndoState?.subject.ignoreKey == ignoredItem.ignoreKey {
+            clearIgnoreUndoState()
+        }
+
         if hasToken {
             refreshNow()
         }
+    }
+
+    func undoRecentIgnore() {
+        guard let ignoreUndoState else {
+            return
+        }
+
+        unignore(ignoreUndoState.subject)
+        clearIgnoreUndoState()
+    }
+
+    func dismissIgnoreUndo() {
+        clearIgnoreUndoState()
     }
 
     private func startPollingIfNeeded() {
@@ -671,6 +693,34 @@ final class AppModel: ObservableObject {
             }
             return lhs.ignoredAt > rhs.ignoredAt
         }
+    }
+
+    private func presentIgnoreUndo(for ignoredItem: IgnoredAttentionSubject) {
+        ignoreUndoDismissTask?.cancel()
+
+        let expiry = Date().addingTimeInterval(8)
+        ignoreUndoState = IgnoreUndoState(subject: ignoredItem, expiresAt: expiry)
+
+        ignoreUndoDismissTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else {
+                return
+            }
+
+            await MainActor.run {
+                guard self?.ignoreUndoState?.subject.ignoreKey == ignoredItem.ignoreKey else {
+                    return
+                }
+
+                self?.clearIgnoreUndoState()
+            }
+        }
+    }
+
+    private func clearIgnoreUndoState() {
+        ignoreUndoDismissTask?.cancel()
+        ignoreUndoDismissTask = nil
+        ignoreUndoState = nil
     }
 
     private static func loadReadState(
