@@ -167,8 +167,20 @@ struct MenuBarContentView: View {
         switch itemType {
         case .assignedPullRequest:
             return .blue
+        case .authoredPullRequest:
+            return .teal
+        case .reviewedPullRequest:
+            return .indigo
+        case .commentedPullRequest:
+            return .cyan
         case .readyToMerge:
             return .green
+        case .assignedIssue:
+            return .orange
+        case .authoredIssue:
+            return .brown
+        case .commentedIssue:
+            return .secondary
         case .comment, .reviewComment:
             return .secondary
         case .mention:
@@ -202,8 +214,20 @@ struct MenuBarContentView: View {
         switch itemType {
         case .assignedPullRequest:
             return .blue.opacity(0.14)
+        case .authoredPullRequest:
+            return .teal.opacity(0.14)
+        case .reviewedPullRequest:
+            return .indigo.opacity(0.14)
+        case .commentedPullRequest:
+            return .cyan.opacity(0.16)
         case .readyToMerge:
             return .green.opacity(0.16)
+        case .assignedIssue:
+            return .orange.opacity(0.16)
+        case .authoredIssue:
+            return .brown.opacity(0.16)
+        case .commentedIssue:
+            return .secondary.opacity(0.12)
         case .comment, .reviewComment:
             return .secondary
                 .opacity(0.12)

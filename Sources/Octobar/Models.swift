@@ -1,8 +1,42 @@
 import Foundation
 
+enum AttentionStream: String, CaseIterable, Hashable, Sendable {
+    case notifications
+    case pullRequests
+    case issues
+
+    var title: String {
+        switch self {
+        case .notifications:
+            return "Notifications"
+        case .pullRequests:
+            return "Pull Requests"
+        case .issues:
+            return "Issues"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .notifications:
+            return "bell.badge"
+        case .pullRequests:
+            return "arrow.triangle.pull"
+        case .issues:
+            return "exclamationmark.circle"
+        }
+    }
+}
+
 enum AttentionItemType: String, Hashable, Sendable {
     case assignedPullRequest
+    case authoredPullRequest
+    case reviewedPullRequest
+    case commentedPullRequest
     case readyToMerge
+    case assignedIssue
+    case authoredIssue
+    case commentedIssue
     case comment
     case mention
     case teamMention
@@ -22,8 +56,20 @@ enum AttentionItemType: String, Hashable, Sendable {
         switch self {
         case .assignedPullRequest:
             return "arrow.triangle.pull"
+        case .authoredPullRequest:
+            return "arrow.triangle.pull"
+        case .reviewedPullRequest:
+            return "arrow.triangle.pull"
+        case .commentedPullRequest:
+            return "arrow.triangle.pull"
         case .readyToMerge:
             return "checkmark.circle"
+        case .assignedIssue:
+            return "exclamationmark.circle"
+        case .authoredIssue:
+            return "exclamationmark.circle"
+        case .commentedIssue:
+            return "exclamationmark.circle"
         case .comment:
             return "text.bubble"
         case .mention:
@@ -57,8 +103,20 @@ enum AttentionItemType: String, Hashable, Sendable {
         switch self {
         case .assignedPullRequest:
             return "Assigned pull request"
+        case .authoredPullRequest:
+            return "Your pull request"
+        case .reviewedPullRequest:
+            return "Reviewed pull request"
+        case .commentedPullRequest:
+            return "Commented pull request"
         case .readyToMerge:
             return "Ready to merge"
+        case .assignedIssue:
+            return "Assigned issue"
+        case .authoredIssue:
+            return "Your issue"
+        case .commentedIssue:
+            return "Commented issue"
         case .comment:
             return "New comment"
         case .mention:
@@ -94,8 +152,20 @@ enum AttentionItemType: String, Hashable, Sendable {
         switch self {
         case .assignedPullRequest:
             return "Pull request assigned"
+        case .authoredPullRequest:
+            return "Your pull request"
+        case .reviewedPullRequest:
+            return "Reviewed pull request"
+        case .commentedPullRequest:
+            return "Commented pull request"
         case .readyToMerge:
             return "Ready to merge"
+        case .assignedIssue:
+            return "Issue assigned"
+        case .authoredIssue:
+            return "Your issue"
+        case .commentedIssue:
+            return "Commented issue"
         case .comment:
             return "New comment"
         case .mention:
@@ -131,8 +201,20 @@ enum AttentionItemType: String, Hashable, Sendable {
         switch self {
         case .assignedPullRequest:
             return "assigned a pull request"
+        case .authoredPullRequest:
+            return "updated your pull request"
+        case .reviewedPullRequest:
+            return "updated a pull request you reviewed"
+        case .commentedPullRequest:
+            return "updated a pull request you commented on"
         case .readyToMerge:
             return "approved your pull request"
+        case .assignedIssue:
+            return "assigned an issue"
+        case .authoredIssue:
+            return "updated your issue"
+        case .commentedIssue:
+            return "updated an issue you commented on"
         case .comment:
             return "commented"
         case .mention:
@@ -243,6 +325,36 @@ enum AttentionItemType: String, Hashable, Sendable {
         }
 
         return nil
+    }
+
+    var defaultStream: AttentionStream {
+        switch self {
+        case .assignedPullRequest,
+                .authoredPullRequest,
+                .reviewedPullRequest,
+                .commentedPullRequest,
+                .readyToMerge,
+                .ciActivity,
+                .workflowFailed,
+                .workflowApprovalRequired:
+            return .pullRequests
+        case .assignedIssue,
+                .authoredIssue,
+                .commentedIssue:
+            return .issues
+        case .comment,
+                .mention,
+                .teamMention,
+                .newCommitsAfterComment,
+                .newCommitsAfterReview,
+                .reviewRequested,
+                .teamReviewRequested,
+                .reviewApproved,
+                .reviewChangesRequested,
+                .reviewComment,
+                .pullRequestStateChanged:
+            return .notifications
+        }
     }
 }
 
@@ -692,6 +804,9 @@ extension PullRequestHeaderFact {
 
             return facts
 
+        case .authoredPullRequest:
+            return []
+
         default:
             guard let author else {
                 return []
@@ -705,6 +820,31 @@ extension PullRequestHeaderFact {
                     additionalActorCount: 0
                 )
             ]
+        }
+    }
+}
+
+enum TrackedSubjectAttentionPolicy {
+    static func shouldReplace(existing: AttentionItemType, with candidate: AttentionItemType) -> Bool {
+        priority(for: candidate) > priority(for: existing)
+    }
+
+    private static func priority(for type: AttentionItemType) -> Int {
+        switch type {
+        case .authoredPullRequest:
+            return 3
+        case .reviewedPullRequest:
+            return 2
+        case .commentedPullRequest:
+            return 1
+        case .assignedIssue:
+            return 3
+        case .authoredIssue:
+            return 2
+        case .commentedIssue:
+            return 1
+        default:
+            return 0
         }
     }
 }
@@ -915,6 +1055,7 @@ extension PullRequestStatusSummary {
 struct AttentionItem: Identifiable, Hashable, Sendable {
     let id: String
     let ignoreKey: String
+    let stream: AttentionStream
     let type: AttentionItemType
     let title: String
     let subtitle: String
@@ -928,6 +1069,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     init(
         id: String,
         ignoreKey: String,
+        stream: AttentionStream? = nil,
         type: AttentionItemType,
         title: String,
         subtitle: String,
@@ -940,6 +1082,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     ) {
         self.id = id
         self.ignoreKey = ignoreKey
+        self.stream = stream ?? type.defaultStream
         self.type = type
         self.title = title
         self.subtitle = subtitle
@@ -996,7 +1139,13 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
 
     var isClosureNotificationEligible: Bool {
         switch type {
-        case .readyToMerge,
+        case .authoredPullRequest,
+                .reviewedPullRequest,
+                .commentedPullRequest,
+                .readyToMerge,
+                .assignedIssue,
+                .authoredIssue,
+                .commentedIssue,
                 .comment,
                 .mention,
                 .teamMention,
@@ -1085,8 +1234,20 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         switch type {
         case .assignedPullRequest:
             return "This pull request is assigned to you."
+        case .authoredPullRequest:
+            return "You opened this pull request."
+        case .reviewedPullRequest:
+            return "You reviewed this pull request."
+        case .commentedPullRequest:
+            return "You commented on this pull request."
         case .readyToMerge:
             return "One of your pull requests is approved and ready to merge."
+        case .assignedIssue:
+            return "This issue is assigned to you."
+        case .authoredIssue:
+            return "You opened this issue."
+        case .commentedIssue:
+            return "You commented on this issue."
         case .comment:
             return "There is new discussion on work you are following."
         case .mention:
@@ -1168,6 +1329,18 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
 struct PullRequestSummary: Identifiable, Hashable, Sendable {
     let id: Int
     let ignoreKey: String
+    let number: Int
+    let title: String
+    let subtitle: String
+    let repository: String
+    let url: URL
+    let updatedAt: Date
+}
+
+struct TrackedSubjectSummary: Identifiable, Hashable, Sendable {
+    let id: String
+    let ignoreKey: String
+    let type: AttentionItemType
     let number: Int
     let title: String
     let subtitle: String

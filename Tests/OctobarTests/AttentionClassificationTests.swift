@@ -149,6 +149,54 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testAttentionTypeDefaultStreamMapsDirectWorkSeparately() {
+        XCTAssertEqual(AttentionItemType.comment.defaultStream, .notifications)
+        XCTAssertEqual(AttentionItemType.authoredPullRequest.defaultStream, .pullRequests)
+        XCTAssertEqual(AttentionItemType.assignedIssue.defaultStream, .issues)
+    }
+
+    func testTrackedPullRequestPriorityPrefersAuthoredOverReviewedAndCommented() {
+        XCTAssertTrue(
+            TrackedSubjectAttentionPolicy.shouldReplace(
+                existing: .commentedPullRequest,
+                with: .reviewedPullRequest
+            )
+        )
+        XCTAssertTrue(
+            TrackedSubjectAttentionPolicy.shouldReplace(
+                existing: .reviewedPullRequest,
+                with: .authoredPullRequest
+            )
+        )
+        XCTAssertFalse(
+            TrackedSubjectAttentionPolicy.shouldReplace(
+                existing: .authoredPullRequest,
+                with: .commentedPullRequest
+            )
+        )
+    }
+
+    func testTrackedIssuePriorityPrefersAssignedOverCreatedAndCommented() {
+        XCTAssertTrue(
+            TrackedSubjectAttentionPolicy.shouldReplace(
+                existing: .commentedIssue,
+                with: .authoredIssue
+            )
+        )
+        XCTAssertTrue(
+            TrackedSubjectAttentionPolicy.shouldReplace(
+                existing: .authoredIssue,
+                with: .assignedIssue
+            )
+        )
+        XCTAssertFalse(
+            TrackedSubjectAttentionPolicy.shouldReplace(
+                existing: .assignedIssue,
+                with: .commentedIssue
+            )
+        )
+    }
+
     func testRecentlyClosedPullRequestsStillCountForDiscussionActivity() {
         let recentClosure = Date().addingTimeInterval(-43_200)
         let staleClosure = Date().addingTimeInterval(-172_800)

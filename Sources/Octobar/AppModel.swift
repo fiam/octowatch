@@ -736,7 +736,14 @@ final class AppModel: ObservableObject {
 
     private func ignoreSummaryPriority(for item: AttentionItem) -> Int {
         switch item.type {
-        case .assignedPullRequest, .readyToMerge:
+        case .assignedPullRequest,
+                .authoredPullRequest,
+                .reviewedPullRequest,
+                .commentedPullRequest,
+                .readyToMerge,
+                .assignedIssue,
+                .authoredIssue,
+                .commentedIssue:
             return 4
         case .reviewRequested,
             .teamReviewRequested,

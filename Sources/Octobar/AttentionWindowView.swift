@@ -2,6 +2,54 @@ import AppKit
 import SwiftUI
 
 struct AttentionWindowView: View {
+    private enum StreamFilter: String, CaseIterable, Identifiable {
+        case all
+        case notifications
+        case pullRequests
+        case issues
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .all:
+                return "All"
+            case .notifications:
+                return AttentionStream.notifications.title
+            case .pullRequests:
+                return AttentionStream.pullRequests.title
+            case .issues:
+                return AttentionStream.issues.title
+            }
+        }
+
+        var iconName: String {
+            switch self {
+            case .all:
+                return "square.stack.3d.up"
+            case .notifications:
+                return AttentionStream.notifications.iconName
+            case .pullRequests:
+                return AttentionStream.pullRequests.iconName
+            case .issues:
+                return AttentionStream.issues.iconName
+            }
+        }
+
+        var stream: AttentionStream? {
+            switch self {
+            case .all:
+                return nil
+            case .notifications:
+                return .notifications
+            case .pullRequests:
+                return .pullRequests
+            case .issues:
+                return .issues
+            }
+        }
+    }
+
     private enum ListFilter: String, CaseIterable, Identifiable {
         case all
         case unread
@@ -23,6 +71,7 @@ struct AttentionWindowView: View {
     @Environment(\.openURL) private var openURL
 
     @State private var selectedItemID: AttentionItem.ID?
+    @State private var streamFilter: StreamFilter = .all
     @State private var listFilter: ListFilter = .all
     @State private var autoMarkReadTask: Task<Void, Never>?
     @State private var pullRequestFocusState: PullRequestFocusLoadState = .idle
@@ -66,6 +115,9 @@ struct AttentionWindowView: View {
             cancelAutoMarkReadTask()
         }
         .onChange(of: model.attentionItems) { _, _ in
+            syncSelection()
+        }
+        .onChange(of: streamFilter) { _, _ in
             syncSelection()
         }
         .onChange(of: listFilter) { _, _ in
@@ -131,6 +183,14 @@ struct AttentionWindowView: View {
         model.isResolvingInitialContent
     }
 
+    private var streamItems: [AttentionItem] {
+        guard let stream = streamFilter.stream else {
+            return model.attentionItems
+        }
+
+        return model.attentionItems.filter { $0.stream == stream }
+    }
+
     private var loadingView: some View {
         VStack(spacing: 16) {
             ProgressView()
@@ -151,9 +211,9 @@ struct AttentionWindowView: View {
     private var displayedItems: [AttentionItem] {
         switch listFilter {
         case .all:
-            return model.attentionItems
+            return streamItems
         case .unread:
-            return model.attentionItems.filter(\.isUnread)
+            return streamItems.filter(\.isUnread)
         }
     }
 
@@ -248,7 +308,9 @@ struct AttentionWindowView: View {
                 .help("Refresh")
             }
 
-            Text("\(displayedItems.count) items · \(model.unreadCount) unread")
+            streamFilterRow
+
+            Text("\(displayedItems.count) items · \(streamItems.filter(\.isUnread).count) unread")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
@@ -310,6 +372,53 @@ struct AttentionWindowView: View {
         .accessibilityLabel(listFilter == .unread ? "Showing unread items" : "Showing all items")
     }
 
+    private var streamFilterRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(StreamFilter.allCases) { filter in
+                    Button {
+                        streamFilter = filter
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: filter.iconName)
+                                .imageScale(.small)
+
+                            Text(filter.title)
+                                .font(.subheadline.weight(.medium))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .foregroundStyle(streamFilter == filter ? .white : .primary)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(
+                                    streamFilter == filter
+                                        ? Color.accentColor
+                                        : Color(nsColor: .controlBackgroundColor)
+                                )
+                        )
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .stroke(
+                                    streamFilter == filter
+                                        ? Color.accentColor.opacity(0.85)
+                                        : Color(nsColor: .separatorColor).opacity(0.45),
+                                    lineWidth: 1
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .appInteractiveHover(
+                        backgroundOpacity: streamFilter == filter ? 0 : 0.08,
+                        cornerRadius: 999
+                    )
+                    .accessibilityLabel("Show \(filter.title)")
+                }
+            }
+            .padding(.vertical, 1)
+        }
+    }
+
     private func detailPane(relativeTo referenceDate: Date) -> some View {
         Group {
             if !model.hasToken {
@@ -361,10 +470,15 @@ struct AttentionWindowView: View {
     }
 
     private var emptyStateView: some View {
-        let title = listFilter == .unread ? "No unread items" : "Inbox is clear"
+        let scopeName = streamFilter == .all ? "items" : streamFilter.title.lowercased()
+        let title = listFilter == .unread
+            ? "No unread \(scopeName)"
+            : streamFilter == .all ? "Inbox is clear" : "No \(scopeName)"
         let description = listFilter == .unread
-            ? "Everything in the inbox has been marked read."
-            : "Octowatch is watching GitHub, but there is nothing actionable right now."
+            ? "Everything in \(streamFilter == .all ? "the inbox" : "this stream") has been marked read."
+            : streamFilter == .all
+                ? "Octowatch is watching GitHub, but there is nothing actionable right now."
+                : "Octowatch is watching GitHub, but there is nothing actionable in this stream right now."
 
         return ContentUnavailableView {
             Label(title, systemImage: "checkmark.circle")
@@ -589,8 +703,16 @@ private struct AttentionDetailView: View {
         switch item.type {
         case .assignedPullRequest:
             return "Assigned to you"
+        case .authoredPullRequest, .authoredIssue:
+            return "Created by you"
+        case .reviewedPullRequest:
+            return "Reviewed by you"
+        case .commentedPullRequest, .commentedIssue:
+            return "Commented on by you"
         case .readyToMerge:
             return "Your PR was approved"
+        case .assignedIssue:
+            return "Assigned to you"
         default:
             return nil
         }
@@ -1520,8 +1642,20 @@ private extension AttentionItemType {
         switch self {
         case .assignedPullRequest:
             return .blue
+        case .authoredPullRequest:
+            return .teal
+        case .reviewedPullRequest:
+            return .indigo
+        case .commentedPullRequest:
+            return .cyan
         case .readyToMerge:
             return .green
+        case .assignedIssue:
+            return .orange
+        case .authoredIssue:
+            return .brown
+        case .commentedIssue:
+            return .secondary
         case .comment, .reviewComment:
             return .secondary
         case .mention:
@@ -1555,8 +1689,20 @@ private extension AttentionItemType {
         switch self {
         case .assignedPullRequest:
             return .blue.opacity(0.14)
+        case .authoredPullRequest:
+            return .teal.opacity(0.14)
+        case .reviewedPullRequest:
+            return .indigo.opacity(0.14)
+        case .commentedPullRequest:
+            return .cyan.opacity(0.16)
         case .readyToMerge:
             return .green.opacity(0.16)
+        case .assignedIssue:
+            return .orange.opacity(0.16)
+        case .authoredIssue:
+            return .brown.opacity(0.16)
+        case .commentedIssue:
+            return .secondary.opacity(0.12)
         case .comment, .reviewComment:
             return .secondary.opacity(0.12)
         case .mention:

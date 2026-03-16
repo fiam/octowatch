@@ -38,6 +38,8 @@ struct GitHubClient {
     private let actionableNotificationLimit = 64
     private let notificationEnrichmentLimit = 10
     private let authoredPullRequestLimit = 12
+    private let trackedPullRequestLimit = 20
+    private let trackedIssueLimit = 20
     private let workflowCandidateLimit = 8
     private let workflowRunLimit = 20
 
@@ -233,6 +235,11 @@ struct GitHubClient {
             login: login,
             observer: observer
         )
+        async let trackedPullRequestsTask = fetchTrackedPullRequests(
+            token: token,
+            login: login,
+            observer: observer
+        )
         async let readyToMergeTask = fetchReadyToMergePullRequests(
             token: token,
             login: login,
@@ -250,17 +257,26 @@ struct GitHubClient {
             login: login,
             observer: observer
         )
+        async let trackedIssuesTask = fetchTrackedIssues(
+            token: token,
+            login: login,
+            observer: observer
+        )
 
         let pullRequests = try await pullRequestsTask
+        let trackedPullRequests = try await trackedPullRequestsTask
         let readyToMerge = try await readyToMergeTask
         let notificationFetch = try await notificationsTask
         let workflowRuns = try await workflowRunsTask
+        let trackedIssues = try await trackedIssuesTask
 
         let attentionItems = buildAttentionItems(
             pullRequests: pullRequests,
+            trackedPullRequests: trackedPullRequests,
             readyToMerge: readyToMerge,
             notifications: notificationFetch.notifications,
-            actionRuns: workflowRuns
+            actionRuns: workflowRuns,
+            trackedIssues: trackedIssues
         )
 
         return GitHubSnapshot(
@@ -274,14 +290,17 @@ struct GitHubClient {
 
     private func buildAttentionItems(
         pullRequests: [PullRequestSummary],
+        trackedPullRequests: [TrackedSubjectSummary],
         readyToMerge: [ReadyToMergeSummary],
         notifications: [NotificationSummary],
-        actionRuns: [ActionRunSummary]
+        actionRuns: [ActionRunSummary],
+        trackedIssues: [TrackedSubjectSummary]
     ) -> [AttentionItem] {
         let pullRequestItems = pullRequests.map { pullRequest in
             AttentionItem(
                 id: "pr:\(pullRequest.id)",
                 ignoreKey: pullRequest.ignoreKey,
+                stream: .pullRequests,
                 type: .assignedPullRequest,
                 title: pullRequest.title,
                 subtitle: pullRequest.subtitle,
@@ -296,6 +315,7 @@ struct GitHubClient {
             AttentionItem(
                 id: "ready:\(pullRequest.id)",
                 ignoreKey: pullRequest.ignoreKey,
+                stream: .pullRequests,
                 type: .readyToMerge,
                 title: pullRequest.title,
                 subtitle: pullRequest.subtitle,
@@ -311,6 +331,7 @@ struct GitHubClient {
             AttentionItem(
                 id: "notif:\(notification.id)",
                 ignoreKey: notification.ignoreKey,
+                stream: .notifications,
                 type: notification.type,
                 title: notification.title,
                 subtitle: notification.subtitle,
@@ -327,6 +348,7 @@ struct GitHubClient {
             AttentionItem(
                 id: "run:\(run.id)",
                 ignoreKey: run.ignoreKey,
+                stream: .pullRequests,
                 type: run.type,
                 title: run.title,
                 subtitle: run.subtitle,
@@ -338,7 +360,47 @@ struct GitHubClient {
             )
         }
 
-        return (pullRequestItems + readyToMergeItems + notificationItems + actionRunItems)
+        let directPullRequestKeys = Set((pullRequestItems + readyToMergeItems).map(\.ignoreKey))
+        let trackedPullRequestItems = trackedPullRequests
+            .filter { !directPullRequestKeys.contains($0.ignoreKey) }
+            .map { trackedSubject in
+                AttentionItem(
+                    id: "tracked-pr:\(trackedSubject.id)",
+                    ignoreKey: trackedSubject.ignoreKey,
+                    stream: .pullRequests,
+                    type: trackedSubject.type,
+                    title: trackedSubject.title,
+                    subtitle: trackedSubject.subtitle,
+                    repository: trackedSubject.repository,
+                    timestamp: trackedSubject.updatedAt,
+                    url: trackedSubject.url,
+                    detail: detail(for: trackedSubject)
+                )
+            }
+
+        let trackedIssueItems = trackedIssues.map { trackedSubject in
+            AttentionItem(
+                id: "tracked-issue:\(trackedSubject.id)",
+                ignoreKey: trackedSubject.ignoreKey,
+                stream: .issues,
+                type: trackedSubject.type,
+                title: trackedSubject.title,
+                subtitle: trackedSubject.subtitle,
+                repository: trackedSubject.repository,
+                timestamp: trackedSubject.updatedAt,
+                url: trackedSubject.url,
+                detail: detail(for: trackedSubject)
+            )
+        }
+
+        return (
+            pullRequestItems +
+                trackedPullRequestItems +
+                readyToMergeItems +
+                notificationItems +
+                actionRunItems +
+                trackedIssueItems
+        )
             .sorted { $0.timestamp > $1.timestamp }
     }
 
@@ -383,6 +445,51 @@ struct GitHubClient {
                     title: "Open Repository",
                     iconName: "shippingbox",
                     url: repositoryWebURL(repository: pullRequest.repository)
+                )
+            ],
+            acknowledgement: "Use the toolbar to mark this read or ignore it."
+        )
+    }
+
+    private func detail(for trackedSubject: TrackedSubjectSummary) -> AttentionDetail {
+        let isPullRequest = trackedSubject.url.absoluteString.contains("/pull/")
+        let subjectTitle = isPullRequest ? "Pull request" : "Issue"
+        let subjectIcon = isPullRequest ? "arrow.triangle.pull" : "exclamationmark.circle"
+
+        return AttentionDetail(
+            why: AttentionWhy(
+                summary: whySummary(for: trackedSubject.type, actor: nil),
+                detail: trackedSubject.subtitle
+            ),
+            evidence: [
+                AttentionEvidence(
+                    id: "subject",
+                    title: subjectTitle,
+                    detail: "#\(trackedSubject.number) · \(trackedSubject.title)",
+                    iconName: subjectIcon,
+                    url: trackedSubject.url
+                ),
+                AttentionEvidence(
+                    id: "repository",
+                    title: "Repository",
+                    detail: trackedSubject.repository,
+                    iconName: "shippingbox",
+                    url: repositoryWebURL(repository: trackedSubject.repository)
+                )
+            ],
+            actions: [
+                AttentionAction(
+                    id: "open-subject",
+                    title: isPullRequest ? "Open Pull Request" : "Open Issue",
+                    iconName: "arrow.up.right.square",
+                    url: trackedSubject.url,
+                    isPrimary: true
+                ),
+                AttentionAction(
+                    id: "open-repo",
+                    title: "Open Repository",
+                    iconName: "shippingbox",
+                    url: repositoryWebURL(repository: trackedSubject.repository)
                 )
             ],
             acknowledgement: "Use the toolbar to mark this read or ignore it."
@@ -1220,6 +1327,142 @@ struct GitHubClient {
                 url: issue.htmlURL,
                 updatedAt: issue.updatedAt
             )
+        }
+    }
+
+    private func fetchTrackedPullRequests(
+        token: String,
+        login: String,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [TrackedSubjectSummary] {
+        async let authoredTask = searchTrackedSubjects(
+            token: token,
+            query: "is:open is:pr author:\(login) archived:false",
+            type: .authoredPullRequest,
+            perPage: trackedPullRequestLimit,
+            observer: observer
+        )
+        async let reviewedTask = searchTrackedSubjects(
+            token: token,
+            query: "is:open is:pr reviewed-by:\(login) archived:false",
+            type: .reviewedPullRequest,
+            perPage: trackedPullRequestLimit,
+            observer: observer
+        )
+        async let commentedTask = searchTrackedSubjects(
+            token: token,
+            query: "is:open is:pr commenter:\(login) archived:false",
+            type: .commentedPullRequest,
+            perPage: trackedPullRequestLimit,
+            observer: observer
+        )
+
+        let authored = try await authoredTask
+        let reviewed = try await reviewedTask
+        let commented = try await commentedTask
+
+        return mergeTrackedSubjects(authored + reviewed + commented)
+    }
+
+    private func fetchTrackedIssues(
+        token: String,
+        login: String,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [TrackedSubjectSummary] {
+        async let assignedTask = searchTrackedSubjects(
+            token: token,
+            query: "is:open is:issue assignee:\(login) archived:false",
+            type: .assignedIssue,
+            perPage: trackedIssueLimit,
+            observer: observer
+        )
+        async let authoredTask = searchTrackedSubjects(
+            token: token,
+            query: "is:open is:issue author:\(login) archived:false",
+            type: .authoredIssue,
+            perPage: trackedIssueLimit,
+            observer: observer
+        )
+        async let commentedTask = searchTrackedSubjects(
+            token: token,
+            query: "is:open is:issue commenter:\(login) archived:false",
+            type: .commentedIssue,
+            perPage: trackedIssueLimit,
+            observer: observer
+        )
+
+        let assigned = try await assignedTask
+        let authored = try await authoredTask
+        let commented = try await commentedTask
+
+        return mergeTrackedSubjects(assigned + authored + commented)
+    }
+
+    private func searchTrackedSubjects(
+        token: String,
+        query: String,
+        type: AttentionItemType,
+        perPage: Int,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [TrackedSubjectSummary] {
+        let response: SearchIssuesResponse = try await request(
+            path: "/search/issues",
+            queryItems: [
+                URLQueryItem(name: "q", value: query),
+                URLQueryItem(name: "sort", value: "updated"),
+                URLQueryItem(name: "order", value: "desc"),
+                URLQueryItem(name: "per_page", value: "\(perPage)")
+            ],
+            token: token,
+            observer: observer
+        )
+
+        return response.items.compactMap { issue in
+            guard let repository = repositoryFullName(from: issue.repositoryURL) else {
+                return nil
+            }
+
+            return TrackedSubjectSummary(
+                id: "\(repository)#\(issue.number)",
+                ignoreKey: issue.htmlURL.absoluteString,
+                type: type,
+                number: issue.number,
+                title: issue.title,
+                subtitle: trackedSubjectSubtitle(for: type, repository: repository),
+                repository: repository,
+                url: issue.htmlURL,
+                updatedAt: issue.updatedAt
+            )
+        }
+    }
+
+    private func mergeTrackedSubjects(_ subjects: [TrackedSubjectSummary]) -> [TrackedSubjectSummary] {
+        var byKey = [String: TrackedSubjectSummary]()
+
+        for subject in subjects {
+            if let existing = byKey[subject.ignoreKey],
+                !TrackedSubjectAttentionPolicy.shouldReplace(existing: existing.type, with: subject.type) {
+                continue
+            }
+
+            byKey[subject.ignoreKey] = subject
+        }
+
+        return byKey.values.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func trackedSubjectSubtitle(for type: AttentionItemType, repository: String) -> String {
+        switch type {
+        case .authoredPullRequest, .authoredIssue:
+            return "\(repository) · Created by you"
+        case .reviewedPullRequest:
+            return "\(repository) · Reviewed by you"
+        case .commentedPullRequest, .commentedIssue:
+            return "\(repository) · Commented on by you"
+        case .assignedIssue:
+            return "\(repository) · Assigned to you"
+        default:
+            return repository
         }
     }
 
@@ -2423,8 +2666,20 @@ struct GitHubClient {
         switch type {
         case .assignedPullRequest:
             return "This pull request is assigned to you."
+        case .authoredPullRequest:
+            return "You opened this pull request."
+        case .reviewedPullRequest:
+            return "You reviewed this pull request."
+        case .commentedPullRequest:
+            return "You commented on this pull request."
         case .readyToMerge:
             return "One of your pull requests is approved and ready to merge."
+        case .assignedIssue:
+            return "This issue is assigned to you."
+        case .authoredIssue:
+            return "You opened this issue."
+        case .commentedIssue:
+            return "You commented on this issue."
         case .comment:
             return "There is new discussion on a thread you are following."
         case .mention:
