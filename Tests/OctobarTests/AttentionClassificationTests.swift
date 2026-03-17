@@ -862,6 +862,28 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(facts.map(\.actor.login), ["renovate-custom-app", "fiam"])
     }
 
+    func testAssignedPullRequestHeaderFactsCombineSameAuthorAndAssigner() {
+        let facts = PullRequestHeaderFact.build(
+            sourceType: .assignedPullRequest,
+            resolution: .open,
+            sourceActor: nil,
+            author: AttentionActor(login: "cloud-offload-manager", avatarURL: nil, isBot: true),
+            assigner: AttentionActor(
+                login: "cloud-offload-manager",
+                avatarURL: URL(string: "https://avatars.githubusercontent.com/u/1"),
+                isBot: true
+            ),
+            latestApprover: nil,
+            approvalCount: 0,
+            mergedBy: nil
+        )
+
+        XCTAssertEqual(facts.count, 1)
+        XCTAssertEqual(facts.first?.id, "created-and-assigned-by")
+        XCTAssertEqual(facts.first?.label, "created and assigned by")
+        XCTAssertEqual(facts.first?.actor.login, "cloud-offload-manager")
+    }
+
     func testAuthoredPullRequestActionsKeepViewAsSecondaryWhenMutationPrimaryExists() {
         let actions = AttentionAction.pullRequestActions(
             reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 639),

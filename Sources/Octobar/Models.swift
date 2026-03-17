@@ -446,6 +446,10 @@ struct AttentionActor: Hashable, Sendable {
     var profileURL: URL {
         profileURLOverride ?? URL(string: "https://github.com/\(login)")!
     }
+
+    func isSameAccount(as other: AttentionActor) -> Bool {
+        login.caseInsensitiveCompare(other.login) == .orderedSame
+    }
 }
 
 enum NotificationFollowUpRelationship: Hashable, Sendable {
@@ -1830,6 +1834,17 @@ extension PullRequestHeaderFact {
 
         switch sourceType {
         case .assignedPullRequest:
+            if let author, let assigner, author.isSameAccount(as: assigner) {
+                return [
+                    PullRequestHeaderFact(
+                        id: "created-and-assigned-by",
+                        label: "created and assigned by",
+                        actor: author,
+                        additionalActorCount: 0
+                    )
+                ]
+            }
+
             var facts = [PullRequestHeaderFact]()
 
             if let author {
