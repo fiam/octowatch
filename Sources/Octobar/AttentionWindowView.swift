@@ -473,10 +473,17 @@ struct AttentionWindowView: View {
                     onOpenURL: { url in
                         openRelatedURL(url, for: item)
                     },
-                    onPerformReviewMerge: {
+                    onPerformReviewMerge: { mergeMethod in
                         Task {
-                            await performReviewMergeForSelection()
+                            await performReviewMergeForSelection(mergeMethod: mergeMethod)
                         }
+                    },
+                    onSelectMergeMethod: { mergeMethod in
+                        guard let reference = item.pullRequestReference else {
+                            return
+                        }
+
+                        model.rememberPreferredMergeMethod(mergeMethod, for: reference)
                     },
                     onRetryPullRequestFocus: {
                         Task {
@@ -670,7 +677,7 @@ struct AttentionWindowView: View {
         }
     }
 
-    private func performReviewMergeForSelection() async {
+    private func performReviewMergeForSelection(mergeMethod: PullRequestMergeMethod?) async {
         guard
             let item = selectedItem,
             case let .loaded(focus) = pullRequestFocusState,
@@ -687,7 +694,7 @@ struct AttentionWindowView: View {
             let outcome = try await model.approveAndMergePullRequest(
                 for: item,
                 requiresApproval: reviewMergeAction.requiresApproval,
-                mergeMethod: reviewMergeAction.mergeMethod
+                mergeMethod: mergeMethod ?? reviewMergeAction.mergeMethod
             )
             await MainActor.run {
                 reviewMergeState = .succeeded(outcome)
@@ -808,7 +815,8 @@ private struct AttentionDetailView: View {
     let pullRequestFocusState: PullRequestFocusLoadState
     let reviewMergeState: PullRequestReviewMergeState
     let onOpenURL: (URL) -> Void
-    let onPerformReviewMerge: () -> Void
+    let onPerformReviewMerge: (PullRequestMergeMethod?) -> Void
+    let onSelectMergeMethod: (PullRequestMergeMethod) -> Void
     let onRetryPullRequestFocus: () -> Void
 
     private var visibleEvidence: [AttentionEvidence] {
@@ -1011,7 +1019,8 @@ private struct AttentionDetailView: View {
                 referenceDate: referenceDate,
                 reviewMergeState: reviewMergeState,
                 onOpenURL: onOpenURL,
-                onPerformReviewMerge: onPerformReviewMerge
+                onPerformReviewMerge: onPerformReviewMerge,
+                onSelectMergeMethod: onSelectMergeMethod
             )
         }
     }
@@ -1205,7 +1214,27 @@ private struct PullRequestFocusView: View {
     let referenceDate: Date
     let reviewMergeState: PullRequestReviewMergeState
     let onOpenURL: (URL) -> Void
-    let onPerformReviewMerge: () -> Void
+    let onPerformReviewMerge: (PullRequestMergeMethod?) -> Void
+    let onSelectMergeMethod: (PullRequestMergeMethod) -> Void
+
+    @State private var selectedMergeMethod: PullRequestMergeMethod?
+
+    init(
+        focus: PullRequestFocus,
+        referenceDate: Date,
+        reviewMergeState: PullRequestReviewMergeState,
+        onOpenURL: @escaping (URL) -> Void,
+        onPerformReviewMerge: @escaping (PullRequestMergeMethod?) -> Void,
+        onSelectMergeMethod: @escaping (PullRequestMergeMethod) -> Void
+    ) {
+        self.focus = focus
+        self.referenceDate = referenceDate
+        self.reviewMergeState = reviewMergeState
+        self.onOpenURL = onOpenURL
+        self.onPerformReviewMerge = onPerformReviewMerge
+        self.onSelectMergeMethod = onSelectMergeMethod
+        _selectedMergeMethod = State(initialValue: focus.reviewMergeAction?.preferredMergeMethod)
+    }
 
     private var displayedMergeOutcome: PullRequestMutationOutcome? {
         if focus.resolution == .merged {
@@ -1251,7 +1280,44 @@ private struct PullRequestFocusView: View {
 
         return reviewMergeState != .running &&
             displayedMergeOutcome == nil &&
-            reviewMergeAction.isEnabled
+            reviewMergeAction.isEnabled &&
+            resolvedReviewMergeMethod != nil
+    }
+
+    private var shouldShowMergeMethodSelector: Bool {
+        guard let reviewMergeAction = focus.reviewMergeAction else {
+            return false
+        }
+
+        return displayedMergeOutcome == nil && reviewMergeAction.needsMergeMethodSelection
+    }
+
+    private var reviewMergeButtonTitle: String {
+        guard let reviewMergeAction = focus.reviewMergeAction else {
+            return ""
+        }
+
+        guard let mergeMethod = resolvedReviewMergeMethod else {
+            return reviewMergeAction.title
+        }
+
+        if reviewMergeAction.requiresApproval {
+            return "Approve and \(mergeMethod.buttonTitle.lowercased())"
+        }
+
+        return mergeMethod.buttonTitle
+    }
+
+    private var resolvedReviewMergeMethod: PullRequestMergeMethod? {
+        guard let reviewMergeAction = focus.reviewMergeAction else {
+            return nil
+        }
+
+        if reviewMergeAction.needsMergeMethodSelection {
+            return selectedMergeMethod ?? reviewMergeAction.preferredMergeMethod
+        }
+
+        return reviewMergeAction.mergeMethod
     }
 
     var body: some View {
@@ -1270,42 +1336,48 @@ private struct PullRequestFocusView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
                         if let reviewMergeAction = focus.reviewMergeAction {
-                            Button {
-                                onPerformReviewMerge()
-                            } label: {
-                                if reviewMergeState == .running {
-                                    HStack(spacing: 8) {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                        Text(
-                                            reviewMergeAction.requiresApproval
-                                                ? "Approving and Merging…"
-                                                : "Merging…"
-                                        )
+                            if shouldShowMergeMethodSelector {
+                                Menu {
+                                    ForEach(reviewMergeAction.allowedMergeMethods, id: \.self) { method in
+                                        Button {
+                                            selectMergeMethod(method)
+                                        } label: {
+                                            if resolvedReviewMergeMethod == method {
+                                                Label(method.selectorTitle, systemImage: "checkmark")
+                                            } else {
+                                                Text(method.selectorTitle)
+                                            }
+                                        }
                                     }
-                                } else if let outcome = displayedMergeOutcome {
-                                    Label(
-                                        outcome.buttonTitle,
-                                        systemImage: outcome.iconName
-                                    )
-                                } else {
-                                    Label(
-                                        reviewMergeAction.title,
-                                        systemImage: reviewMergeAction.outcome?.iconName
-                                            ?? (reviewMergeAction.requiresApproval
-                                                ? "checkmark.circle.badge.questionmark"
-                                                : "checkmark.circle")
-                                    )
+                                } label: {
+                                    reviewMergeButtonLabel(reviewMergeAction: reviewMergeAction)
+                                } primaryAction: {
+                                    onPerformReviewMerge(resolvedReviewMergeMethod)
                                 }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(reviewMergeButtonTint)
-                            .disabled(!isReviewMergeActionInteractive)
-                            .modifier(
-                                ConditionalInteractiveHoverModifier(
-                                    isEnabled: isReviewMergeActionInteractive
+                                .buttonStyle(.borderedProminent)
+                                .tint(reviewMergeButtonTint)
+                                .disabled(!isReviewMergeActionInteractive)
+                                .modifier(
+                                    ConditionalInteractiveHoverModifier(
+                                        isEnabled: isReviewMergeActionInteractive
+                                    )
                                 )
-                            )
+                                .help("Merge this pull request or choose a different merge method")
+                            } else {
+                                Button {
+                                    onPerformReviewMerge(resolvedReviewMergeMethod)
+                                } label: {
+                                    reviewMergeButtonLabel(reviewMergeAction: reviewMergeAction)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(reviewMergeButtonTint)
+                                .disabled(!isReviewMergeActionInteractive)
+                                .modifier(
+                                    ConditionalInteractiveHoverModifier(
+                                        isEnabled: isReviewMergeActionInteractive
+                                    )
+                                )
+                            }
                         }
 
                         ForEach(focus.actions) { action in
@@ -1422,6 +1494,42 @@ private struct PullRequestFocusView: View {
                 }
             }
         }
+        .onChange(of: focus.reviewMergeAction?.allowedMergeMethods) { _, _ in
+            selectedMergeMethod = focus.reviewMergeAction?.preferredMergeMethod
+        }
+    }
+
+    @ViewBuilder
+    private func reviewMergeButtonLabel(reviewMergeAction: PullRequestReviewMergeAction) -> some View {
+        if reviewMergeState == .running {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(
+                    reviewMergeAction.requiresApproval
+                        ? "Approving and Merging…"
+                        : "Merging…"
+                )
+            }
+        } else if let outcome = displayedMergeOutcome {
+            Label(
+                outcome.buttonTitle,
+                systemImage: outcome.iconName
+            )
+        } else {
+            Label(
+                reviewMergeButtonTitle,
+                systemImage: reviewMergeAction.outcome?.iconName
+                    ?? (reviewMergeAction.requiresApproval
+                        ? "checkmark.circle.badge.questionmark"
+                        : "checkmark.circle")
+            )
+        }
+    }
+
+    private func selectMergeMethod(_ mergeMethod: PullRequestMergeMethod) {
+        selectedMergeMethod = mergeMethod
+        onSelectMergeMethod(mergeMethod)
     }
 
     private var emptyStateIconName: String {

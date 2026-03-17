@@ -18,7 +18,7 @@ Items also have dot-style read/unread indicators, and opening an item marks it a
 The main window sidebar supports native macOS multi-selection, and a right-click menu can open, mark read, mark unread, or ignore the current selection.
 Ignoring from the main window shows a small transient undo toast so accidental ignores can be reversed quickly.
 Items can also be ignored locally, and ignored subjects can be restored later from Settings without forcing an immediate GitHub refresh.
-Pull request detail panes surface merge conflicts alongside review threads and check results, read repository workflow files and PR changed paths to predict which push workflows should run after merge, then swap to observed post-merge workflow statuses once GitHub starts them.
+Pull request detail panes surface merge conflicts alongside review threads and check results, follow GitHub's pull-request merge UI to pick the applicable merge method automatically when only one direct-merge option is available, keep the method selector inside the merge button when multiple options are available, remember the last method you chose per repository, read repository workflow files and PR changed paths to predict which push workflows should run after merge, then swap to observed post-merge workflow statuses once GitHub starts them.
 For PRs you already reviewed, new commits since your review are called out near the top of the detail pane and the commit action is labeled accordingly.
 
 ## Requirements

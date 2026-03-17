@@ -1112,6 +1112,7 @@ struct PullRequestFocusSection: Identifiable, Hashable, Sendable {
 
 struct PullRequestFocus: Hashable, Sendable {
     let reference: PullRequestReference
+    let baseBranch: String
     let sourceType: AttentionItemType
     let mode: PullRequestFocusMode
     let resolution: GitHubSubjectResolution
@@ -1302,24 +1303,65 @@ enum PullRequestMergeMethod: String, Hashable, Sendable {
     case squash
     case rebase
 
-    static func preferred(
+    var buttonTitle: String {
+        switch self {
+        case .merge:
+            return "Merge Pull Request"
+        case .squash:
+            return "Squash and Merge"
+        case .rebase:
+            return "Rebase and Merge"
+        }
+    }
+
+    var selectorTitle: String {
+        switch self {
+        case .merge:
+            return "Create merge commit"
+        case .squash:
+            return "Squash and merge"
+        case .rebase:
+            return "Rebase and merge"
+        }
+    }
+
+    static func allowedMethods(
         allowMergeCommit: Bool,
         allowSquashMerge: Bool,
         allowRebaseMerge: Bool
-    ) -> PullRequestMergeMethod? {
+    ) -> [PullRequestMergeMethod] {
+        var methods = [PullRequestMergeMethod]()
+
         if allowMergeCommit {
-            return .merge
+            methods.append(.merge)
         }
 
         if allowSquashMerge {
-            return .squash
+            methods.append(.squash)
         }
 
         if allowRebaseMerge {
-            return .rebase
+            methods.append(.rebase)
         }
 
-        return nil
+        return methods
+    }
+
+    static func fromAPIValues(_ values: [String]) -> [PullRequestMergeMethod] {
+        values.compactMap(Self.init(apiValue:))
+    }
+
+    init?(apiValue: String) {
+        switch apiValue.lowercased() {
+        case "merge":
+            self = .merge
+        case "squash":
+            self = .squash
+        case "rebase":
+            self = .rebase
+        default:
+            return nil
+        }
     }
 }
 
@@ -1360,6 +1402,7 @@ enum GitHubMergeQueuePolicy {
 
 struct PullRequestMutationResult: Sendable {
     let outcome: PullRequestMutationOutcome
+    let mergeMethod: PullRequestMergeMethod?
     let rateLimit: GitHubRateLimit?
 }
 
@@ -1398,8 +1441,20 @@ struct PullRequestReviewMergeAction: Hashable, Sendable {
     let requiresApproval: Bool
     let isEnabled: Bool
     let disabledReason: String?
-    let mergeMethod: PullRequestMergeMethod?
+    let allowedMergeMethods: [PullRequestMergeMethod]
     let outcome: PullRequestMutationOutcome?
+
+    var mergeMethod: PullRequestMergeMethod? {
+        allowedMergeMethods.count == 1 ? allowedMergeMethods[0] : nil
+    }
+
+    var preferredMergeMethod: PullRequestMergeMethod? {
+        allowedMergeMethods.first
+    }
+
+    var needsMergeMethodSelection: Bool {
+        allowedMergeMethods.count > 1
+    }
 
     var prioritizesBlockedStatusSummary: Bool {
         disabledReason == Self.mergeConflictsReason
@@ -1471,6 +1526,87 @@ struct PullRequestReviewMergeAction: Hashable, Sendable {
                 accent: .warning
             )
         }
+    }
+
+    func applyingPreferredMergeMethod(_ mergeMethod: PullRequestMergeMethod?) -> PullRequestReviewMergeAction {
+        PullRequestReviewMergeAction(
+            title: title,
+            requiresApproval: requiresApproval,
+            isEnabled: isEnabled,
+            disabledReason: disabledReason,
+            allowedMergeMethods: PullRequestMergeMethodPolicy.prioritizing(
+                mergeMethod,
+                within: allowedMergeMethods
+            ),
+            outcome: outcome
+        )
+    }
+}
+
+enum PullRequestMergeMethodPolicy {
+    static func effectiveAllowedMethods(
+        repositoryAllowedMethods: [PullRequestMergeMethod],
+        branchAllowedMethodGroups: [[PullRequestMergeMethod]],
+        requiresLinearHistory: Bool
+    ) -> [PullRequestMergeMethod] {
+        var allowedMethodSet = Set(repositoryAllowedMethods)
+
+        if let firstBranchAllowedMethods = branchAllowedMethodGroups.first {
+            let branchIntersection = branchAllowedMethodGroups.dropFirst().reduce(
+                Set(firstBranchAllowedMethods)
+            ) { partialResult, methods in
+                partialResult.intersection(methods)
+            }
+            allowedMethodSet.formIntersection(branchIntersection)
+        }
+
+        let orderedAllowedMethods = repositoryAllowedMethods.filter { allowedMethodSet.contains($0) }
+
+        guard requiresLinearHistory else {
+            return orderedAllowedMethods
+        }
+
+        return orderedAllowedMethods.filter { $0 != .merge }
+    }
+
+    static func prioritizing(
+        _ mergeMethod: PullRequestMergeMethod?,
+        within allowedMethods: [PullRequestMergeMethod]
+    ) -> [PullRequestMergeMethod] {
+        guard
+            let mergeMethod,
+            let existingIndex = allowedMethods.firstIndex(of: mergeMethod)
+        else {
+            return allowedMethods
+        }
+
+        var orderedMethods = allowedMethods
+        orderedMethods.remove(at: existingIndex)
+        orderedMethods.insert(mergeMethod, at: 0)
+        return orderedMethods
+    }
+}
+
+extension PullRequestFocus {
+    func applyingPreferredMergeMethod(_ mergeMethod: PullRequestMergeMethod?) -> PullRequestFocus {
+        PullRequestFocus(
+            reference: reference,
+            baseBranch: baseBranch,
+            sourceType: sourceType,
+            mode: mode,
+            resolution: resolution,
+            author: author,
+            headerFacts: headerFacts,
+            contextBadges: contextBadges,
+            descriptionHTML: descriptionHTML,
+            statusSummary: statusSummary,
+            postMergeWorkflowPreview: postMergeWorkflowPreview,
+            sections: sections,
+            actions: actions,
+            reviewMergeAction: reviewMergeAction?.applyingPreferredMergeMethod(mergeMethod),
+            emptyStateTitle: emptyStateTitle,
+            emptyStateDetail: emptyStateDetail
+        )
     }
 }
 
@@ -1774,6 +1910,7 @@ extension PullRequestReviewMergeAction {
         allowMergeCommit: Bool,
         allowSquashMerge: Bool,
         allowRebaseMerge: Bool,
+        preferredMergeMethod: PullRequestMergeMethod? = nil,
         mergeable: String?,
         isDraft: Bool,
         reviewDecision: String?,
@@ -1803,10 +1940,13 @@ extension PullRequestReviewMergeAction {
         let title = requiresApproval ? "Approve and Merge" : "Merge Pull Request"
         let allowsCurrentReviewRequestToBeSatisfied =
             requiresApproval && pendingReviewRequestCount == 1
-        let mergeMethod = PullRequestMergeMethod.preferred(
-            allowMergeCommit: allowMergeCommit,
-            allowSquashMerge: allowSquashMerge,
-            allowRebaseMerge: allowRebaseMerge
+        let allowedMergeMethods = PullRequestMergeMethodPolicy.prioritizing(
+            preferredMergeMethod,
+            within: PullRequestMergeMethod.allowedMethods(
+                allowMergeCommit: allowMergeCommit,
+                allowSquashMerge: allowSquashMerge,
+                allowRebaseMerge: allowRebaseMerge
+            )
         )
 
         if isMerged {
@@ -1815,7 +1955,7 @@ extension PullRequestReviewMergeAction {
                 requiresApproval: false,
                 isEnabled: false,
                 disabledReason: nil,
-                mergeMethod: nil,
+                allowedMergeMethods: [],
                 outcome: .merged
             )
         }
@@ -1826,7 +1966,7 @@ extension PullRequestReviewMergeAction {
                 requiresApproval: false,
                 isEnabled: false,
                 disabledReason: nil,
-                mergeMethod: nil,
+                allowedMergeMethods: [],
                 outcome: .queued
             )
         }
@@ -1839,7 +1979,7 @@ extension PullRequestReviewMergeAction {
                 disabledReason: requiresApproval
                     ? "You do not have permission to review and merge pull requests in this repository."
                     : "You do not have permission to merge pull requests in this repository.",
-                mergeMethod: mergeMethod,
+                allowedMergeMethods: allowedMergeMethods,
                 outcome: nil
             )
         }
@@ -1850,7 +1990,7 @@ extension PullRequestReviewMergeAction {
                 requiresApproval: requiresApproval,
                 isEnabled: false,
                 disabledReason: "This pull request is still a draft.",
-                mergeMethod: mergeMethod,
+                allowedMergeMethods: allowedMergeMethods,
                 outcome: nil
             )
         }
@@ -1861,7 +2001,7 @@ extension PullRequestReviewMergeAction {
                 requiresApproval: requiresApproval,
                 isEnabled: false,
                 disabledReason: Self.mergeConflictsReason,
-                mergeMethod: mergeMethod,
+                allowedMergeMethods: allowedMergeMethods,
                 outcome: nil
             )
         }
@@ -1872,18 +2012,18 @@ extension PullRequestReviewMergeAction {
                 requiresApproval: requiresApproval,
                 isEnabled: false,
                 disabledReason: "GitHub does not consider this pull request mergeable yet.",
-                mergeMethod: mergeMethod,
+                allowedMergeMethods: allowedMergeMethods,
                 outcome: nil
             )
         }
 
-        guard let mergeMethod else {
+        guard !allowedMergeMethods.isEmpty else {
             return PullRequestReviewMergeAction(
                 title: title,
                 requiresApproval: requiresApproval,
                 isEnabled: false,
                 disabledReason: "This repository does not allow pull requests to be merged directly.",
-                mergeMethod: nil,
+                allowedMergeMethods: [],
                 outcome: nil
             )
         }
@@ -1894,7 +2034,7 @@ extension PullRequestReviewMergeAction {
                 requiresApproval: requiresApproval,
                 isEnabled: false,
                 disabledReason: "Changes have been requested on this pull request.",
-                mergeMethod: mergeMethod,
+                allowedMergeMethods: allowedMergeMethods,
                 outcome: nil
             )
         }
@@ -1907,7 +2047,7 @@ extension PullRequestReviewMergeAction {
                 disabledReason: pendingReviewRequestCount == 1
                     ? "A review is still requested on this pull request."
                     : "Reviews are still requested on this pull request.",
-                mergeMethod: mergeMethod,
+                allowedMergeMethods: allowedMergeMethods,
                 outcome: nil
             )
         }
@@ -1918,7 +2058,7 @@ extension PullRequestReviewMergeAction {
                 requiresApproval: requiresApproval,
                 isEnabled: false,
                 disabledReason: "Resolve the open review conversations first.",
-                mergeMethod: mergeMethod,
+                allowedMergeMethods: allowedMergeMethods,
                 outcome: nil
             )
         }
@@ -1929,7 +2069,7 @@ extension PullRequestReviewMergeAction {
                 requiresApproval: requiresApproval,
                 isEnabled: false,
                 disabledReason: "Some checks are failing.",
-                mergeMethod: mergeMethod,
+                allowedMergeMethods: allowedMergeMethods,
                 outcome: nil
             )
         }
@@ -1940,7 +2080,7 @@ extension PullRequestReviewMergeAction {
                 requiresApproval: requiresApproval,
                 isEnabled: false,
                 disabledReason: "Checks are still running.",
-                mergeMethod: mergeMethod,
+                allowedMergeMethods: allowedMergeMethods,
                 outcome: nil
             )
         }
@@ -1951,7 +2091,7 @@ extension PullRequestReviewMergeAction {
                 requiresApproval: requiresApproval,
                 isEnabled: false,
                 disabledReason: "This pull request still needs an approving review.",
-                mergeMethod: mergeMethod,
+                allowedMergeMethods: allowedMergeMethods,
                 outcome: nil
             )
         }
@@ -1961,7 +2101,7 @@ extension PullRequestReviewMergeAction {
             requiresApproval: requiresApproval,
             isEnabled: true,
             disabledReason: nil,
-            mergeMethod: mergeMethod,
+            allowedMergeMethods: allowedMergeMethods,
             outcome: nil
         )
     }

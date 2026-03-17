@@ -618,7 +618,7 @@ final class AttentionClassificationTests: XCTestCase {
             ignoredAt: Date(timeIntervalSince1970: 1_700_000_000)
         )
         let state = IgnoreUndoState(
-            subject: subject,
+            subjects: [subject],
             expiresAt: Date(timeIntervalSince1970: 1_700_000_008)
         )
 
@@ -816,52 +816,29 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
-    func testAssignedPullRequestDoesNotDuplicateHeaderStateWithBadges() {
-        let badges = PullRequestContextBadge.badges(
-            for: .assignedPullRequest,
-            author: AttentionActor(
-                login: "renovate-custom-app",
-                avatarURL: nil,
-                isBot: true
-            )
-        )
+    func testPullRequestContextBadgesStayEmptyWithoutWorkflowAttention() {
+        let badges = PullRequestContextBadge.badges(workflowAttentionType: nil)
 
         XCTAssertTrue(badges.isEmpty)
     }
 
-    func testTeamReviewRequestedDoesNotDuplicateHeaderStateWithBadges() {
-        let badges = PullRequestContextBadge.badges(
-            for: .teamReviewRequested,
-            author: AttentionActor(
-                login: "dependabot[bot]",
-                avatarURL: nil,
-                isBot: true
-            )
-        )
+    func testPullRequestContextBadgesSurfaceWorkflowAttention() {
+        let badges = PullRequestContextBadge.badges(workflowAttentionType: .workflowApprovalRequired)
 
-        XCTAssertTrue(badges.isEmpty)
-    }
-
-    func testReadyToMergeDoesNotAddSeparateCreatedByYouBadge() {
-        let badges = PullRequestContextBadge.badges(
-            for: .readyToMerge,
-            author: AttentionActor(
-                login: "alberto",
-                avatarURL: nil,
-                isBot: false
-            )
-        )
-
-        XCTAssertTrue(badges.isEmpty)
+        XCTAssertEqual(badges.count, 1)
+        XCTAssertEqual(badges.first?.title, AttentionItemType.workflowApprovalRequired.accessibilityLabel)
     }
 
     func testReadyToMergeHeaderFactsUseApprovalLanguage() {
         let facts = PullRequestHeaderFact.build(
             sourceType: .readyToMerge,
+            resolution: .open,
+            sourceActor: nil,
             author: nil,
             assigner: nil,
             latestApprover: AttentionActor(login: "nicksieger", avatarURL: nil, isBot: false),
-            approvalCount: 3
+            approvalCount: 3,
+            mergedBy: nil
         )
 
         XCTAssertEqual(facts.count, 1)
@@ -872,10 +849,13 @@ final class AttentionClassificationTests: XCTestCase {
     func testAssignedPullRequestHeaderFactsIncludeAuthorAndAssigner() {
         let facts = PullRequestHeaderFact.build(
             sourceType: .assignedPullRequest,
+            resolution: .open,
+            sourceActor: nil,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
             assigner: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
             latestApprover: nil,
-            approvalCount: 0
+            approvalCount: 0,
+            mergedBy: nil
         )
 
         XCTAssertEqual(facts.map(\.label), ["created by", "assigned by"])
@@ -961,7 +941,8 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(action?.requiresApproval, true)
         XCTAssertEqual(action?.isEnabled, true)
         XCTAssertNil(action?.disabledReason)
-        XCTAssertEqual(action?.mergeMethod, .merge)
+        XCTAssertEqual(action?.allowedMergeMethods, [.merge, .squash, .rebase])
+        XCTAssertNil(action?.mergeMethod)
     }
 
     func testBotAssignedReviewMergeActionFallsBackToSquashWhenRepoDisallowsMergeCommits() {
@@ -990,6 +971,67 @@ final class AttentionClassificationTests: XCTestCase {
 
         XCTAssertEqual(action?.isEnabled, true)
         XCTAssertEqual(action?.mergeMethod, .squash)
+    }
+
+    func testReviewMergeActionRequiresSelectorWhenMultipleMergeMethodsAreAllowed() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .readyToMerge,
+            mode: .authored,
+            author: AttentionActor(login: "alberto", avatarURL: nil, isBot: false),
+            viewerPermission: "WRITE",
+            allowMergeCommit: false,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "APPROVED",
+            approvalCount: 1,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 0,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 8,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.isEnabled, true)
+        XCTAssertNil(action?.mergeMethod)
+        XCTAssertEqual(action?.preferredMergeMethod, .squash)
+        XCTAssertEqual(action?.allowedMergeMethods, [.squash, .rebase])
+        XCTAssertEqual(action?.needsMergeMethodSelection, true)
+    }
+
+    func testReviewMergeActionPrefersProvidedDefaultMergeMethodWhenMultipleAreAllowed() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .readyToMerge,
+            mode: .authored,
+            author: AttentionActor(login: "alberto", avatarURL: nil, isBot: false),
+            viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: false,
+            preferredMergeMethod: .squash,
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "APPROVED",
+            approvalCount: 1,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 0,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 8,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.allowedMergeMethods, [.squash, .merge])
+        XCTAssertEqual(action?.preferredMergeMethod, .squash)
+        XCTAssertNil(action?.mergeMethod)
     }
 
     func testReviewMergeActionShowsMergedStateWhenPullRequestIsAlreadyMerged() {
@@ -1383,7 +1425,7 @@ final class AttentionClassificationTests: XCTestCase {
             requiresApproval: false,
             isEnabled: false,
             disabledReason: nil,
-            mergeMethod: nil,
+            allowedMergeMethods: [],
             outcome: .merged
         )
 
@@ -1409,7 +1451,7 @@ final class AttentionClassificationTests: XCTestCase {
             requiresApproval: false,
             isEnabled: false,
             disabledReason: nil,
-            mergeMethod: nil,
+            allowedMergeMethods: [],
             outcome: .queued
         )
 
@@ -1464,7 +1506,7 @@ final class AttentionClassificationTests: XCTestCase {
                 requiresApproval: false,
                 isEnabled: false,
                 disabledReason: nil,
-                mergeMethod: nil,
+                allowedMergeMethods: [],
                 outcome: .queued
             )
         )
@@ -1592,6 +1634,44 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testMergeMethodPolicyPrioritizesStoredPreferenceWhenAllowed() {
+        let methods = PullRequestMergeMethodPolicy.prioritizing(
+            .squash,
+            within: [.merge, .squash, .rebase]
+        )
+
+        XCTAssertEqual(methods, [.squash, .merge, .rebase])
+    }
+
+    func testMergeMethodPolicyLeavesOrderUntouchedWhenPreferenceIsUnavailable() {
+        let methods = PullRequestMergeMethodPolicy.prioritizing(
+            .rebase,
+            within: [.merge, .squash]
+        )
+
+        XCTAssertEqual(methods, [.merge, .squash])
+    }
+
+    func testMergeMethodPolicyIntersectsRepositoryAndBranchAllowedMethods() {
+        let methods = PullRequestMergeMethodPolicy.effectiveAllowedMethods(
+            repositoryAllowedMethods: [.merge, .squash],
+            branchAllowedMethodGroups: [[.merge, .squash, .rebase]],
+            requiresLinearHistory: false
+        )
+
+        XCTAssertEqual(methods, [.merge, .squash])
+    }
+
+    func testMergeMethodPolicyRemovesMergeCommitsWhenBranchRequiresLinearHistory() {
+        let methods = PullRequestMergeMethodPolicy.effectiveAllowedMethods(
+            repositoryAllowedMethods: [.merge, .squash],
+            branchAllowedMethodGroups: [[.merge, .squash, .rebase]],
+            requiresLinearHistory: true
+        )
+
+        XCTAssertEqual(methods, [.squash])
+    }
+
     func testPostMergeWatchPolicyNotifiesWhenQueuedPullRequestActuallyMerges() {
         let watch = PostMergeWatch(
             reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 639),
@@ -1604,6 +1684,7 @@ final class AttentionClassificationTests: XCTestCase {
             mergeCommitSHA: nil,
             lastObservedWorkflowRunAt: nil,
             notifiedWorkflowRunIDs: [],
+            notifiedApprovalRequiredWorkflowRunIDs: nil,
             suppressedWorkflowItemIDs: []
         )
         let observation = PostMergeWatchObservation(
@@ -1637,6 +1718,7 @@ final class AttentionClassificationTests: XCTestCase {
             mergeCommitSHA: "abc123",
             lastObservedWorkflowRunAt: nil,
             notifiedWorkflowRunIDs: [],
+            notifiedApprovalRequiredWorkflowRunIDs: nil,
             suppressedWorkflowItemIDs: []
         )
         let run = PostMergeObservedWorkflowRun(
@@ -1682,6 +1764,7 @@ final class AttentionClassificationTests: XCTestCase {
             mergeCommitSHA: "abc123",
             lastObservedWorkflowRunAt: nil,
             notifiedWorkflowRunIDs: [],
+            notifiedApprovalRequiredWorkflowRunIDs: nil,
             suppressedWorkflowItemIDs: []
         )
         let run = PostMergeObservedWorkflowRun(
@@ -1727,6 +1810,7 @@ final class AttentionClassificationTests: XCTestCase {
             mergeCommitSHA: "abc123",
             lastObservedWorkflowRunAt: nil,
             notifiedWorkflowRunIDs: [],
+            notifiedApprovalRequiredWorkflowRunIDs: nil,
             suppressedWorkflowItemIDs: []
         )
 

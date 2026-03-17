@@ -58,12 +58,29 @@ struct GitHubClient {
         mergeCommitAllowed
         squashMergeAllowed
         rebaseMergeAllowed
+        viewerDefaultMergeMethod
         pullRequest(number: $number) {
           id
           title
           bodyHTML
           url
           baseRefName
+          baseRef {
+            refUpdateRule {
+              requiresLinearHistory
+            }
+            rules(first: 20) {
+              nodes {
+                type
+                parameters {
+                  __typename
+                  ... on PullRequestParameters {
+                    allowedMergeMethods
+                  }
+                }
+              }
+            }
+          }
           state
           merged
           isInMergeQueue
@@ -175,6 +192,35 @@ struct GitHubClient {
                     login
                     avatarUrl
                     url
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    private static let pullRequestMergeOptionsQuery = """
+    query PullRequestMergeOptions($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        mergeCommitAllowed
+        squashMergeAllowed
+        rebaseMergeAllowed
+        viewerDefaultMergeMethod
+        pullRequest(number: $number) {
+          baseRef {
+            refUpdateRule {
+              requiresLinearHistory
+            }
+            rules(first: 20) {
+              nodes {
+                type
+                parameters {
+                  __typename
+                  ... on PullRequestParameters {
+                    allowedMergeMethods
                   }
                 }
               }
@@ -939,6 +985,19 @@ struct GitHubClient {
             mergeCommitSHA: pullRequest.mergeCommit?.oid,
             observer: observer
         )
+        let repositoryAllowedMergeMethods = PullRequestMergeMethod.allowedMethods(
+            allowMergeCommit: response.repository?.mergeCommitAllowed ?? false,
+            allowSquashMerge: response.repository?.squashMergeAllowed ?? false,
+            allowRebaseMerge: response.repository?.rebaseMergeAllowed ?? false
+        )
+        let mergeMethodAvailability = mergeMethodAvailability(
+            repositoryAllowedMethods: repositoryAllowedMergeMethods,
+            viewerDefaultMethod: PullRequestMergeMethod(
+                apiValue: response.repository?.viewerDefaultMergeMethod ?? ""
+            ),
+            branchAllowedMethodGroups: pullRequest.baseRef?.allowedMergeMethodGroups ?? [],
+            requiresLinearHistory: pullRequest.baseRef?.refUpdateRule?.requiresLinearHistory ?? false
+        )
         let contextBadges = PullRequestContextBadge.badges(
             workflowAttentionType: postMergeWorkflowPreview?.attentionType
         )
@@ -964,9 +1023,10 @@ struct GitHubClient {
             mode: focusMode,
             author: author,
             viewerPermission: response.repository?.viewerPermission,
-            allowMergeCommit: response.repository?.mergeCommitAllowed ?? false,
-            allowSquashMerge: response.repository?.squashMergeAllowed ?? false,
-            allowRebaseMerge: response.repository?.rebaseMergeAllowed ?? false,
+            allowMergeCommit: mergeMethodAvailability.allowedMethods.contains(.merge),
+            allowSquashMerge: mergeMethodAvailability.allowedMethods.contains(.squash),
+            allowRebaseMerge: mergeMethodAvailability.allowedMethods.contains(.rebase),
+            preferredMergeMethod: mergeMethodAvailability.defaultMethod,
             mergeable: pullRequest.mergeable,
             isDraft: pullRequest.isDraft,
             reviewDecision: pullRequest.reviewDecision,
@@ -996,6 +1056,7 @@ struct GitHubClient {
 
         let focus = PullRequestFocus(
             reference: reference,
+            baseBranch: pullRequest.baseRefName,
             sourceType: sourceType,
             mode: focusMode,
             resolution: resolution,
@@ -1028,9 +1089,47 @@ struct GitHubClient {
         token: String,
         reference: PullRequestReference,
         approveFirst: Bool,
-        preferredMergeMethod: PullRequestMergeMethod?
+        selectedMergeMethod: PullRequestMergeMethod?
     ) async throws -> PullRequestMutationResult {
         let observer = GitHubRateLimitObserver()
+
+        let mergeOptions = try await fetchPullRequestMergeOptions(
+            token: token,
+            reference: reference,
+            observer: observer
+        )
+        let mergeMethodAvailability = mergeMethodAvailability(
+            repositoryAllowedMethods: PullRequestMergeMethod.allowedMethods(
+                allowMergeCommit: mergeOptions.allowMergeCommit,
+                allowSquashMerge: mergeOptions.allowSquashMerge,
+                allowRebaseMerge: mergeOptions.allowRebaseMerge
+            ),
+            viewerDefaultMethod: PullRequestMergeMethod(apiValue: mergeOptions.viewerDefaultMergeMethod),
+            branchAllowedMethodGroups: mergeOptions.pullRequest?.baseRef?.allowedMergeMethodGroups ?? [],
+            requiresLinearHistory: mergeOptions.pullRequest?.baseRef?.refUpdateRule?.requiresLinearHistory ?? false
+        )
+        let allowedMergeMethods = mergeMethodAvailability.allowedMethods
+
+        let mergeMethod: PullRequestMergeMethod
+        if let selectedMergeMethod {
+            guard allowedMergeMethods.contains(selectedMergeMethod) else {
+                throw GitHubClientError.api(
+                    statusCode: 405,
+                    message: "\(selectedMergeMethod.selectorTitle) is not allowed for this pull request."
+                )
+            }
+            mergeMethod = selectedMergeMethod
+        } else if allowedMergeMethods.isEmpty {
+            throw GitHubClientError.api(
+                statusCode: 405,
+                message: "This repository does not allow pull requests to be merged directly."
+            )
+        } else {
+            guard let defaultMergeMethod = mergeMethodAvailability.defaultMethod ?? allowedMergeMethods.first else {
+                throw GitHubClientError.invalidResponse
+            }
+            mergeMethod = defaultMergeMethod
+        }
 
         if approveFirst {
             let _: PullRequestReviewSubmissionResponse = try await request(
@@ -1039,24 +1138,6 @@ struct GitHubClient {
                 body: PullRequestReviewSubmissionRequest(event: "APPROVE"),
                 token: token,
                 observer: observer
-            )
-        }
-
-        let repositoryMergeSettings: RepositoryMergeSettingsResponse = try await request(
-            path: "/repos/\(reference.owner)/\(reference.name)",
-            token: token,
-            observer: observer
-        )
-        let mergeMethod = preferredMergeMethod ?? PullRequestMergeMethod.preferred(
-            allowMergeCommit: repositoryMergeSettings.allowMergeCommit,
-            allowSquashMerge: repositoryMergeSettings.allowSquashMerge,
-            allowRebaseMerge: repositoryMergeSettings.allowRebaseMerge
-        )
-
-        guard let mergeMethod else {
-            throw GitHubClientError.api(
-                statusCode: 405,
-                message: "This repository does not allow pull requests to be merged directly."
             )
         }
 
@@ -1084,6 +1165,7 @@ struct GitHubClient {
 
             return PullRequestMutationResult(
                 outcome: .queued,
+                mergeMethod: nil,
                 rateLimit: await observer.snapshot()
             )
         }
@@ -1094,6 +1176,7 @@ struct GitHubClient {
 
         return PullRequestMutationResult(
             outcome: .merged,
+            mergeMethod: mergeMethod,
             rateLimit: await observer.snapshot()
         )
     }
@@ -1305,6 +1388,48 @@ struct GitHubClient {
         }
 
         return pullRequestID
+    }
+
+    private func fetchPullRequestMergeOptions(
+        token: String,
+        reference: PullRequestReference,
+        observer: GitHubRateLimitObserver
+    ) async throws -> PullRequestMergeOptionsGraphQLRepository {
+        let response: PullRequestMergeOptionsQueryData = try await graphQLRequest(
+            query: Self.pullRequestMergeOptionsQuery,
+            variables: PullRequestFocusQueryVariables(
+                owner: reference.owner,
+                name: reference.name,
+                number: reference.number
+            ),
+            token: token,
+            observer: observer
+        )
+
+        guard let repository = response.repository, repository.pullRequest != nil else {
+            throw GitHubClientError.invalidResponse
+        }
+
+        return repository
+    }
+
+    private func mergeMethodAvailability(
+        repositoryAllowedMethods: [PullRequestMergeMethod],
+        viewerDefaultMethod: PullRequestMergeMethod?,
+        branchAllowedMethodGroups: [[PullRequestMergeMethod]],
+        requiresLinearHistory: Bool
+    ) -> PullRequestMergeMethodAvailability {
+        let allowedMethods = PullRequestMergeMethodPolicy.effectiveAllowedMethods(
+            repositoryAllowedMethods: repositoryAllowedMethods,
+            branchAllowedMethodGroups: branchAllowedMethodGroups,
+            requiresLinearHistory: requiresLinearHistory
+        )
+        let defaultMethod = viewerDefaultMethod.flatMap { allowedMethods.contains($0) ? $0 : nil }
+
+        return PullRequestMergeMethodAvailability(
+            allowedMethods: PullRequestMergeMethodPolicy.prioritizing(defaultMethod, within: allowedMethods),
+            defaultMethod: defaultMethod
+        )
     }
 
     private func shouldUseMergeQueueFallback(statusCode: Int, message: String) -> Bool {
@@ -4115,6 +4240,10 @@ private struct PullRequestFocusQueryData: Decodable {
     let repository: PullRequestFocusGraphQLRepository?
 }
 
+private struct PullRequestMergeOptionsQueryData: Decodable {
+    let repository: PullRequestMergeOptionsGraphQLRepository?
+}
+
 private struct PullRequestNodeIDQueryData: Decodable {
     let repository: PullRequestNodeIDRepository?
 }
@@ -4132,7 +4261,24 @@ private struct PullRequestFocusGraphQLRepository: Decodable {
     let mergeCommitAllowed: Bool
     let squashMergeAllowed: Bool
     let rebaseMergeAllowed: Bool
+    let viewerDefaultMergeMethod: String
     let pullRequest: PullRequestFocusGraphQLPullRequest?
+}
+
+private struct PullRequestMergeOptionsGraphQLRepository: Decodable {
+    let allowMergeCommit: Bool
+    let allowSquashMerge: Bool
+    let allowRebaseMerge: Bool
+    let viewerDefaultMergeMethod: String
+    let pullRequest: PullRequestMergeOptionsGraphQLPullRequest?
+
+    enum CodingKeys: String, CodingKey {
+        case allowMergeCommit = "mergeCommitAllowed"
+        case allowSquashMerge = "squashMergeAllowed"
+        case allowRebaseMerge = "rebaseMergeAllowed"
+        case viewerDefaultMergeMethod
+        case pullRequest
+    }
 }
 
 private struct PullRequestFocusGraphQLPullRequest: Decodable {
@@ -4141,6 +4287,7 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
     let bodyHTML: String
     let url: URL
     let baseRefName: String
+    let baseRef: PullRequestGraphQLRef?
     let state: String
     let merged: Bool
     let isInMergeQueue: Bool
@@ -4164,6 +4311,7 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
         case bodyHTML
         case url
         case baseRefName
+        case baseRef
         case state
         case merged
         case isInMergeQueue
@@ -4181,6 +4329,10 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
         case reviews
         case commits
     }
+}
+
+private struct PullRequestMergeOptionsGraphQLPullRequest: Decodable {
+    let baseRef: PullRequestGraphQLRef?
 }
 
 private struct PullRequestFocusGraphQLMergeCommit: Decodable {
@@ -4213,6 +4365,41 @@ private struct PullRequestFocusGraphQLReviewRequestConnection: Decodable {
 
 private struct PullRequestFocusGraphQLConnection<Node: Decodable>: Decodable {
     let nodes: [Node?]
+}
+
+private struct PullRequestGraphQLRef: Decodable {
+    let refUpdateRule: PullRequestGraphQLRefUpdateRule?
+    let rules: PullRequestFocusGraphQLConnection<PullRequestGraphQLRule>
+
+    var allowedMergeMethodGroups: [[PullRequestMergeMethod]] {
+        rules.nodes.compactMap { rule in
+            guard let values = rule?.parameters?.allowedMergeMethods else {
+                return nil
+            }
+
+            let methods = PullRequestMergeMethod.fromAPIValues(values)
+            return methods.isEmpty ? nil : methods
+        }
+    }
+}
+
+private struct PullRequestGraphQLRefUpdateRule: Decodable {
+    let requiresLinearHistory: Bool
+}
+
+private struct PullRequestGraphQLRule: Decodable {
+    let type: String
+    let parameters: PullRequestGraphQLRuleParameters?
+}
+
+private struct PullRequestGraphQLRuleParameters: Decodable {
+    let typeName: String
+    let allowedMergeMethods: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case typeName = "__typename"
+        case allowedMergeMethods
+    }
 }
 
 private struct PullRequestFocusGraphQLActor: Decodable {
@@ -4312,6 +4499,11 @@ private struct PullRequestCheckInsights {
     let failingEntries: [PullRequestFocusEntry]
 }
 
+private struct PullRequestMergeMethodAvailability {
+    let allowedMethods: [PullRequestMergeMethod]
+    let defaultMethod: PullRequestMergeMethod?
+}
+
 private struct CheckRunsResponse: Decodable {
     let checkRuns: [CheckRun]
 
@@ -4368,18 +4560,6 @@ private struct PullRequestMergeResponse: Decodable {
     let sha: String?
     let merged: Bool
     let message: String
-}
-
-private struct RepositoryMergeSettingsResponse: Decodable {
-    let allowMergeCommit: Bool
-    let allowSquashMerge: Bool
-    let allowRebaseMerge: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case allowMergeCommit = "allow_merge_commit"
-        case allowSquashMerge = "allow_squash_merge"
-        case allowRebaseMerge = "allow_rebase_merge"
-    }
 }
 
 private struct CurrentUser: Decodable {

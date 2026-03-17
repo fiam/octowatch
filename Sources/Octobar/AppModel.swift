@@ -35,6 +35,7 @@ final class AppModel: ObservableObject {
     private let notificationScanStateStoreKey = "notification-scan-state-v1"
     private let teamMembershipStoreKey = "team-membership-cache-v1"
     private let postMergeWatchStoreKey = "post-merge-watches-v1"
+    private let mergeMethodPreferenceStoreKey = "merge-method-preferences-v1"
     private let client = GitHubClient()
     private let notifier = UserNotifier()
     private let pullRequestFocusCacheTTL: TimeInterval = 300
@@ -59,6 +60,7 @@ final class AppModel: ObservableObject {
     private var watchedPullRequestKey: String?
     private var watchedPullRequestState: PullRequestLiveWatchState?
     private var ignoredItemsByKey = [String: IgnoredAttentionSubject]()
+    private var mergeMethodPreferenceByRepository = [String: PullRequestMergeMethod]()
     private var ignoreUndoDismissTask: Task<Void, Never>?
     private var readStateByItemID: [String: Date] = [:]
     private var suppressedTransitionNotificationKeys = Set<String>()
@@ -89,6 +91,10 @@ final class AppModel: ObservableObject {
         postMergeWatchesByKey = Self.loadPostMergeWatches(
             from: UserDefaults.standard,
             key: postMergeWatchStoreKey
+        )
+        mergeMethodPreferenceByRepository = Self.loadMergeMethodPreferences(
+            from: UserDefaults.standard,
+            key: mergeMethodPreferenceStoreKey
         )
         readStateByItemID = Self.loadReadState(
             from: UserDefaults.standard,
@@ -344,6 +350,12 @@ final class AppModel: ObservableObject {
             sourceType: item.type,
             sourceActor: item.actor
         )
+        let preferredMergeMethod = preferredMergeMethod(
+            for: reference,
+            allowedMethods: result.focus.reviewMergeAction?.allowedMergeMethods ?? [],
+            fallback: result.focus.reviewMergeAction?.preferredMergeMethod
+        )
+        let focus = result.focus.applyingPreferredMergeMethod(preferredMergeMethod)
 
         if let sample = result.rateLimit {
             if let current = rateLimit {
@@ -354,12 +366,36 @@ final class AppModel: ObservableObject {
         }
 
         pullRequestFocusCache[cacheKey] = PullRequestFocusCacheEntry(
-            focus: result.focus,
+            focus: focus,
             sourceTimestamp: item.timestamp,
             loadedAt: Date()
         )
 
-        return result.focus
+        return focus
+    }
+
+    func rememberPreferredMergeMethod(
+        _ mergeMethod: PullRequestMergeMethod,
+        for reference: PullRequestReference
+    ) {
+        let repositoryKey = mergeMethodPreferenceKey(for: reference)
+        guard mergeMethodPreferenceByRepository[repositoryKey] != mergeMethod else {
+            return
+        }
+
+        mergeMethodPreferenceByRepository[repositoryKey] = mergeMethod
+        pullRequestFocusCache = pullRequestFocusCache.mapValues { entry in
+            guard mergeMethodPreferenceKey(for: entry.focus.reference) == repositoryKey else {
+                return entry
+            }
+
+            return PullRequestFocusCacheEntry(
+                focus: entry.focus.applyingPreferredMergeMethod(mergeMethod),
+                sourceTimestamp: entry.sourceTimestamp,
+                loadedAt: entry.loadedAt
+            )
+        }
+        persistMergeMethodPreferences()
     }
 
     func approveAndMergePullRequest(
@@ -375,7 +411,7 @@ final class AppModel: ObservableObject {
             token: token,
             reference: reference,
             approveFirst: requiresApproval,
-            preferredMergeMethod: mergeMethod
+            selectedMergeMethod: mergeMethod
         )
 
         if let rateLimitSample = mutationResult.rateLimit {
@@ -384,6 +420,10 @@ final class AppModel: ObservableObject {
             } else {
                 rateLimit = rateLimitSample
             }
+        }
+
+        if let mergedWithMethod = mutationResult.mergeMethod {
+            rememberPreferredMergeMethod(mergedWithMethod, for: reference)
         }
 
         markItemAsRead(item)
@@ -971,6 +1011,11 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func persistMergeMethodPreferences() {
+        let payload = mergeMethodPreferenceByRepository.mapValues(\.rawValue)
+        UserDefaults.standard.set(payload, forKey: mergeMethodPreferenceStoreKey)
+    }
+
     private func syncIgnoredItems() {
         ignoredItems = ignoredItemsByKey.values.sorted { lhs, rhs in
             if lhs.ignoredAt == rhs.ignoredAt {
@@ -1103,6 +1148,23 @@ final class AppModel: ObservableObject {
         return Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
     }
 
+    private static func loadMergeMethodPreferences(
+        from defaults: UserDefaults,
+        key: String
+    ) -> [String: PullRequestMergeMethod] {
+        guard let raw = defaults.dictionary(forKey: key) as? [String: String] else {
+            return [:]
+        }
+
+        return raw.reduce(into: [String: PullRequestMergeMethod]()) { partialResult, entry in
+            guard let mergeMethod = PullRequestMergeMethod(rawValue: entry.value) else {
+                return
+            }
+
+            partialResult[entry.key] = mergeMethod
+        }
+    }
+
     private static func loadLegacyIgnoredItems(
         from defaults: UserDefaults,
         key: String
@@ -1161,6 +1223,31 @@ final class AppModel: ObservableObject {
         case .workflowFailed, .workflowApprovalRequired, .ciActivity:
             return 2
         }
+    }
+
+    private func preferredMergeMethod(
+        for reference: PullRequestReference,
+        allowedMethods: [PullRequestMergeMethod],
+        fallback: PullRequestMergeMethod?
+    ) -> PullRequestMergeMethod? {
+        guard !allowedMethods.isEmpty else {
+            return nil
+        }
+
+        if let storedPreference = mergeMethodPreferenceByRepository[mergeMethodPreferenceKey(for: reference)],
+            allowedMethods.contains(storedPreference) {
+            return storedPreference
+        }
+
+        if let fallback, allowedMethods.contains(fallback) {
+            return fallback
+        }
+
+        return allowedMethods.first
+    }
+
+    private func mergeMethodPreferenceKey(for reference: PullRequestReference) -> String {
+        reference.repository.lowercased()
     }
 
     private static func normalizedPollInterval(_ seconds: Int) -> Int {
