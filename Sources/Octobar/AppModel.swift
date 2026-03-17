@@ -341,7 +341,8 @@ final class AppModel: ObservableObject {
             token: token,
             login: userLogin,
             reference: reference,
-            sourceType: item.type
+            sourceType: item.type,
+            sourceActor: item.actor
         )
 
         if let sample = result.rateLimit {

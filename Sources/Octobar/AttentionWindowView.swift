@@ -771,7 +771,7 @@ private struct AttentionSidebarRow: View {
                 .padding(.top, 6)
                 .frame(width: 10)
 
-            EventBadge(type: item.type)
+            EventBadge(type: item.type, secondaryType: item.secondaryIndicatorType)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.title)
@@ -853,7 +853,11 @@ private struct AttentionDetailView: View {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .top, spacing: 18) {
-                        EventBadge(type: item.type, size: 40)
+                        EventBadge(
+                            type: item.type,
+                            secondaryType: item.secondaryIndicatorType,
+                            size: 40
+                        )
 
                         DetailTitleLinkButton(
                             title: item.title,
@@ -920,7 +924,7 @@ private struct AttentionDetailView: View {
                             AttentionTypePill(type: item.type, titleOverride: headerPillTitleOverride)
 
                             if let actor = item.actor {
-                                Text(item.type == .readyToMerge ? "approved by" : "by")
+                                Text(item.actorRelationshipLabel)
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
 
@@ -1372,15 +1376,6 @@ private struct PullRequestFocusView: View {
                 }
             }
 
-            if let descriptionHTML = focus.descriptionHTML {
-                DetailCard(title: "Description") {
-                    PullRequestDescriptionView(
-                        html: descriptionHTML,
-                        baseURL: focus.reference.pullRequestURL
-                    )
-                }
-            }
-
             if focus.sections.isEmpty {
                 if focus.statusSummary == nil {
                     DetailCard {
@@ -1415,6 +1410,15 @@ private struct PullRequestFocusView: View {
                             }
                         }
                     }
+                }
+            }
+
+            if let descriptionHTML = focus.descriptionHTML {
+                DetailCard(title: "Description") {
+                    PullRequestDescriptionView(
+                        html: descriptionHTML,
+                        baseURL: focus.reference.pullRequestURL
+                    )
                 }
             }
         }
@@ -1906,6 +1910,7 @@ private struct PullRequestPostMergeWorkflowRow: View {
 
 private struct EventBadge: View {
     let type: AttentionItemType
+    let secondaryType: AttentionItemType?
     var size: CGFloat = 24
 
     var body: some View {
@@ -1917,7 +1922,33 @@ private struct EventBadge: View {
                     .font(.system(size: size * 0.48, weight: .semibold))
                     .foregroundStyle(type.badgeForeground)
             }
+            .overlay(alignment: .bottomTrailing) {
+                if let secondaryType {
+                    Circle()
+                        .fill(Color(NSColor.windowBackgroundColor))
+                        .frame(width: size * 0.52, height: size * 0.52)
+                        .overlay {
+                            Circle()
+                                .fill(secondaryType.badgeBackground)
+                            Image(systemName: compactSecondaryIconName(for: secondaryType))
+                                .font(.system(size: size * 0.2, weight: .bold))
+                                .foregroundStyle(secondaryType.badgeForeground)
+                        }
+                        .offset(x: size * 0.12, y: size * 0.12)
+                }
+            }
             .accessibilityLabel(type.accessibilityLabel)
+    }
+
+    private func compactSecondaryIconName(for type: AttentionItemType) -> String {
+        switch type {
+        case .workflowApprovalRequired:
+            return "hand.raised.fill"
+        case .workflowFailed:
+            return "xmark"
+        default:
+            return type.iconName
+        }
     }
 }
 

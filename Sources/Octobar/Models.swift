@@ -677,6 +677,7 @@ struct PostMergeWatch: Identifiable, Hashable, Codable, Sendable {
     let mergeCommitSHA: String?
     let lastObservedWorkflowRunAt: Date?
     let notifiedWorkflowRunIDs: [Int]
+    let notifiedApprovalRequiredWorkflowRunIDs: [Int]?
     let suppressedWorkflowItemIDs: [String]
 
     var id: String { reference.pullRequestURL.absoluteString }
@@ -686,6 +687,7 @@ struct PostMergeWatch: Identifiable, Hashable, Codable, Sendable {
         mergeCommitSHA: String? = nil,
         lastObservedWorkflowRunAt: Date? = nil,
         notifiedWorkflowRunIDs: [Int]? = nil,
+        notifiedApprovalRequiredWorkflowRunIDs: [Int]? = nil,
         suppressedWorkflowItemIDs: [String]? = nil
     ) -> PostMergeWatch {
         PostMergeWatch(
@@ -699,6 +701,8 @@ struct PostMergeWatch: Identifiable, Hashable, Codable, Sendable {
             mergeCommitSHA: mergeCommitSHA ?? self.mergeCommitSHA,
             lastObservedWorkflowRunAt: lastObservedWorkflowRunAt ?? self.lastObservedWorkflowRunAt,
             notifiedWorkflowRunIDs: notifiedWorkflowRunIDs ?? self.notifiedWorkflowRunIDs,
+            notifiedApprovalRequiredWorkflowRunIDs:
+                notifiedApprovalRequiredWorkflowRunIDs ?? self.notifiedApprovalRequiredWorkflowRunIDs,
             suppressedWorkflowItemIDs: suppressedWorkflowItemIDs ?? self.suppressedWorkflowItemIDs
         )
     }
@@ -723,6 +727,7 @@ struct PostMergeWatch: Identifiable, Hashable, Codable, Sendable {
             mergeCommitSHA: nil,
             lastObservedWorkflowRunAt: nil,
             notifiedWorkflowRunIDs: [],
+            notifiedApprovalRequiredWorkflowRunIDs: [],
             suppressedWorkflowItemIDs: []
         )
     }
@@ -748,6 +753,7 @@ struct PostMergeWatch: Identifiable, Hashable, Codable, Sendable {
             mergeCommitSHA: mergeCommitSHA,
             lastObservedWorkflowRunAt: nil,
             notifiedWorkflowRunIDs: [],
+            notifiedApprovalRequiredWorkflowRunIDs: [],
             suppressedWorkflowItemIDs: []
         )
     }
@@ -831,9 +837,25 @@ enum PostMergeWatchPolicy {
             }
 
             var notifiedRunIDs = Set(updatedWatch.notifiedWorkflowRunIDs)
+            var notifiedApprovalRequiredRunIDs = Set(
+                updatedWatch.notifiedApprovalRequiredWorkflowRunIDs ?? []
+            )
             var suppressedItemIDs = Set(updatedWatch.suppressedWorkflowItemIDs)
 
             for run in pushRuns {
+                if
+                    workflowRequiresApproval(run),
+                    !notifiedApprovalRequiredRunIDs.contains(run.id),
+                    let notification = workflowApprovalRequiredNotification(
+                        for: run,
+                        pullRequestTitle: watch.title
+                    )
+                {
+                    notifications.append(notification)
+                    notifiedApprovalRequiredRunIDs.insert(run.id)
+                    suppressedItemIDs.insert(run.attentionItemID)
+                }
+
                 guard
                     (run.status ?? "").caseInsensitiveCompare("completed") == .orderedSame,
                     !notifiedRunIDs.contains(run.id),
@@ -849,6 +871,8 @@ enum PostMergeWatchPolicy {
 
             updatedWatch = updatedWatch.updating(
                 notifiedWorkflowRunIDs: Array(notifiedRunIDs).sorted(),
+                notifiedApprovalRequiredWorkflowRunIDs:
+                    Array(notifiedApprovalRequiredRunIDs).sorted(),
                 suppressedWorkflowItemIDs: Array(suppressedItemIDs).sorted()
             )
 
@@ -914,6 +938,30 @@ enum PostMergeWatchPolicy {
             title: title,
             subtitle: run.title,
             body: body,
+            url: run.url
+        )
+    }
+
+    private static func workflowRequiresApproval(_ run: PostMergeObservedWorkflowRun) -> Bool {
+        let normalizedStatus = (run.status ?? "").lowercased()
+        let normalizedConclusion = (run.conclusion ?? "").lowercased()
+
+        return normalizedStatus == "action_required" || normalizedConclusion == "action_required"
+    }
+
+    private static func workflowApprovalRequiredNotification(
+        for run: PostMergeObservedWorkflowRun,
+        pullRequestTitle: String
+    ) -> AttentionTransitionNotification? {
+        guard workflowRequiresApproval(run) else {
+            return nil
+        }
+
+        return AttentionTransitionNotification(
+            id: "post-merge:workflow-approval:\(run.repository):\(run.id)",
+            title: "Workflow waiting for approval",
+            subtitle: run.title,
+            body: "\(run.title) is waiting for approval for \(pullRequestTitle).",
             url: run.url
         )
     }
@@ -1188,6 +1236,18 @@ struct PullRequestPostMergeWorkflowPreview: Hashable, Sendable {
     let mode: PullRequestPostMergeWorkflowPreviewMode
     let workflows: [PullRequestPostMergeWorkflow]
     let isBestEffort: Bool
+
+    var attentionType: AttentionItemType? {
+        if workflows.contains(where: { $0.status == .failed }) {
+            return .workflowFailed
+        }
+
+        if workflows.contains(where: { $0.status == .actionRequired }) {
+            return .workflowApprovalRequired
+        }
+
+        return nil
+    }
 
     var title: String {
         let singularTitle: String
@@ -1504,25 +1564,46 @@ struct PullRequestCheckSummary: Hashable, Sendable {
 }
 
 extension PullRequestContextBadge {
-    static func badges(
-        for sourceType: AttentionItemType,
-        author: AttentionActor?
-    ) -> [PullRequestContextBadge] {
-        []
+    static func badges(workflowAttentionType: AttentionItemType?) -> [PullRequestContextBadge] {
+        guard let workflowAttentionType else {
+            return []
+        }
+
+        let accent: PullRequestFocusEntryAccent
+        switch workflowAttentionType {
+        case .workflowFailed:
+            accent = .failure
+        case .workflowApprovalRequired:
+            accent = .warning
+        default:
+            accent = .neutral
+        }
+
+        return [
+            PullRequestContextBadge(
+                id: "workflow-attention",
+                title: workflowAttentionType.accessibilityLabel,
+                iconName: workflowAttentionType.iconName,
+                accent: accent
+            )
+        ]
     }
 }
 
 extension PullRequestHeaderFact {
     static func build(
         sourceType: AttentionItemType,
+        resolution: GitHubSubjectResolution,
+        sourceActor: AttentionActor?,
         author: AttentionActor?,
         assigner: AttentionActor?,
         latestApprover: AttentionActor?,
-        approvalCount: Int
+        approvalCount: Int,
+        mergedBy: AttentionActor?
     ) -> [PullRequestHeaderFact] {
         switch sourceType {
         case .readyToMerge:
-            guard let latestApprover else {
+            guard let approver = sourceActor ?? latestApprover else {
                 return []
             }
 
@@ -1530,11 +1611,88 @@ extension PullRequestHeaderFact {
                 PullRequestHeaderFact(
                     id: "approved-by",
                     label: "approved by",
-                    actor: latestApprover,
+                    actor: approver,
                     additionalActorCount: max(0, approvalCount - 1)
                 )
             ]
 
+        case .reviewApproved:
+            guard let approver = sourceActor ?? latestApprover else {
+                return []
+            }
+
+            return [
+                PullRequestHeaderFact(
+                    id: "approved-by",
+                    label: "approved by",
+                    actor: approver,
+                    additionalActorCount: 0
+                )
+            ]
+
+        case .reviewComment:
+            guard let sourceActor else {
+                return []
+            }
+
+            return [
+                PullRequestHeaderFact(
+                    id: "commented-by",
+                    label: "commented by",
+                    actor: sourceActor,
+                    additionalActorCount: 0
+                )
+            ]
+
+        case .reviewChangesRequested:
+            guard let sourceActor else {
+                return []
+            }
+
+            return [
+                PullRequestHeaderFact(
+                    id: "changes-requested-by",
+                    label: "changes requested by",
+                    actor: sourceActor,
+                    additionalActorCount: 0
+                )
+            ]
+
+        default:
+            break
+        }
+
+        if resolution == .merged {
+            var facts = [PullRequestHeaderFact]()
+
+            if sourceType == .authoredPullRequest, let latestApprover {
+                facts.append(
+                    PullRequestHeaderFact(
+                        id: "approved-by",
+                        label: "approved by",
+                        actor: latestApprover,
+                        additionalActorCount: max(0, approvalCount - 1)
+                    )
+                )
+            }
+
+            if let mergedBy {
+                facts.append(
+                    PullRequestHeaderFact(
+                        id: "merged-by",
+                        label: "merged by",
+                        actor: mergedBy,
+                        additionalActorCount: 0
+                    )
+                )
+            }
+
+            if !facts.isEmpty {
+                return facts
+            }
+        }
+
+        switch sourceType {
         case .assignedPullRequest:
             var facts = [PullRequestHeaderFact]()
 
@@ -1853,7 +2011,7 @@ extension AttentionAction {
             actions.append(
                 AttentionAction(
                     id: "open-commits",
-                    title: "View Commits",
+                    title: mode == .participating ? "View New Commits" : "View Commits",
                     iconName: "clock.arrow.trianglehead.counterclockwise.rotate.90",
                     url: reference.commitsURL
                 )
@@ -1870,7 +2028,8 @@ extension PullRequestStatusSummary {
         resolution: GitHubSubjectResolution = .open,
         checkSummary: PullRequestCheckSummary,
         openThreadCount: Int,
-        reviewMergeAction: PullRequestReviewMergeAction?
+        reviewMergeAction: PullRequestReviewMergeAction?,
+        commitsSinceReview: [PullRequestFocusEntry] = []
     ) -> PullRequestStatusSummary? {
         switch resolution {
         case .merged:
@@ -1948,6 +2107,26 @@ extension PullRequestStatusSummary {
             return blockedSummary
         }
 
+        if mode == .participating, !commitsSinceReview.isEmpty {
+            let latestCommit = commitsSinceReview[0]
+            let title = commitsSinceReview.count == 1
+                ? "1 new commit since your review"
+                : "\(commitsSinceReview.count) new commits since your review"
+            let detail: String
+            if checkSummary.totalCount > 0, checkSummary.isClear {
+                detail = "Latest: \(latestCommit.title) · \(checkSummary.detail)"
+            } else {
+                detail = "Latest: \(latestCommit.title)"
+            }
+
+            return PullRequestStatusSummary(
+                title: title,
+                detail: detail,
+                iconName: "arrow.trianglehead.branch",
+                accent: .change
+            )
+        }
+
         if mode == .authored && openThreadCount == 0 {
             return PullRequestStatusSummary(
                 title: "Checks look good",
@@ -1977,6 +2156,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     let ignoreKey: String
     let stream: AttentionStream
     let type: AttentionItemType
+    let secondaryIndicatorType: AttentionItemType?
     let title: String
     let subtitle: String
     let repository: String?
@@ -1992,6 +2172,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         ignoreKey: String,
         stream: AttentionStream? = nil,
         type: AttentionItemType,
+        secondaryIndicatorType: AttentionItemType? = nil,
         title: String,
         subtitle: String,
         repository: String? = nil,
@@ -2006,6 +2187,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         self.ignoreKey = ignoreKey
         self.stream = stream ?? type.defaultStream
         self.type = type
+        self.secondaryIndicatorType = secondaryIndicatorType
         self.title = title
         self.subtitle = subtitle
         self.repository = repository
@@ -2028,6 +2210,23 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         }
 
         return "\(actor.login) \(type.actorVerb)"
+    }
+
+    var actorRelationshipLabel: String {
+        switch type {
+        case .readyToMerge, .reviewApproved:
+            return "approved by"
+        case .reviewComment, .comment:
+            return "commented by"
+        case .reviewChangesRequested:
+            return "changes requested by"
+        default:
+            if detail.contextPillTitle == PullRequestStateTransition.merged.title {
+                return "merged by"
+            }
+
+            return "by"
+        }
     }
 
     var ignoreActionTitle: String {
@@ -2304,6 +2503,7 @@ struct TrackedSubjectSummary: Identifiable, Hashable, Sendable {
     let repository: String
     let url: URL
     let updatedAt: Date
+    let actor: AttentionActor?
     let resolution: GitHubSubjectResolution
 }
 

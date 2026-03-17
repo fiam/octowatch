@@ -73,7 +73,7 @@ struct MenuBarContentView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(model.actionableAttentionItems.prefix(30)) { item in
                             HStack(alignment: .top, spacing: 10) {
-                                eventBadge(for: item.type)
+                                eventBadge(for: item)
 
                                 Button {
                                     model.toggleReadState(for: item)
@@ -151,16 +151,42 @@ struct MenuBarContentView: View {
     }
 
     @ViewBuilder
-    private func eventBadge(for itemType: AttentionItemType) -> some View {
+    private func eventBadge(for item: AttentionItem) -> some View {
         RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(iconBackground(for: itemType))
+            .fill(iconBackground(for: item.type))
             .frame(width: 24, height: 24)
             .overlay {
-                Image(systemName: itemType.iconName)
+                Image(systemName: item.type.iconName)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(iconColor(for: itemType))
+                    .foregroundStyle(iconColor(for: item.type))
             }
-            .accessibilityLabel(itemType.accessibilityLabel)
+            .overlay(alignment: .bottomTrailing) {
+                if let secondaryType = item.secondaryIndicatorType {
+                    Circle()
+                        .fill(Color(NSColor.windowBackgroundColor))
+                        .frame(width: 12, height: 12)
+                        .overlay {
+                            Circle()
+                                .fill(iconBackground(for: secondaryType))
+                            Image(systemName: compactSecondaryIconName(for: secondaryType))
+                                .font(.system(size: 5, weight: .bold))
+                                .foregroundStyle(iconColor(for: secondaryType))
+                        }
+                        .offset(x: 3, y: 3)
+                }
+            }
+            .accessibilityLabel(item.type.accessibilityLabel)
+    }
+
+    private func compactSecondaryIconName(for itemType: AttentionItemType) -> String {
+        switch itemType {
+        case .workflowApprovalRequired:
+            return "hand.raised.fill"
+        case .workflowFailed:
+            return "xmark"
+        default:
+            return itemType.iconName
+        }
     }
 
     private func iconColor(for itemType: AttentionItemType) -> Color {

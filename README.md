@@ -19,6 +19,7 @@ The main window sidebar supports native macOS multi-selection, and a right-click
 Ignoring from the main window shows a small transient undo toast so accidental ignores can be reversed quickly.
 Items can also be ignored locally, and ignored subjects can be restored later from Settings without forcing an immediate GitHub refresh.
 Pull request detail panes surface merge conflicts alongside review threads and check results, read repository workflow files and PR changed paths to predict which push workflows should run after merge, then swap to observed post-merge workflow statuses once GitHub starts them.
+For PRs you already reviewed, new commits since your review are called out near the top of the detail pane and the commit action is labeled accordingly.
 
 ## Requirements
 
@@ -69,4 +70,5 @@ personal access tokens.
 - This scaffold uses polling. GitHub push-style event delivery generally requires a GitHub App/webhook setup, which this project intentionally avoids.
 - Workflow watching covers PRs you authored, approved, or merged, and
   it sends local notifications when queued pull requests actually merge
-  and when post-merge workflows finish with success or failure.
+  and when post-merge workflows start waiting for approval or finish
+  with success or failure.
