@@ -19,6 +19,7 @@ The main window sidebar supports native macOS multi-selection, and a right-click
 Ignoring from the main window shows a small transient undo toast so accidental ignores can be reversed quickly.
 Items can also be ignored locally, and ignored subjects can be restored later from Settings without forcing an immediate GitHub refresh.
 Pull request detail panes surface merge conflicts alongside review threads and check results, follow GitHub's pull-request merge UI to pick the applicable merge method automatically when only one direct-merge option is available, keep the method selector inside the merge button when multiple options are available, remember the last method you chose per repository, read repository workflow files and PR changed paths to predict which push workflows should run after merge, then swap to observed post-merge workflow statuses once GitHub starts them.
+Single-item detail panes and main-window sidebar rows also show GitHub labels for pull requests and issues when Octowatch has them available. In the detail pane, clicking a label opens the matching GitHub search for that repository and subject type.
 When the same account both creates and assigns a pull request, the detail header collapses that metadata into a single "created and assigned by" fact.
 For PRs you already reviewed, new commits since your review are called out near the top of the detail pane and the commit action is labeled accordingly.
 

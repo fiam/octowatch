@@ -64,6 +64,13 @@ struct GitHubClient {
           title
           bodyHTML
           url
+          labels(first: 20) {
+            nodes {
+              name
+              color
+              description
+            }
+          }
           baseRefName
           baseRef {
             refUpdateRule {
@@ -399,6 +406,7 @@ struct GitHubClient {
                 title: pullRequest.title,
                 subtitle: pullRequest.subtitle,
                 repository: pullRequest.repository,
+                labels: pullRequest.labels,
                 timestamp: pullRequest.updatedAt,
                 url: pullRequest.url,
                 detail: detail(for: pullRequest),
@@ -417,6 +425,7 @@ struct GitHubClient {
                 title: pullRequest.title,
                 subtitle: pullRequest.subtitle,
                 repository: pullRequest.repository,
+                labels: pullRequest.labels,
                 timestamp: pullRequest.updatedAt,
                 url: pullRequest.url,
                 actor: pullRequest.actor,
@@ -433,6 +442,7 @@ struct GitHubClient {
                 title: notification.title,
                 subtitle: notification.subtitle,
                 repository: notification.repository,
+                labels: notification.labels,
                 timestamp: notification.updatedAt,
                 url: notification.url,
                 actor: notification.actor,
@@ -474,6 +484,7 @@ struct GitHubClient {
                     title: trackedSubject.title,
                     subtitle: trackedSubject.subtitle,
                     repository: trackedSubject.repository,
+                    labels: trackedSubject.labels,
                     timestamp: trackedSubject.updatedAt,
                     url: trackedSubject.url,
                     detail: detail(for: trackedSubject),
@@ -491,6 +502,7 @@ struct GitHubClient {
                 title: trackedSubject.title,
                 subtitle: trackedSubject.subtitle,
                 repository: trackedSubject.repository,
+                labels: trackedSubject.labels,
                 timestamp: trackedSubject.updatedAt,
                 url: trackedSubject.url,
                 detail: detail(for: trackedSubject)
@@ -1061,6 +1073,7 @@ struct GitHubClient {
             mode: focusMode,
             resolution: resolution,
             author: author,
+            labels: pullRequest.labels.nodes.compactMap { $0?.gitHubLabel },
             headerFacts: headerFacts,
             contextBadges: contextBadges,
             descriptionHTML: renderedPullRequestDescriptionHTML(pullRequest.bodyHTML),
@@ -1935,6 +1948,7 @@ struct GitHubClient {
                         title: issue.title,
                         subtitle: trackedSubjectSubtitle(for: type, repository: repository),
                         repository: repository,
+                        labels: issue.labels.map(\.gitHubLabel),
                         url: issue.htmlURL,
                         updatedAt: issue.updatedAt,
                         actor: nil,
@@ -1992,6 +2006,7 @@ struct GitHubClient {
                                     currentLogin: login
                                 ),
                                 repository: summary.repository,
+                                labels: summary.labels,
                                 url: summary.url,
                                 updatedAt: state.mergedAt ?? summary.updatedAt,
                                 actor: mergedBy,
@@ -2060,6 +2075,7 @@ struct GitHubClient {
                 title: issue.title,
                 subtitle: "#\(issue.number) · \(repository)",
                 repository: repository,
+                labels: issue.labels.map(\.gitHubLabel),
                 url: issue.htmlURL,
                 updatedAt: issue.updatedAt,
                 resolution: resolution
@@ -2194,6 +2210,7 @@ struct GitHubClient {
             title: issue.title,
             subtitle: subtitle,
             repository: repository,
+            labels: issue.labels.map(\.gitHubLabel),
             url: details.htmlURL,
             updatedAt: issue.updatedAt,
             actor: approvalSummary.latestApprover,
@@ -2337,6 +2354,7 @@ struct GitHubClient {
             reviewState: nil
         )
         var ignoreKey: String?
+        var labels = [GitHubLabel]()
 
         if let reference = discussionReference(from: thread.subject.url) {
             ignoreKey = canonicalIgnoreURL(for: reference)?.absoluteString
@@ -2347,6 +2365,7 @@ struct GitHubClient {
                     reference: reference,
                     observer: observer
                 )
+                labels = state.labels.map(\.gitHubLabel)
                 guard PullRequestAttentionPolicy.shouldIncludeActivity(
                     state: state.state,
                     merged: state.merged,
@@ -2364,6 +2383,13 @@ struct GitHubClient {
                         observer: observer
                     )
                 }
+            } else {
+                let state = try await fetchIssueState(
+                    token: token,
+                    reference: reference,
+                    observer: observer
+                )
+                labels = state.labels.map(\.gitHubLabel)
             }
 
             if let fetchedTimelineContext = try await fetchTimelineContext(
@@ -2415,6 +2441,7 @@ struct GitHubClient {
                 stateTransition: timelineContext?.stateTransition
             ),
             repository: repository,
+            labels: labels,
             url: url,
             updatedAt: thread.updatedAt,
             unread: thread.unread,
@@ -2462,6 +2489,7 @@ struct GitHubClient {
                 stateTransition: nil
             ),
             repository: repository,
+            labels: [],
             url: url,
             updatedAt: thread.updatedAt,
             unread: thread.unread,
@@ -3015,6 +3043,18 @@ struct GitHubClient {
     ) async throws -> PullRequestStateResponse {
         try await request(
             path: "/repos/\(reference.owner)/\(reference.name)/pulls/\(reference.number)",
+            token: token,
+            observer: observer
+        )
+    }
+
+    private func fetchIssueState(
+        token: String,
+        reference: DiscussionReference,
+        observer: GitHubRateLimitObserver
+    ) async throws -> IssueStateResponse {
+        try await request(
+            path: "/repos/\(reference.owner)/\(reference.name)/issues/\(reference.number)",
             token: token,
             observer: observer
         )
@@ -4286,6 +4326,7 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
     let title: String
     let bodyHTML: String
     let url: URL
+    let labels: PullRequestFocusGraphQLConnection<PullRequestFocusGraphQLLabel>
     let baseRefName: String
     let baseRef: PullRequestGraphQLRef?
     let state: String
@@ -4310,6 +4351,7 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
         case title
         case bodyHTML
         case url
+        case labels
         case baseRefName
         case baseRef
         case state
@@ -4365,6 +4407,20 @@ private struct PullRequestFocusGraphQLReviewRequestConnection: Decodable {
 
 private struct PullRequestFocusGraphQLConnection<Node: Decodable>: Decodable {
     let nodes: [Node?]
+}
+
+private struct PullRequestFocusGraphQLLabel: Decodable {
+    let name: String
+    let color: String
+    let description: String?
+
+    var gitHubLabel: GitHubLabel {
+        GitHubLabel(
+            name: name,
+            colorHex: color,
+            description: description
+        )
+    }
 }
 
 private struct PullRequestGraphQLRef: Decodable {
@@ -4620,10 +4676,25 @@ private struct TimelineContext: Hashable, Sendable {
     let detailEvidence: [AttentionEvidence]
 }
 
+private struct GitHubRESTLabel: Decodable {
+    let name: String
+    let color: String
+    let description: String?
+
+    var gitHubLabel: GitHubLabel {
+        GitHubLabel(
+            name: name,
+            colorHex: color,
+            description: description
+        )
+    }
+}
+
 private struct IssueItem: Decodable {
     let id: Int
     let number: Int
     let title: String
+    let labels: [GitHubRESTLabel]
     let htmlURL: URL
     let repositoryURL: URL
     let updatedAt: Date
@@ -4632,6 +4703,7 @@ private struct IssueItem: Decodable {
         case id
         case number
         case title
+        case labels
         case htmlURL = "html_url"
         case repositoryURL = "repository_url"
         case updatedAt = "updated_at"
@@ -4680,6 +4752,7 @@ private struct PullRequestStateResponse: Decodable {
     let mergedBy: GitHubUser?
     let mergeCommitSHA: String?
     let assignees: [GitHubUser]?
+    let labels: [GitHubRESTLabel]
 
     enum CodingKeys: String, CodingKey {
         case state
@@ -4689,16 +4762,19 @@ private struct PullRequestStateResponse: Decodable {
         case mergedBy = "merged_by"
         case mergeCommitSHA = "merge_commit_sha"
         case assignees
+        case labels
     }
 }
 
 private struct IssueStateResponse: Decodable {
     let state: String
     let closedAt: Date?
+    let labels: [GitHubRESTLabel]
 
     enum CodingKeys: String, CodingKey {
         case state
         case closedAt = "closed_at"
+        case labels
     }
 }
 

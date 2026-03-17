@@ -462,6 +462,16 @@ struct AttentionWhy: Hashable, Sendable {
     let detail: String?
 }
 
+struct GitHubLabel: Identifiable, Hashable, Sendable {
+    let name: String
+    let colorHex: String
+    let description: String?
+
+    var id: String {
+        "\(name.lowercased())#\(colorHex.lowercased())"
+    }
+}
+
 struct AttentionEvidence: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
@@ -575,6 +585,40 @@ struct GitHubSubjectReference: Hashable, Sendable {
             return URL(string: "https://github.com/\(repository)/pull/\(number)")!
         case .issue:
             return URL(string: "https://github.com/\(repository)/issues/\(number)")!
+        }
+    }
+
+    func labelSearchURL(for label: GitHubLabel) -> URL {
+        var components = URLComponents(
+            string: "https://github.com/\(repository)/\(kind.searchPathComponent)"
+        )!
+        let escapedLabel = label.name.replacingOccurrences(of: "\"", with: "\\\"")
+        components.queryItems = [
+            URLQueryItem(
+                name: "q",
+                value: "\(kind.searchQualifier) label:\"\(escapedLabel)\""
+            )
+        ]
+        return components.url!
+    }
+}
+
+private extension GitHubSubjectKind {
+    var searchPathComponent: String {
+        switch self {
+        case .pullRequest:
+            return "pulls"
+        case .issue:
+            return "issues"
+        }
+    }
+
+    var searchQualifier: String {
+        switch self {
+        case .pullRequest:
+            return "is:pr"
+        case .issue:
+            return "is:issue"
         }
     }
 }
@@ -1130,6 +1174,7 @@ struct PullRequestFocus: Hashable, Sendable {
     let mode: PullRequestFocusMode
     let resolution: GitHubSubjectResolution
     let author: AttentionActor?
+    let labels: [GitHubLabel]
     let headerFacts: [PullRequestHeaderFact]
     let contextBadges: [PullRequestContextBadge]
     let descriptionHTML: String?
@@ -1609,6 +1654,7 @@ extension PullRequestFocus {
             mode: mode,
             resolution: resolution,
             author: author,
+            labels: labels,
             headerFacts: headerFacts,
             contextBadges: contextBadges,
             descriptionHTML: descriptionHTML,
@@ -2324,6 +2370,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     let title: String
     let subtitle: String
     let repository: String?
+    let labels: [GitHubLabel]
     let timestamp: Date
     let url: URL
     let actor: AttentionActor?
@@ -2340,6 +2387,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         title: String,
         subtitle: String,
         repository: String? = nil,
+        labels: [GitHubLabel] = [],
         timestamp: Date,
         url: URL,
         actor: AttentionActor? = nil,
@@ -2355,6 +2403,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         self.title = title
         self.subtitle = subtitle
         self.repository = repository
+        self.labels = labels
         self.timestamp = timestamp
         self.url = url
         self.actor = actor
@@ -2421,6 +2470,10 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     var subjectReference: GitHubSubjectReference? {
         Self.subjectReference(from: ignoreKey) ??
             Self.subjectReference(from: url.absoluteString)
+    }
+
+    func labelSearchURL(for label: GitHubLabel) -> URL? {
+        subjectReference?.labelSearchURL(for: label)
     }
 
     var isClosureNotificationEligible: Bool {
@@ -2652,6 +2705,7 @@ struct PullRequestSummary: Identifiable, Hashable, Sendable {
     let title: String
     let subtitle: String
     let repository: String
+    let labels: [GitHubLabel]
     let url: URL
     let updatedAt: Date
     let resolution: GitHubSubjectResolution
@@ -2665,6 +2719,7 @@ struct TrackedSubjectSummary: Identifiable, Hashable, Sendable {
     let title: String
     let subtitle: String
     let repository: String
+    let labels: [GitHubLabel]
     let url: URL
     let updatedAt: Date
     let actor: AttentionActor?
@@ -2678,6 +2733,7 @@ struct ReadyToMergeSummary: Identifiable, Hashable, Sendable {
     let title: String
     let subtitle: String
     let repository: String
+    let labels: [GitHubLabel]
     let url: URL
     let updatedAt: Date
     let actor: AttentionActor?
@@ -2691,6 +2747,7 @@ struct NotificationSummary: Identifiable, Hashable, Sendable {
     let title: String
     let subtitle: String
     let repository: String
+    let labels: [GitHubLabel]
     let url: URL
     let updatedAt: Date
     let unread: Bool

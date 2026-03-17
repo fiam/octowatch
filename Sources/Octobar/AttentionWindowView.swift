@@ -769,6 +769,35 @@ private struct AttentionSidebarRow: View {
     let item: AttentionItem
     let relativeTimestamp: String
 
+    private let maximumDisplayedLabels = 2
+
+    private var displayedLabels: [GitHubLabel] {
+        Array(item.labels.prefix(maximumDisplayedLabels))
+    }
+
+    private var hiddenLabelCount: Int {
+        max(0, item.labels.count - displayedLabels.count)
+    }
+
+    private var sidebarContextSubtitle: String? {
+        let trimmedSubtitle = item.subtitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSubtitle.isEmpty else {
+            return nil
+        }
+
+        guard let repository = item.repository else {
+            return trimmedSubtitle
+        }
+
+        let segments = trimmedSubtitle
+            .components(separatedBy: " · ")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != repository }
+        let collapsed = segments.joined(separator: " · ")
+
+        return collapsed.isEmpty ? nil : collapsed
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Circle()
@@ -787,10 +816,36 @@ private struct AttentionSidebarRow: View {
                     .accessibilityIdentifier("sidebar-item-title-\(item.id)")
                     .accessibilityValue(item.isUnread ? "unread" : "read")
 
-                Text(item.subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                if let sidebarContextSubtitle {
+                    Text(sidebarContextSubtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                if item.repository != nil || !displayedLabels.isEmpty || hiddenLabelCount > 0 {
+                    MetadataWrapLayout(horizontalSpacing: 4, verticalSpacing: 4) {
+                        if let repository = item.repository {
+                            Text(repository)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        ForEach(displayedLabels) { label in
+                            GitHubLabelChip(
+                                label: label,
+                                actionURL: nil,
+                                onOpenURL: { _ in },
+                                compact: true
+                            )
+                        }
+
+                        if hiddenLabelCount > 0 {
+                            SidebarOverflowChip(count: hiddenLabelCount)
+                        }
+                    }
+                }
 
                 HStack(spacing: 8) {
                     if let actor = item.actor {
@@ -856,6 +911,14 @@ private struct AttentionDetailView: View {
         }
     }
 
+    private var displayedLabels: [GitHubLabel] {
+        if let focus = loadedPullRequestFocus, !focus.labels.isEmpty {
+            return focus.labels
+        }
+
+        return item.labels
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
@@ -875,28 +938,23 @@ private struct AttentionDetailView: View {
                         )
                     }
 
-                    if let repository = item.repository {
-                        if let repositoryURL = item.repositoryURL {
-                            Button {
-                                onOpenURL(repositoryURL)
-                            } label: {
-                                HStack(alignment: .center, spacing: 6) {
-                                    Text(repository)
-                                        .font(.subheadline)
-
-                                    Image(systemName: "arrow.up.right")
-                                        .font(.caption.weight(.semibold))
-                                }
-                                .foregroundStyle(.secondary)
-                                .contentShape(Rectangle())
+                    if item.repository != nil || !displayedLabels.isEmpty {
+                        MetadataWrapLayout(horizontalSpacing: 8, verticalSpacing: 8) {
+                            if let repository = item.repository {
+                                RepositoryMetadataView(
+                                    repository: repository,
+                                    repositoryURL: item.repositoryURL,
+                                    onOpenURL: onOpenURL
+                                )
                             }
-                            .buttonStyle(.plain)
-                            .appLinkHover()
-                            .help("Open repository on GitHub")
-                        } else {
-                            Text(repository)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+
+                            ForEach(displayedLabels) { label in
+                                GitHubLabelChip(
+                                    label: label,
+                                    actionURL: item.labelSearchURL(for: label),
+                                    onOpenURL: onOpenURL
+                                )
+                            }
                         }
                     }
 
@@ -2079,6 +2137,334 @@ private struct AttentionTypePill: View {
                     .fill(type.badgeBackground)
             )
             .foregroundStyle(type.badgeForeground)
+    }
+}
+
+private struct RepositoryMetadataView: View {
+    let repository: String
+    let repositoryURL: URL?
+    let onOpenURL: (URL) -> Void
+
+    var body: some View {
+        Group {
+            if let repositoryURL {
+                Button {
+                    onOpenURL(repositoryURL)
+                } label: {
+                    HStack(alignment: .center, spacing: 6) {
+                        Text(repository)
+                            .font(.subheadline)
+                            .lineLimit(1)
+
+                        Image(systemName: "arrow.up.right")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .appLinkHover()
+                .help("Open repository on GitHub")
+            } else {
+                Text(repository)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+}
+
+private struct GitHubLabelChip: View {
+    let label: GitHubLabel
+    let actionURL: URL?
+    let onOpenURL: (URL) -> Void
+    let compact: Bool
+
+    init(
+        label: GitHubLabel,
+        actionURL: URL? = nil,
+        onOpenURL: @escaping (URL) -> Void = { _ in },
+        compact: Bool = false
+    ) {
+        self.label = label
+        self.actionURL = actionURL
+        self.onOpenURL = onOpenURL
+        self.compact = compact
+    }
+
+    private var palette: GitHubLabelPalette {
+        GitHubLabelPalette(colorHex: label.colorHex)
+    }
+
+    var body: some View {
+        Group {
+            if let actionURL {
+                Button {
+                    onOpenURL(actionURL)
+                } label: {
+                    chipBody
+                }
+                .buttonStyle(.plain)
+                .appLinkHover()
+                .help(helpText)
+            } else {
+                chipBody
+                    .help(helpText)
+            }
+        }
+    }
+
+    private var chipBody: some View {
+        Text(label.name)
+            .font(compact ? .caption2.weight(.medium) : .caption.weight(.semibold))
+            .lineLimit(1)
+            .padding(.horizontal, compact ? 6 : 10)
+            .padding(.vertical, compact ? 2 : 6)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(palette.fill)
+            )
+            .foregroundStyle(palette.text)
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(palette.stroke, lineWidth: 1)
+            )
+    }
+
+    private var helpText: String {
+        if actionURL != nil {
+            return label.description.map {
+                "\($0)\nSearch this label on GitHub"
+            } ?? "Search this label on GitHub"
+        }
+
+        return label.description ?? label.name
+    }
+}
+
+private struct MetadataWrapLayout: Layout {
+    let horizontalSpacing: CGFloat
+    let verticalSpacing: CGFloat
+
+    init(horizontalSpacing: CGFloat = 8, verticalSpacing: CGFloat = 8) {
+        self.horizontalSpacing = horizontalSpacing
+        self.verticalSpacing = verticalSpacing
+    }
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        let arrangement = arrange(subviews: subviews, in: proposal.width)
+        return arrangement.size
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        let arrangement = arrange(subviews: subviews, in: bounds.width)
+
+        for item in arrangement.items {
+            let point = CGPoint(
+                x: bounds.minX + item.frame.minX,
+                y: bounds.minY + item.frame.minY
+            )
+            subviews[item.index].place(
+                at: point,
+                proposal: ProposedViewSize(item.frame.size)
+            )
+        }
+    }
+
+    private func arrange(subviews: Subviews, in maxWidth: CGFloat?) -> MetadataWrapArrangement {
+        let availableWidth = maxWidth ?? .greatestFiniteMagnitude
+        var lines = [MetadataWrapLine]()
+        var currentLineItems = [MetadataWrapLineItem]()
+        var currentLineWidth: CGFloat = 0
+        var currentLineHeight: CGFloat = 0
+        var cursorX: CGFloat = 0
+        var contentWidth: CGFloat = 0
+
+        for (index, subview) in subviews.enumerated() {
+            let size = subview.sizeThatFits(.unspecified)
+            let requiresNewLine = cursorX > 0 &&
+                cursorX + size.width > availableWidth
+
+            if requiresNewLine {
+                lines.append(
+                    MetadataWrapLine(
+                        items: currentLineItems,
+                        width: currentLineWidth,
+                        height: currentLineHeight
+                    )
+                )
+                currentLineItems = []
+                currentLineWidth = 0
+                currentLineHeight = 0
+                cursorX = 0
+            }
+
+            currentLineItems.append(
+                MetadataWrapLineItem(
+                    index: index,
+                    size: size,
+                    minX: cursorX
+                )
+            )
+            currentLineWidth = max(currentLineWidth, cursorX + size.width)
+            currentLineHeight = max(currentLineHeight, size.height)
+            cursorX += size.width + horizontalSpacing
+        }
+
+        if !currentLineItems.isEmpty {
+            lines.append(
+                MetadataWrapLine(
+                    items: currentLineItems,
+                    width: currentLineWidth,
+                    height: currentLineHeight
+                )
+            )
+        }
+
+        var items = [MetadataWrapItem]()
+        var cursorY: CGFloat = 0
+
+        for line in lines {
+            contentWidth = max(contentWidth, line.width)
+
+            for item in line.items {
+                let frame = CGRect(
+                    x: item.minX,
+                    y: cursorY + (line.height - item.size.height) / 2,
+                    width: item.size.width,
+                    height: item.size.height
+                )
+                items.append(MetadataWrapItem(index: item.index, frame: frame))
+            }
+
+            cursorY += line.height + verticalSpacing
+        }
+
+        let contentHeight = lines.isEmpty ? 0 : cursorY - verticalSpacing
+        return MetadataWrapArrangement(
+            items: items,
+            size: CGSize(width: contentWidth, height: contentHeight)
+        )
+    }
+}
+
+private struct MetadataWrapArrangement {
+    let items: [MetadataWrapItem]
+    let size: CGSize
+}
+
+private struct MetadataWrapItem {
+    let index: Int
+    let frame: CGRect
+}
+
+private struct MetadataWrapLine {
+    let items: [MetadataWrapLineItem]
+    let width: CGFloat
+    let height: CGFloat
+}
+
+private struct MetadataWrapLineItem {
+    let index: Int
+    let size: CGSize
+    let minX: CGFloat
+}
+
+private struct SidebarOverflowChip: View {
+    let count: Int
+
+    var body: some View {
+        Text("+\(count)")
+            .font(.caption2.weight(.medium))
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.secondary.opacity(0.12))
+            )
+            .foregroundStyle(.secondary)
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+            )
+            .help("\(count) more labels")
+    }
+}
+
+private struct GitHubLabelPalette {
+    let fill: Color
+    let stroke: Color
+    let text: Color
+
+    init(colorHex: String) {
+        guard let components = GitHubLabelColorComponents(hex: colorHex) else {
+            fill = Color.secondary.opacity(0.12)
+            stroke = Color.secondary.opacity(0.2)
+            text = .primary
+            return
+        }
+
+        let base = components.color
+        if components.luminance > 0.72 {
+            fill = base.opacity(0.3)
+            stroke = base.opacity(0.68)
+            text = Color.primary.opacity(0.9)
+        } else {
+            fill = base.opacity(0.18)
+            stroke = base.opacity(0.3)
+            text = base
+        }
+    }
+}
+
+private struct GitHubLabelColorComponents {
+    let red: Double
+    let green: Double
+    let blue: Double
+
+    init?(hex: String) {
+        let normalized = hex
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "#", with: "")
+
+        guard normalized.count == 6, let value = Int(normalized, radix: 16) else {
+            return nil
+        }
+
+        red = Double((value >> 16) & 0xFF) / 255
+        green = Double((value >> 8) & 0xFF) / 255
+        blue = Double(value & 0xFF) / 255
+    }
+
+    var color: Color {
+        Color(red: red, green: green, blue: blue)
+    }
+
+    var luminance: Double {
+        let red = linearized(red)
+        let green = linearized(green)
+        let blue = linearized(blue)
+
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+    }
+
+    private func linearized(_ component: Double) -> Double {
+        if component <= 0.03928 {
+            return component / 12.92
+        }
+
+        return pow((component + 0.055) / 1.055, 2.4)
     }
 }
 
