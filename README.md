@@ -18,7 +18,7 @@ Items also have dot-style read/unread indicators, and opening an item marks it a
 The main window sidebar supports native macOS multi-selection, and a right-click menu can open, mark read, mark unread, or ignore the current selection.
 Ignoring from the main window shows a small transient undo toast so accidental ignores can be reversed quickly.
 Items can also be ignored locally, and ignored subjects can be restored later from Settings without forcing an immediate GitHub refresh.
-Pull request detail panes read repository workflow files and PR changed paths to predict which push workflows should run after merge, then swap to observed post-merge workflow statuses once GitHub starts them.
+Pull request detail panes surface merge conflicts alongside review threads and check results, read repository workflow files and PR changed paths to predict which push workflows should run after merge, then swap to observed post-merge workflow statuses once GitHub starts them.
 
 ## Requirements
 

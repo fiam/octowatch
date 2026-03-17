@@ -1332,12 +1332,18 @@ struct PullRequestContextBadge: Identifiable, Hashable, Sendable {
 }
 
 struct PullRequestReviewMergeAction: Hashable, Sendable {
+    static let mergeConflictsReason = "This pull request has merge conflicts with the base branch."
+
     let title: String
     let requiresApproval: Bool
     let isEnabled: Bool
     let disabledReason: String?
     let mergeMethod: PullRequestMergeMethod?
     let outcome: PullRequestMutationOutcome?
+
+    var prioritizesBlockedStatusSummary: Bool {
+        disabledReason == Self.mergeConflictsReason
+    }
 
     var blockedStatusSummary: PullRequestStatusSummary? {
         guard let disabledReason, !isEnabled else {
@@ -1351,6 +1357,13 @@ struct PullRequestReviewMergeAction: Hashable, Sendable {
                 detail: disabledReason,
                 iconName: "pencil.circle.fill",
                 accent: .warning
+            )
+        case Self.mergeConflictsReason:
+            return PullRequestStatusSummary(
+                title: "Merge conflicts",
+                detail: disabledReason,
+                iconName: "arrow.triangle.branch",
+                accent: .failure
             )
         case "GitHub does not consider this pull request mergeable yet.":
             return PullRequestStatusSummary(
@@ -1684,6 +1697,17 @@ extension PullRequestReviewMergeAction {
             )
         }
 
+        if mergeable?.caseInsensitiveCompare("CONFLICTING") == .orderedSame {
+            return PullRequestReviewMergeAction(
+                title: title,
+                requiresApproval: requiresApproval,
+                isEnabled: false,
+                disabledReason: Self.mergeConflictsReason,
+                mergeMethod: mergeMethod,
+                outcome: nil
+            )
+        }
+
         if mergeable?.caseInsensitiveCompare("MERGEABLE") != .orderedSame {
             return PullRequestReviewMergeAction(
                 title: title,
@@ -1884,6 +1908,11 @@ extension PullRequestStatusSummary {
                     accent: .warning
                 )
             }
+        }
+
+        if reviewMergeAction?.prioritizesBlockedStatusSummary == true,
+            let blockedSummary = reviewMergeAction?.blockedStatusSummary {
+            return blockedSummary
         }
 
         if checkSummary.hasFailures {
