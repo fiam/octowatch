@@ -15,6 +15,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var isRefreshing = false
     @Published private(set) var rateLimit: GitHubRateLimit?
+    @Published private(set) var rateLimitBuckets: [GitHubRateLimit] = []
 
     @Published var tokenInput = ""
     @Published private(set) var isResolvingInitialContent = true
@@ -26,12 +27,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var pollIntervalSeconds = 60
     @Published private(set) var autoMarkReadSetting: AutoMarkReadSetting = .threeSeconds
     @Published private(set) var pullRequestWatchRevision = 0
+    @Published private(set) var showsDebugRateLimitDetails = false
 
     private let readStateStoreKey = "attention-item-read-state-v1"
     private let ignoredSubjectStoreKey = "ignored-attention-subjects-v2"
     private let legacyIgnoredSubjectStoreKey = "ignored-attention-subjects-v1"
     private let pollIntervalStoreKey = "poll-interval-seconds-v1"
     private let autoMarkReadStoreKey = "auto-mark-read-setting-v1"
+    private let debugRateLimitDetailsStoreKey = "debug-rate-limit-details-v1"
     private let notificationScanStateStoreKey = "notification-scan-state-v1"
     private let teamMembershipStoreKey = "team-membership-cache-v1"
     private let postMergeWatchStoreKey = "post-merge-watches-v1"
@@ -79,6 +82,10 @@ final class AppModel: ObservableObject {
         autoMarkReadSetting = Self.loadAutoMarkReadSetting(
             from: UserDefaults.standard,
             key: autoMarkReadStoreKey
+        )
+        showsDebugRateLimitDetails = Self.loadBooleanSetting(
+            from: UserDefaults.standard,
+            key: debugRateLimitDetailsStoreKey
         )
         notificationScanState = Self.loadNotificationScanState(
             from: UserDefaults.standard,
@@ -182,41 +189,55 @@ final class AppModel: ObservableObject {
     }
 
     var isRateLimitWarning: Bool {
-        rateLimit?.isLow == true || rateLimit?.isExhausted == true
+        rateLimitBuckets.contains { $0.isLow || $0.isExhausted }
     }
 
-    func rateLimitSummary(relativeTo referenceDate: Date) -> String? {
-        guard let rateLimit else {
-            return nil
+    func setShowsDebugRateLimitDetails(_ value: Bool) {
+        guard showsDebugRateLimitDetails != value else {
+            return
         }
 
-        var segments = ["API \(rateLimit.remaining)/\(rateLimit.limit) left"]
+        showsDebugRateLimitDetails = value
+        UserDefaults.standard.set(value, forKey: debugRateLimitDetailsStoreKey)
+    }
+
+    func rateLimitBucketSummary(
+        for rateLimit: GitHubRateLimit,
+        relativeTo referenceDate: Date
+    ) -> String {
+        var segments = ["\(rateLimit.resourceDisplayName) \(rateLimit.remaining)/\(rateLimit.limit)"]
 
         if let resetAt = rateLimit.resetAt {
-            let resetDescription: String
             let resetDelta = resetAt.timeIntervalSince(referenceDate)
             if abs(resetDelta) < 1 {
-                resetDescription = "resets now"
+                segments.append("resets now")
             } else if resetDelta > 1 {
-                resetDescription = "resets \(relativeDateFormatter.localizedString(for: resetAt, relativeTo: referenceDate))"
-            } else {
-                resetDescription = ""
-            }
-            if !resetDescription.isEmpty {
-                segments.append(resetDescription)
+                segments.append(
+                    "resets \(relativeDateFormatter.localizedString(for: resetAt, relativeTo: referenceDate))"
+                )
             }
         }
 
         if let pollIntervalHint = rateLimit.pollIntervalHintSeconds,
             pollIntervalHint > pollIntervalSeconds {
-            segments.append("GitHub suggests \(pollIntervalHint)s polls")
+            segments.append("hint \(pollIntervalHint)s")
         }
+
+        return segments.joined(separator: " · ")
+    }
+
+    func rateLimitDebugHeader(relativeTo referenceDate: Date) -> String? {
+        guard let rateLimit else {
+            return nil
+        }
+
+        var segments = ["Most restrictive: \(rateLimit.resourceDisplayName)"]
 
         let effectiveInterval = rateLimit.minimumAutomaticRefreshInterval(
             userConfiguredSeconds: pollIntervalSeconds,
             now: referenceDate
         )
-        if effectiveInterval > pollIntervalSeconds {
+        if effectiveInterval != pollIntervalSeconds {
             segments.append("polling every \(formatInterval(effectiveInterval))")
         }
 
@@ -243,7 +264,7 @@ final class AppModel: ObservableObject {
         userLogin = nil
         lastUpdated = nil
         lastError = nil
-        rateLimit = nil
+        clearRateLimitState()
         knownItemIDs.removeAll()
         notificationScanState = .default
         teamMembershipCache = .default
@@ -357,13 +378,7 @@ final class AppModel: ObservableObject {
         )
         let focus = result.focus.applyingPreferredMergeMethod(preferredMergeMethod)
 
-        if let sample = result.rateLimit {
-            if let current = rateLimit {
-                rateLimit = current.merged(with: sample)
-            } else {
-                rateLimit = sample
-            }
-        }
+        mergeRateLimitState(with: result.rateLimits)
 
         pullRequestFocusCache[cacheKey] = PullRequestFocusCacheEntry(
             focus: focus,
@@ -414,13 +429,7 @@ final class AppModel: ObservableObject {
             selectedMergeMethod: mergeMethod
         )
 
-        if let rateLimitSample = mutationResult.rateLimit {
-            if let current = rateLimit {
-                rateLimit = current.merged(with: rateLimitSample)
-            } else {
-                rateLimit = rateLimitSample
-            }
-        }
+        mergeRateLimitState(with: mutationResult.rateLimits)
 
         if let mergedWithMethod = mutationResult.mergeMethod {
             rememberPreferredMergeMethod(mergedWithMethod, for: reference)
@@ -569,13 +578,7 @@ final class AppModel: ObservableObject {
                 previous: watchedPullRequestState
             )
 
-            if let sample = result.rateLimit {
-                if let current = rateLimit {
-                    rateLimit = current.merged(with: sample)
-                } else {
-                    rateLimit = sample
-                }
-            }
+            mergeRateLimitState(with: result.rateLimits)
 
             watchedPullRequestState = result.update.state
 
@@ -620,7 +623,7 @@ final class AppModel: ObservableObject {
                 teamMembershipCache: teamMembershipCache
             )
             userLogin = snapshot.login
-            rateLimit = snapshot.rateLimit
+            replaceRateLimitState(with: snapshot.rateLimits)
             notificationScanState = snapshot.notificationScanState.normalized
             teamMembershipCache = snapshot.teamMembershipCache.normalized
             persistNotificationScanState()
@@ -635,7 +638,7 @@ final class AppModel: ObservableObject {
         } catch {
             if let clientError = error as? GitHubClientError,
                 case let .rateLimited(rateLimit) = clientError {
-                self.rateLimit = rateLimit
+                mergeRateLimitState(with: rateLimit)
             }
             lastError = error.localizedDescription
         }
@@ -695,7 +698,7 @@ final class AppModel: ObservableObject {
             tokenInput = source == .githubCLI ? "" : candidate
             knownItemIDs.removeAll()
             lastError = nil
-            rateLimit = nil
+            clearRateLimitState()
             pullRequestFocusCache = [:]
             suppressedTransitionNotificationKeys = []
 
@@ -898,13 +901,7 @@ final class AppModel: ObservableObject {
                     watch: watch
                 )
 
-                if let rateLimitSample = result.rateLimit {
-                    if let current = rateLimit {
-                        rateLimit = current.merged(with: rateLimitSample)
-                    } else {
-                        rateLimit = rateLimitSample
-                    }
-                }
+                mergeRateLimitState(with: result.rateLimits)
 
                 let update = PostMergeWatchPolicy.apply(
                     watch: watch,
@@ -1303,6 +1300,41 @@ final class AppModel: ObservableObject {
         return cache.normalized
     }
 
+    private static func loadBooleanSetting(
+        from defaults: UserDefaults,
+        key: String
+    ) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? false
+    }
+
+    private func clearRateLimitState() {
+        rateLimitBuckets = []
+        rateLimit = nil
+    }
+
+    private func replaceRateLimitState(with snapshot: GitHubRateLimitSnapshot?) {
+        rateLimitBuckets = snapshot?.buckets ?? []
+        rateLimit = snapshot?.mostRestrictive
+    }
+
+    private func mergeRateLimitState(with snapshot: GitHubRateLimitSnapshot?) {
+        guard let snapshot else {
+            return
+        }
+
+        rateLimitBuckets = GitHubRateLimit.mergingCollections(rateLimitBuckets, with: snapshot.buckets)
+        rateLimit = GitHubRateLimit.mostRestrictive(in: rateLimitBuckets)
+    }
+
+    private func mergeRateLimitState(with rateLimit: GitHubRateLimit?) {
+        guard let rateLimit else {
+            return
+        }
+
+        rateLimitBuckets = GitHubRateLimit.mergingCollections(rateLimitBuckets, with: [rateLimit])
+        self.rateLimit = GitHubRateLimit.mostRestrictive(in: rateLimitBuckets)
+    }
+
     private func effectiveAutomaticPollInterval(relativeTo referenceDate: Date) -> Int {
         rateLimit?.minimumAutomaticRefreshInterval(
             userConfiguredSeconds: pollIntervalSeconds,
@@ -1340,12 +1372,13 @@ final class AppModel: ObservableObject {
         gitHubCLIAvailable = false
         usingGitHubCLIToken = false
         isValidatingToken = false
-        rateLimit = nil
+        clearRateLimitState()
         knownItemIDs = Set(fixture.attentionItems.map(\.id))
         ignoredItemsByKey = [:]
         ignoredItems = []
         readStateByItemID = [:]
         autoMarkReadSetting = fixture.autoMarkReadSetting
+        showsDebugRateLimitDetails = false
         notificationScanState = .default
         teamMembershipCache = .default
         pullRequestFocusCache = [:]

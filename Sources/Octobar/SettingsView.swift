@@ -21,6 +21,7 @@ struct SettingsView: View {
                     tokenCard
                     pollingCard
                     inboxCard
+                    diagnosticsCard
                     ignoredItemsCard
                 }
                 .padding(28)
@@ -176,6 +177,42 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .appInteractiveHover()
+            }
+        }
+    }
+
+    private var diagnosticsCard: some View {
+        settingsCard {
+            cardIntro(
+                title: "Diagnostics",
+                message: "Optional low-level API diagnostics for debugging refresh behavior."
+            ) {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(.purple.opacity(0.15))
+                    .frame(width: 46, height: 46)
+                    .overlay {
+                        Image(systemName: "ladybug")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(.purple)
+                    }
+            }
+
+            Divider()
+                .padding(.horizontal, 20)
+
+            settingsRow(
+                title: "Show Rate-Limit Buckets",
+                subtitle: "Displays per-bucket GitHub API budgets in the inbox sidebar."
+            ) {
+                Toggle(
+                    "Show Rate-Limit Buckets",
+                    isOn: Binding(
+                        get: { model.showsDebugRateLimitDetails },
+                        set: { model.setShowsDebugRateLimitDetails($0) }
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
             }
         }
     }

@@ -352,11 +352,27 @@ struct AttentionWindowView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if let rateLimitSummary = model.rateLimitSummary(relativeTo: referenceDate) {
-                Text(rateLimitSummary)
-                    .font(.caption)
-                    .foregroundStyle(model.isRateLimitWarning ? .orange : .secondary)
-                    .lineLimit(2)
+            if model.showsDebugRateLimitDetails, !model.rateLimitBuckets.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Diagnostics")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    if let header = model.rateLimitDebugHeader(relativeTo: referenceDate) {
+                        Text(header)
+                            .font(.caption2)
+                            .foregroundStyle(model.isRateLimitWarning ? .orange : .secondary)
+                            .lineLimit(2)
+                    }
+
+                    ForEach(model.rateLimitBuckets, id: \.resourceKey) { bucket in
+                        Text(model.rateLimitBucketSummary(for: bucket, relativeTo: referenceDate))
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .foregroundStyle(bucket.isLow || bucket.isExhausted ? .orange : .secondary)
+                            .lineLimit(2)
+                    }
+                }
             }
 
             if let lastError = model.lastError {

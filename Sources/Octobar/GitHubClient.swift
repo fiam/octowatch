@@ -330,14 +330,10 @@ struct GitHubClient {
             login: login,
             observer: observer
         )
-        async let trackedPullRequestsTask = fetchTrackedPullRequests(
+        async let openAuthoredPullRequestsTask = searchIssueItems(
             token: token,
-            login: login,
-            observer: observer
-        )
-        async let readyToMergeTask = fetchReadyToMergePullRequests(
-            token: token,
-            login: login,
+            query: "is:open is:pr author:\(login) archived:false",
+            perPage: max(authoredPullRequestLimit, trackedPullRequestLimit),
             observer: observer
         )
         async let notificationsTask = fetchActionableNotifications(
@@ -355,6 +351,20 @@ struct GitHubClient {
         async let trackedIssuesTask = fetchTrackedIssues(
             token: token,
             login: login,
+            observer: observer
+        )
+
+        let openAuthoredPullRequests = try await openAuthoredPullRequestsTask
+        async let trackedPullRequestsTask = fetchTrackedPullRequests(
+            token: token,
+            login: login,
+            openAuthoredIssues: openAuthoredPullRequests,
+            observer: observer
+        )
+        async let readyToMergeTask = fetchReadyToMergePullRequests(
+            token: token,
+            login: login,
+            openAuthoredIssues: openAuthoredPullRequests,
             observer: observer
         )
 
@@ -377,7 +387,7 @@ struct GitHubClient {
         return GitHubSnapshot(
             login: login,
             attentionItems: attentionItems,
-            rateLimit: await observer.snapshot(),
+            rateLimits: await observer.snapshot(),
             notificationScanState: notificationFetch.scanState,
             teamMembershipCache: resolvedTeamMembershipCache
         )
@@ -1094,7 +1104,7 @@ struct GitHubClient {
 
         return PullRequestFocusResult(
             focus: focus,
-            rateLimit: await observer.snapshot()
+            rateLimits: await observer.snapshot()
         )
     }
 
@@ -1179,7 +1189,7 @@ struct GitHubClient {
             return PullRequestMutationResult(
                 outcome: .queued,
                 mergeMethod: nil,
-                rateLimit: await observer.snapshot()
+                rateLimits: await observer.snapshot()
             )
         }
 
@@ -1190,7 +1200,7 @@ struct GitHubClient {
         return PullRequestMutationResult(
             outcome: .merged,
             mergeMethod: mergeMethod,
-            rateLimit: await observer.snapshot()
+            rateLimits: await observer.snapshot()
         )
     }
 
@@ -1297,7 +1307,7 @@ struct GitHubClient {
                 mergeCommitSHA: details.mergeCommitSHA,
                 workflowRuns: workflowRuns
             ),
-            rateLimit: await observer.snapshot()
+            rateLimits: await observer.snapshot()
         )
     }
 
@@ -1378,7 +1388,7 @@ struct GitHubClient {
 
         return PullRequestLiveWatchUpdateResult(
             update: PullRequestLiveWatchPolicy.apply(previous: previous, current: state),
-            rateLimit: await observer.snapshot()
+            rateLimits: await observer.snapshot()
         )
     }
 
@@ -1832,14 +1842,12 @@ struct GitHubClient {
     private func fetchTrackedPullRequests(
         token: String,
         login: String,
+        openAuthoredIssues: [IssueItem],
         observer: GitHubRateLimitObserver
     ) async throws -> [TrackedSubjectSummary] {
-        async let authoredTask = searchTrackedSubjects(
+        async let mergedAuthoredTask = searchTrackedSubjects(
             token: token,
-            queries: [
-                "is:open is:pr author:\(login) archived:false",
-                "is:merged is:pr author:\(login) archived:false"
-            ],
+            queries: ["is:merged is:pr author:\(login) archived:false"],
             type: .authoredPullRequest,
             perPage: trackedPullRequestLimit,
             observer: observer
@@ -1865,7 +1873,11 @@ struct GitHubClient {
             observer: observer
         )
 
-        let authored = try await authoredTask
+        let authored = trackedSubjectSummaries(
+            from: openAuthoredIssues,
+            type: .authoredPullRequest,
+            resolution: .open
+        ) + (try await mergedAuthoredTask)
         let reviewed = try await reviewedTask
         let commented = try await commentedTask
 
@@ -1921,41 +1933,15 @@ struct GitHubClient {
         var summaries = [TrackedSubjectSummary]()
 
         for query in queries {
-            let response: SearchIssuesResponse = try await request(
-                path: "/search/issues",
-                queryItems: [
-                    URLQueryItem(name: "q", value: query),
-                    URLQueryItem(name: "sort", value: "updated"),
-                    URLQueryItem(name: "order", value: "desc"),
-                    URLQueryItem(name: "per_page", value: "\(perPage)")
-                ],
+            let issues = try await searchIssueItems(
                 token: token,
+                query: query,
+                perPage: perPage,
                 observer: observer
             )
 
             let resolution: GitHubSubjectResolution = query.contains("is:merged") ? .merged : .open
-            summaries.append(
-                contentsOf: response.items.compactMap { issue in
-                    guard let repository = repositoryFullName(from: issue.repositoryURL) else {
-                        return nil
-                    }
-
-                    return TrackedSubjectSummary(
-                        id: "\(repository)#\(issue.number)",
-                        ignoreKey: issue.htmlURL.absoluteString,
-                        type: type,
-                        number: issue.number,
-                        title: issue.title,
-                        subtitle: trackedSubjectSubtitle(for: type, repository: repository),
-                        repository: repository,
-                        labels: issue.labels.map(\.gitHubLabel),
-                        url: issue.htmlURL,
-                        updatedAt: issue.updatedAt,
-                        actor: nil,
-                        resolution: resolution
-                    )
-                }
-            )
+            summaries.append(contentsOf: trackedSubjectSummaries(from: issues, type: type, resolution: resolution))
         }
 
         var byKey = [String: TrackedSubjectSummary]()
@@ -2050,20 +2036,14 @@ struct GitHubClient {
         perPage: Int,
         observer: GitHubRateLimitObserver
     ) async throws -> [PullRequestSummary] {
-        let response: SearchIssuesResponse = try await request(
-            path: "/search/issues",
-            queryItems: [
-                URLQueryItem(name: "q", value: query),
-                URLQueryItem(name: "sort", value: "updated"),
-                URLQueryItem(name: "order", value: "desc"),
-                URLQueryItem(name: "per_page", value: "\(perPage)")
-            ],
+        let issues = try await searchIssueItems(
             token: token,
+            query: query,
+            perPage: perPage,
             observer: observer
         )
-
         let resolution: GitHubSubjectResolution = query.contains("is:merged") ? .merged : .open
-        return response.items.compactMap { issue in
+        return issues.compactMap { issue in
             guard let repository = repositoryFullName(from: issue.repositoryURL) else {
                 return nil
             }
@@ -2116,22 +2096,11 @@ struct GitHubClient {
     private func fetchReadyToMergePullRequests(
         token: String,
         login: String,
+        openAuthoredIssues: [IssueItem],
         observer: GitHubRateLimitObserver
     ) async throws -> [ReadyToMergeSummary] {
-        let response: SearchIssuesResponse = try await request(
-            path: "/search/issues",
-            queryItems: [
-                URLQueryItem(name: "q", value: "is:open is:pr author:\(login) archived:false"),
-                URLQueryItem(name: "sort", value: "updated"),
-                URLQueryItem(name: "order", value: "desc"),
-                URLQueryItem(name: "per_page", value: "\(authoredPullRequestLimit)")
-            ],
-            token: token,
-            observer: observer
-        )
-
         return await withTaskGroup(of: ReadyToMergeSummary?.self) { group in
-            for issue in response.items {
+            for issue in openAuthoredIssues.prefix(authoredPullRequestLimit) {
                 group.addTask {
                     do {
                         return try await buildReadyToMergeSummary(
@@ -2154,6 +2123,54 @@ struct GitHubClient {
             }
 
             return summaries.sorted { $0.updatedAt > $1.updatedAt }
+        }
+    }
+
+    private func searchIssueItems(
+        token: String,
+        query: String,
+        perPage: Int,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [IssueItem] {
+        let response: SearchIssuesResponse = try await request(
+            path: "/search/issues",
+            queryItems: [
+                URLQueryItem(name: "q", value: query),
+                URLQueryItem(name: "sort", value: "updated"),
+                URLQueryItem(name: "order", value: "desc"),
+                URLQueryItem(name: "per_page", value: "\(perPage)")
+            ],
+            token: token,
+            observer: observer
+        )
+
+        return response.items
+    }
+
+    private func trackedSubjectSummaries(
+        from issues: [IssueItem],
+        type: AttentionItemType,
+        resolution: GitHubSubjectResolution
+    ) -> [TrackedSubjectSummary] {
+        issues.compactMap { issue in
+            guard let repository = repositoryFullName(from: issue.repositoryURL) else {
+                return nil
+            }
+
+            return TrackedSubjectSummary(
+                id: "\(repository)#\(issue.number)",
+                ignoreKey: issue.htmlURL.absoluteString,
+                type: type,
+                number: issue.number,
+                title: issue.title,
+                subtitle: trackedSubjectSubtitle(for: type, repository: repository),
+                repository: repository,
+                labels: issue.labels.map(\.gitHubLabel),
+                url: issue.htmlURL,
+                updatedAt: issue.updatedAt,
+                actor: nil,
+                resolution: resolution
+            )
         }
     }
 
@@ -4200,6 +4217,7 @@ struct GitHubClient {
             .map { Date(timeIntervalSince1970: TimeInterval($0)) }
 
         return GitHubRateLimit(
+            resource: headerString("X-RateLimit-Resource", in: response) ?? "unknown",
             limit: limit,
             remaining: remaining,
             resetAt: resetAt,
@@ -4236,18 +4254,18 @@ struct GitHubClient {
 }
 
 private actor GitHubRateLimitObserver {
-    private var current: GitHubRateLimit?
+    private var bucketsByResource = [String: GitHubRateLimit]()
 
     func record(_ sample: GitHubRateLimit) {
-        if let current {
-            self.current = current.merged(with: sample)
+        if let current = bucketsByResource[sample.resourceKey] {
+            bucketsByResource[sample.resourceKey] = current.merged(with: sample)
         } else {
-            current = sample
+            bucketsByResource[sample.resourceKey] = sample
         }
     }
 
-    func snapshot() -> GitHubRateLimit? {
-        current
+    func snapshot() -> GitHubRateLimitSnapshot? {
+        GitHubRateLimitSnapshot.fromBuckets(Array(bucketsByResource.values))
     }
 }
 

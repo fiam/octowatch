@@ -22,6 +22,7 @@ Pull request detail panes surface merge conflicts alongside review threads and c
 Single-item detail panes and main-window sidebar rows also show GitHub labels for pull requests and issues when Octowatch has them available. In the detail pane, clicking a label opens the matching GitHub search for that repository and subject type.
 When the same account both creates and assigns a pull request, the detail header collapses that metadata into a single "created and assigned by" fact.
 For PRs you already reviewed, new commits since your review are called out near the top of the detail pane and the commit action is labeled accordingly.
+Settings also include an optional diagnostics toggle that adds per-bucket GitHub API budget details to the inbox sidebar for debugging rate-limit behavior.
 
 ## Requirements
 

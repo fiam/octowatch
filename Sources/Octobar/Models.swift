@@ -648,7 +648,7 @@ struct PullRequestLiveWatchUpdate: Hashable, Sendable {
 
 struct PullRequestLiveWatchUpdateResult: Hashable, Sendable {
     let update: PullRequestLiveWatchUpdate
-    let rateLimit: GitHubRateLimit?
+    let rateLimits: GitHubRateLimitSnapshot?
 }
 
 enum PullRequestLiveWatchPolicy {
@@ -833,7 +833,7 @@ struct PostMergeWatchObservation: Hashable, Sendable {
 
 struct PostMergeWatchObservationResult: Hashable, Sendable {
     let observation: PostMergeWatchObservation
-    let rateLimit: GitHubRateLimit?
+    let rateLimits: GitHubRateLimitSnapshot?
 }
 
 struct PostMergeWatchUpdate: Hashable, Sendable {
@@ -1461,7 +1461,7 @@ enum GitHubMergeQueuePolicy {
 struct PullRequestMutationResult: Sendable {
     let outcome: PullRequestMutationOutcome
     let mergeMethod: PullRequestMergeMethod?
-    let rateLimit: GitHubRateLimit?
+    let rateLimits: GitHubRateLimitSnapshot?
 }
 
 struct PullRequestHeaderFact: Identifiable, Hashable, Sendable {
@@ -1482,7 +1482,7 @@ struct PullRequestHeaderFact: Identifiable, Hashable, Sendable {
 
 struct PullRequestFocusResult: Sendable {
     let focus: PullRequestFocus
-    let rateLimit: GitHubRateLimit?
+    let rateLimits: GitHubRateLimitSnapshot?
 }
 
 struct PullRequestContextBadge: Identifiable, Hashable, Sendable {
@@ -2860,11 +2860,47 @@ enum AutoMarkReadSetting: Int, CaseIterable, Hashable, Sendable {
 }
 
 struct GitHubRateLimit: Hashable, Sendable {
+    let resource: String
     let limit: Int
     let remaining: Int
     let resetAt: Date?
     let pollIntervalHintSeconds: Int?
     let retryAfterSeconds: Int?
+
+    var resourceKey: String {
+        let normalized = resource
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return normalized.isEmpty ? "unknown" : normalized
+    }
+
+    var resourceDisplayName: String {
+        switch resourceKey {
+        case "core":
+            return "Core"
+        case "search":
+            return "Search"
+        case "graphql":
+            return "GraphQL"
+        case "code_search":
+            return "Code Search"
+        case "integration_manifest":
+            return "Integration Manifest"
+        case "dependency_snapshots":
+            return "Dependency Snapshots"
+        case "code_scanning_upload":
+            return "Code Scanning"
+        case "source_import":
+            return "Source Import"
+        case "unknown":
+            return "Unknown"
+        default:
+            return resourceKey
+                .split(separator: "_")
+                .map { $0.capitalized }
+                .joined(separator: " ")
+        }
+    }
 
     var isExhausted: Bool {
         remaining <= 0
@@ -2875,9 +2911,14 @@ struct GitHubRateLimit: Hashable, Sendable {
     }
 
     func merged(with other: GitHubRateLimit) -> GitHubRateLimit {
+        guard resourceKey == other.resourceKey else {
+            return isMoreRestrictive(than: other) ? self : other
+        }
+
         let preferred = isMoreRestrictive(than: other) ? self : other
 
         return GitHubRateLimit(
+            resource: preferred.resource,
             limit: preferred.limit,
             remaining: preferred.remaining,
             resetAt: preferred.resetAt ?? other.resetAt,
@@ -2890,6 +2931,37 @@ struct GitHubRateLimit: Hashable, Sendable {
                 other.retryAfterSeconds
             )
         )
+    }
+
+    static func mostRestrictive(in rateLimits: [GitHubRateLimit]) -> GitHubRateLimit? {
+        rateLimits.min { lhs, rhs in
+            lhs.isMoreRestrictive(than: rhs)
+        }
+    }
+
+    static func mergingCollections(
+        _ existing: [GitHubRateLimit],
+        with incoming: [GitHubRateLimit]
+    ) -> [GitHubRateLimit] {
+        var mergedByResource = [String: GitHubRateLimit]()
+
+        for sample in existing + incoming {
+            let key = sample.resourceKey
+            if let current = mergedByResource[key] {
+                mergedByResource[key] = current.merged(with: sample)
+            } else {
+                mergedByResource[key] = sample
+            }
+        }
+
+        return mergedByResource.values.sorted { lhs, rhs in
+            if lhs.isMoreRestrictive(than: rhs) != rhs.isMoreRestrictive(than: lhs) {
+                return lhs.isMoreRestrictive(than: rhs)
+            }
+
+            return lhs.resourceDisplayName.localizedCaseInsensitiveCompare(rhs.resourceDisplayName)
+                == .orderedAscending
+        }
     }
 
     func minimumAutomaticRefreshInterval(
@@ -2958,10 +3030,37 @@ struct GitHubRateLimit: Hashable, Sendable {
     }
 }
 
+struct GitHubRateLimitSnapshot: Hashable, Sendable {
+    let buckets: [GitHubRateLimit]
+
+    var mostRestrictive: GitHubRateLimit? {
+        GitHubRateLimit.mostRestrictive(in: buckets)
+    }
+
+    var isEmpty: Bool {
+        buckets.isEmpty
+    }
+
+    func merged(with other: GitHubRateLimitSnapshot) -> GitHubRateLimitSnapshot {
+        GitHubRateLimitSnapshot(
+            buckets: GitHubRateLimit.mergingCollections(buckets, with: other.buckets)
+        )
+    }
+
+    static func fromBuckets(_ buckets: [GitHubRateLimit]) -> GitHubRateLimitSnapshot? {
+        let merged = GitHubRateLimit.mergingCollections([], with: buckets)
+        guard !merged.isEmpty else {
+            return nil
+        }
+
+        return GitHubRateLimitSnapshot(buckets: merged)
+    }
+}
+
 struct GitHubSnapshot: Sendable {
     let login: String
     let attentionItems: [AttentionItem]
-    let rateLimit: GitHubRateLimit?
+    let rateLimits: GitHubRateLimitSnapshot?
     let notificationScanState: NotificationScanState
     let teamMembershipCache: TeamMembershipCache
 }

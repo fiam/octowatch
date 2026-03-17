@@ -627,6 +627,7 @@ final class AttentionClassificationTests: XCTestCase {
 
     func testRateLimitUsesGitHubPollHintWhenHigherThanConfiguredInterval() {
         let rateLimit = GitHubRateLimit(
+            resource: "graphql",
             limit: 5_000,
             remaining: 4_200,
             resetAt: Date().addingTimeInterval(3_600),
@@ -642,6 +643,7 @@ final class AttentionClassificationTests: XCTestCase {
 
     func testRateLimitBacksOffWhenBudgetIsLow() {
         let rateLimit = GitHubRateLimit(
+            resource: "graphql",
             limit: 5_000,
             remaining: 18,
             resetAt: Date().addingTimeInterval(3_600),
@@ -658,6 +660,7 @@ final class AttentionClassificationTests: XCTestCase {
     func testRateLimitWaitsUntilResetWhenExhausted() {
         let now = Date()
         let rateLimit = GitHubRateLimit(
+            resource: "graphql",
             limit: 5_000,
             remaining: 0,
             resetAt: now.addingTimeInterval(420),
@@ -674,6 +677,7 @@ final class AttentionClassificationTests: XCTestCase {
     func testSmallBucketRateLimitDoesNotForceFifteenMinuteBackoff() {
         let now = Date()
         let rateLimit = GitHubRateLimit(
+            resource: "search",
             limit: 30,
             remaining: 20,
             resetAt: now.addingTimeInterval(40),
@@ -690,6 +694,7 @@ final class AttentionClassificationTests: XCTestCase {
     func testSmallBucketRateLimitWaitsForResetOnlyWhenNearlyExhausted() {
         let now = Date()
         let rateLimit = GitHubRateLimit(
+            resource: "search",
             limit: 30,
             remaining: 5,
             resetAt: now.addingTimeInterval(45),
@@ -700,6 +705,45 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(
             rateLimit.minimumAutomaticRefreshInterval(userConfiguredSeconds: 30, now: now),
             45
+        )
+    }
+
+    func testRateLimitCollectionsKeepBucketsSeparateByResource() {
+        let initial = GitHubRateLimit(
+            resource: "core",
+            limit: 5_000,
+            remaining: 4_900,
+            resetAt: nil,
+            pollIntervalHintSeconds: nil,
+            retryAfterSeconds: nil
+        )
+        let updatedCore = GitHubRateLimit(
+            resource: "core",
+            limit: 5_000,
+            remaining: 4_875,
+            resetAt: nil,
+            pollIntervalHintSeconds: nil,
+            retryAfterSeconds: nil
+        )
+        let search = GitHubRateLimit(
+            resource: "search",
+            limit: 30,
+            remaining: 12,
+            resetAt: nil,
+            pollIntervalHintSeconds: nil,
+            retryAfterSeconds: nil
+        )
+
+        let merged = GitHubRateLimit.mergingCollections([initial], with: [updatedCore, search])
+
+        XCTAssertEqual(merged.count, 2)
+        XCTAssertEqual(
+            merged.first(where: { $0.resourceKey == "core" })?.remaining,
+            4_875
+        )
+        XCTAssertEqual(
+            GitHubRateLimit.mostRestrictive(in: merged)?.resourceKey,
+            "search"
         )
     }
 
