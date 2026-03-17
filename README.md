@@ -71,5 +71,5 @@ personal access tokens.
 - This scaffold uses polling. GitHub push-style event delivery generally requires a GitHub App/webhook setup, which this project intentionally avoids.
 - Workflow watching covers PRs you authored, approved, or merged, and
   it sends local notifications when queued pull requests actually merge
-  and when post-merge workflows start waiting for approval or finish
-  with success or failure.
+  and when post-merge workflows start waiting for approval or, once the
+  observed post-merge push runs settle, finish with success or failure.

@@ -835,6 +835,9 @@ enum PostMergeWatchPolicy {
             let pushRuns = observation.workflowRuns
                 .filter { $0.event.caseInsensitiveCompare("push") == .orderedSame }
                 .sorted { $0.createdAt < $1.createdAt }
+            let hasPendingPushRuns = pushRuns.contains {
+                ($0.status ?? "").caseInsensitiveCompare("completed") != .orderedSame
+            }
 
             if let latestRunAt = pushRuns.map(\.createdAt).max() {
                 updatedWatch = updatedWatch.updating(lastObservedWorkflowRunAt: latestRunAt)
@@ -863,7 +866,11 @@ enum PostMergeWatchPolicy {
                 guard
                     (run.status ?? "").caseInsensitiveCompare("completed") == .orderedSame,
                     !notifiedRunIDs.contains(run.id),
-                    let notification = workflowCompletionNotification(for: run, pullRequestTitle: watch.title)
+                    let notification = workflowCompletionNotification(
+                        for: run,
+                        pullRequestTitle: watch.title,
+                        hasPendingRuns: hasPendingPushRuns
+                    )
                 else {
                     continue
                 }
@@ -882,9 +889,7 @@ enum PostMergeWatchPolicy {
 
             if shouldKeep(
                 watch: updatedWatch,
-                hasPendingRuns: pushRuns.contains {
-                    ($0.status ?? "").caseInsensitiveCompare("completed") != .orderedSame
-                },
+                hasPendingRuns: hasPendingPushRuns,
                 now: now
             ) {
                 return PostMergeWatchUpdate(updatedWatch: updatedWatch, notifications: notifications)
@@ -920,7 +925,8 @@ enum PostMergeWatchPolicy {
 
     private static func workflowCompletionNotification(
         for run: PostMergeObservedWorkflowRun,
-        pullRequestTitle: String
+        pullRequestTitle: String,
+        hasPendingRuns: Bool
     ) -> AttentionTransitionNotification? {
         let normalizedConclusion = (run.conclusion ?? "").lowercased()
         let title: String
@@ -928,6 +934,9 @@ enum PostMergeWatchPolicy {
 
         switch normalizedConclusion {
         case "success":
+            guard !hasPendingRuns else {
+                return nil
+            }
             title = "Post-merge workflow succeeded"
             body = "\(run.title) finished successfully for \(pullRequestTitle)."
         case "failure", "timed_out", "startup_failure":
