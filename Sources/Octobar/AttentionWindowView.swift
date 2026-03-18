@@ -1419,11 +1419,36 @@ private struct AttentionUpdateRow: View {
                 Text(update.title)
                     .font(.subheadline.weight(.semibold))
 
-                if let detail = renderedDetail {
-                    Text(detail)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                if detailPresentation.hasVisibleContent {
+                    HStack(alignment: .center, spacing: 6) {
+                        if let actorPresentation = detailPresentation.actor {
+                            Text(actorPresentation.label)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+
+                            if actorPresentation.showsBotBadge, let actor = update.actor {
+                                BotAccountChip(login: actor.login, compact: true)
+                            }
+                        }
+
+                        if detailPresentation.actor != nil, let detail = detailPresentation.detail {
+                            Text("·")
+                                .font(.subheadline)
+                                .foregroundStyle(.tertiary)
+
+                            Text(detail)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if let detail = detailPresentation.detail {
+                            Text(detail)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
 
                 Text(Self.relativeFormatter.localizedString(for: update.timestamp, relativeTo: referenceDate))
@@ -1443,8 +1468,8 @@ private struct AttentionUpdateRow: View {
         }
     }
 
-    private var renderedDetail: String? {
-        AttentionViewerPresentationPolicy.updateDetailText(
+    private var detailPresentation: AttentionViewerPresentationPolicy.UpdatePresentation {
+        AttentionViewerPresentationPolicy.updatePresentation(
             actor: update.actor,
             detail: update.detail,
             viewerLogin: viewerLogin
@@ -1853,30 +1878,38 @@ private struct ActorLinkLabel: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 6) {
-            Button(AttentionViewerPresentationPolicy.actorLabel(for: actor, viewerLogin: viewerLogin)) {
+            Button(presentation.label) {
                 onOpenURL(actor.profileURL)
             }
             .font(.subheadline.weight(.medium))
             .buttonStyle(.plain)
             .appLinkHover()
-            .foregroundStyle(actor.isBotAccount ? Color.primary : Color.accentColor)
+            .foregroundStyle(presentation.showsBotBadge ? Color.primary : Color.accentColor)
 
-            if actor.isBotAccount {
+            if presentation.showsBotBadge {
                 BotAccountChip(login: actor.login)
             }
         }
+    }
+
+    private var presentation: AttentionViewerPresentationPolicy.ActorPresentation {
+        AttentionViewerPresentationPolicy.actorPresentation(
+            for: actor,
+            viewerLogin: viewerLogin
+        )
     }
 }
 
 private struct BotAccountChip: View {
     let login: String
+    var compact: Bool = false
 
     var body: some View {
         Image(systemName: "cpu")
-            .font(.caption.weight(.semibold))
+            .font(compact ? .caption2.weight(.semibold) : .caption.weight(.semibold))
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 5)
+            .padding(.horizontal, compact ? 5 : 7)
+            .padding(.vertical, compact ? 3 : 5)
             .background(
                 Capsule(style: .continuous)
                     .fill(Color.secondary.opacity(0.14))
@@ -2670,10 +2703,21 @@ private struct AttentionActorChip: View {
     var body: some View {
         HStack(spacing: 6) {
             DetailActorAvatar(actor: actor, size: 16)
-            Text(AttentionViewerPresentationPolicy.actorLabel(for: actor, viewerLogin: viewerLogin))
+            Text(presentation.label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            if presentation.showsBotBadge {
+                BotAccountChip(login: actor.login, compact: true)
+            }
         }
+    }
+
+    private var presentation: AttentionViewerPresentationPolicy.ActorPresentation {
+        AttentionViewerPresentationPolicy.actorPresentation(
+            for: actor,
+            viewerLogin: viewerLogin
+        )
     }
 }
 

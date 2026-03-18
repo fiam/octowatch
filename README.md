@@ -16,6 +16,7 @@ The menu bar icon uses an unread-dot indicator instead of a numeric badge.
 In the menu, each pull request or issue now appears only once, even when GitHub surfaces multiple notifications or workflow updates for the same subject. The row shows the latest state plus a secondary relationship badge when relevant.
 Those stacked badges use a compact two-line tooltip in both the sidebar and detail view when a secondary badge is present.
 When Octowatch is referring to your own GitHub account as the actor in the UI, it renders that label as `you` while keeping the underlying GitHub profile links unchanged.
+Bot accounts keep their badge in the compact sidebar and all-updates actor labels, and those visible labels omit the literal `[bot]` suffix.
 The detail pane keeps an all-updates timeline at the bottom of pull request details, and that history is persisted locally so older updates still appear when the subject drops out of the API and later returns.
 Local macOS notifications also reuse the same subject identity, so newer updates replace older notifications for that pull request or issue instead of leaving stale duplicates behind. Settings include a toggle for whether updates triggered by your own comments, commits, reviews, and workflows should raise macOS notifications; the default is off, but those self-triggered updates still stay in the timeline.
 Items also have dot-style read/unread indicators, and opening an item marks it as read locally.

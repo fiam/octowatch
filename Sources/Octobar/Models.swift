@@ -440,6 +440,16 @@ struct AttentionActor: Hashable, Codable, Sendable {
         profileURLOverride ?? URL(string: "https://github.com/\(login)")!
     }
 
+    var displayLogin: String {
+        let botSuffix = "[bot]"
+        guard login.lowercased().hasSuffix(botSuffix) else {
+            return login
+        }
+
+        let trimmed = String(login.dropLast(botSuffix.count))
+        return trimmed.isEmpty ? login : trimmed
+    }
+
     func isSameAccount(as other: AttentionActor) -> Bool {
         login.caseInsensitiveCompare(other.login) == .orderedSame
     }
@@ -1771,6 +1781,20 @@ enum PullRequestHeaderTimestampPolicy {
 }
 
 enum AttentionViewerPresentationPolicy {
+    struct ActorPresentation: Hashable, Sendable {
+        let label: String
+        let showsBotBadge: Bool
+    }
+
+    struct UpdatePresentation: Hashable, Sendable {
+        let actor: ActorPresentation?
+        let detail: String?
+
+        var hasVisibleContent: Bool {
+            actor != nil || detail != nil
+        }
+    }
+
     static func actorLabel(
         for actor: AttentionActor,
         viewerLogin: String?
@@ -1779,10 +1803,20 @@ enum AttentionViewerPresentationPolicy {
             let viewerLogin,
             actor.login.caseInsensitiveCompare(viewerLogin) == .orderedSame
         else {
-            return actor.login
+            return actor.displayLogin
         }
 
         return "you"
+    }
+
+    static func actorPresentation(
+        for actor: AttentionActor,
+        viewerLogin: String?
+    ) -> ActorPresentation {
+        ActorPresentation(
+            label: actorLabel(for: actor, viewerLogin: viewerLogin),
+            showsBotBadge: actor.isBotAccount
+        )
     }
 
     static func personalizing(
@@ -1808,30 +1842,86 @@ enum AttentionViewerPresentationPolicy {
         return text.replacingCharacters(in: range, with: "you · ")
     }
 
+    static func updatePresentation(
+        actor: AttentionActor?,
+        detail: String?,
+        viewerLogin: String?
+    ) -> UpdatePresentation {
+        let personalizedDetail = normalizedDetail(
+            detail.map { personalizing($0, viewerLogin: viewerLogin) }
+        )
+
+        guard let actor else {
+            return UpdatePresentation(actor: nil, detail: personalizedDetail)
+        }
+
+        let actorPresentation = actorPresentation(for: actor, viewerLogin: viewerLogin)
+        return UpdatePresentation(
+            actor: actorPresentation,
+            detail: removingActorPrefix(
+                from: personalizedDetail,
+                actor: actor,
+                actorLabel: actorPresentation.label
+            )
+        )
+    }
+
     static func updateDetailText(
         actor: AttentionActor?,
         detail: String?,
         viewerLogin: String?
     ) -> String? {
-        let personalizedDetail = detail.map {
-            personalizing($0, viewerLogin: viewerLogin)
+        let presentation = updatePresentation(
+            actor: actor,
+            detail: detail,
+            viewerLogin: viewerLogin
+        )
+
+        if let actorPresentation = presentation.actor {
+            guard let detail = presentation.detail else {
+                return actorPresentation.label
+            }
+
+            return "\(actorPresentation.label) · \(detail)"
         }
 
-        guard let actor else {
-            return personalizedDetail
+        return presentation.detail
+    }
+
+    private static func normalizedDetail(_ detail: String?) -> String? {
+        guard let detail else {
+            return nil
         }
 
-        let actorLabel = actorLabel(for: actor, viewerLogin: viewerLogin)
-        guard let personalizedDetail, !personalizedDetail.isEmpty else {
-            return actorLabel
+        let normalized = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private static func removingActorPrefix(
+        from detail: String?,
+        actor: AttentionActor,
+        actorLabel: String
+    ) -> String? {
+        guard let detail else {
+            return nil
         }
 
-        let prefix = "\(actorLabel) · "
-        if personalizedDetail.range(of: prefix, options: [.anchored, .caseInsensitive]) != nil {
-            return personalizedDetail
+        let candidates = [actorLabel, actor.displayLogin, actor.login]
+
+        for candidate in candidates {
+            if detail.caseInsensitiveCompare(candidate) == .orderedSame {
+                return nil
+            }
+
+            let prefix = "\(candidate) · "
+            if let range = detail.range(of: prefix, options: [.anchored, .caseInsensitive]) {
+                let strippedDetail = String(detail[range.upperBound...])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return strippedDetail.isEmpty ? nil : strippedDetail
+            }
         }
 
-        return "\(actorLabel) · \(personalizedDetail)"
+        return detail
     }
 }
 
