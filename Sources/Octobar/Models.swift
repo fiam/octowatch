@@ -28,65 +28,13 @@ enum AttentionStream: String, CaseIterable, Hashable, Sendable {
     }
 }
 
-private struct AttentionCombinedDisplayKey: Hashable {
-    let ignoreKey: String
-    let type: AttentionItemType
-}
-
 enum AttentionCombinedViewPolicy {
     static func collapsingDuplicates(in items: [AttentionItem]) -> [AttentionItem] {
-        var preferredByKey = [AttentionCombinedDisplayKey: AttentionItem]()
-
-        for item in items {
-            let key = AttentionCombinedDisplayKey(ignoreKey: item.ignoreKey, type: item.type)
-            if let existing = preferredByKey[key], !shouldReplace(existing: existing, with: item) {
-                continue
-            }
-
-            preferredByKey[key] = item
-        }
-
-        var emitted = Set<AttentionItem.ID>()
-        return items.compactMap { item in
-            let key = AttentionCombinedDisplayKey(ignoreKey: item.ignoreKey, type: item.type)
-            guard let preferred = preferredByKey[key], preferred.id == item.id else {
-                return nil
-            }
-
-            guard emitted.insert(item.id).inserted else {
-                return nil
-            }
-
-            return item
-        }
-    }
-
-    private static func shouldReplace(existing: AttentionItem, with candidate: AttentionItem) -> Bool {
-        if existing.stream != .notifications && candidate.stream == .notifications {
-            return true
-        }
-
-        if existing.stream == .notifications && candidate.stream != .notifications {
-            return false
-        }
-
-        if existing.isUnread != candidate.isUnread {
-            return candidate.isUnread
-        }
-
-        if existing.timestamp != candidate.timestamp {
-            return candidate.timestamp > existing.timestamp
-        }
-
-        if existing.actor == nil && candidate.actor != nil {
-            return true
-        }
-
-        return candidate.detail.evidence.count > existing.detail.evidence.count
+        AttentionSubjectViewPolicy.collapsingUpdates(in: items)
     }
 }
 
-enum AttentionItemType: String, Hashable, Sendable {
+enum AttentionItemType: String, Hashable, Codable, Sendable {
     case assignedPullRequest
     case authoredPullRequest
     case reviewedPullRequest
@@ -107,6 +55,8 @@ enum AttentionItemType: String, Hashable, Sendable {
     case reviewComment
     case pullRequestStateChanged
     case ciActivity
+    case workflowRunning
+    case workflowSucceeded
     case workflowFailed
     case workflowApprovalRequired
 
@@ -150,6 +100,10 @@ enum AttentionItemType: String, Hashable, Sendable {
             return "arrow.trianglehead.branch"
         case .ciActivity:
             return "bolt.badge.clock"
+        case .workflowRunning:
+            return "bolt.badge.clock"
+        case .workflowSucceeded:
+            return "checkmark.circle"
         case .workflowFailed:
             return "bolt.trianglebadge.exclamationmark"
         case .workflowApprovalRequired:
@@ -199,6 +153,10 @@ enum AttentionItemType: String, Hashable, Sendable {
             return "Pull request state changed"
         case .ciActivity:
             return "Continuous integration activity"
+        case .workflowRunning:
+            return "Workflow running"
+        case .workflowSucceeded:
+            return "Workflow succeeded"
         case .workflowFailed:
             return "Workflow failed"
         case .workflowApprovalRequired:
@@ -248,6 +206,10 @@ enum AttentionItemType: String, Hashable, Sendable {
             return "Pull request updated"
         case .ciActivity:
             return "CI activity"
+        case .workflowRunning:
+            return "Workflow running"
+        case .workflowSucceeded:
+            return "Workflow succeeded"
         case .workflowFailed:
             return "Workflow failed"
         case .workflowApprovalRequired:
@@ -297,6 +259,10 @@ enum AttentionItemType: String, Hashable, Sendable {
             return "updated pull request state"
         case .ciActivity:
             return "triggered CI activity"
+        case .workflowRunning:
+            return "started a workflow"
+        case .workflowSucceeded:
+            return "finished a workflow successfully"
         case .workflowFailed:
             return "triggered a failing workflow"
         case .workflowApprovalRequired:
@@ -374,6 +340,18 @@ enum AttentionItemType: String, Hashable, Sendable {
         let normalizedStatus = (status ?? "").lowercased()
         let normalizedConclusion = (conclusion ?? "").lowercased()
 
+        let runningStatuses: Set<String> = [
+            "queued",
+            "in_progress",
+            "pending",
+            "requested",
+            "waiting"
+        ]
+
+        if runningStatuses.contains(normalizedStatus) && normalizedConclusion.isEmpty {
+            return .workflowRunning
+        }
+
         if normalizedStatus == "action_required" || normalizedConclusion == "action_required" {
             return .workflowApprovalRequired
         }
@@ -387,7 +365,20 @@ enum AttentionItemType: String, Hashable, Sendable {
             return .workflowFailed
         }
 
+        if normalizedStatus == "completed" && normalizedConclusion == "success" {
+            return .workflowSucceeded
+        }
+
         return nil
+    }
+
+    var isWorkflowActivity: Bool {
+        switch self {
+        case .workflowRunning, .workflowSucceeded, .workflowFailed, .workflowApprovalRequired:
+            return true
+        default:
+            return false
+        }
     }
 
     var defaultStream: AttentionStream {
@@ -398,6 +389,8 @@ enum AttentionItemType: String, Hashable, Sendable {
                 .commentedPullRequest,
                 .readyToMerge,
                 .ciActivity,
+                .workflowRunning,
+                .workflowSucceeded,
                 .workflowFailed,
                 .workflowApprovalRequired:
             return .pullRequests
@@ -421,7 +414,7 @@ enum AttentionItemType: String, Hashable, Sendable {
     }
 }
 
-struct AttentionActor: Hashable, Sendable {
+struct AttentionActor: Hashable, Codable, Sendable {
     let login: String
     let avatarURL: URL?
     private let profileURLOverride: URL?
@@ -516,10 +509,42 @@ struct AttentionAction: Identifiable, Hashable, Sendable {
     }
 }
 
+struct AttentionUpdate: Identifiable, Hashable, Codable, Sendable {
+    let id: String
+    let type: AttentionItemType
+    let title: String
+    let detail: String?
+    let timestamp: Date
+    let actor: AttentionActor?
+    let url: URL?
+    let isTriggeredByCurrentUser: Bool
+
+    init(
+        id: String,
+        type: AttentionItemType,
+        title: String,
+        detail: String?,
+        timestamp: Date,
+        actor: AttentionActor?,
+        url: URL?,
+        isTriggeredByCurrentUser: Bool = false
+    ) {
+        self.id = id
+        self.type = type
+        self.title = title
+        self.detail = detail
+        self.timestamp = timestamp
+        self.actor = actor
+        self.url = url
+        self.isTriggeredByCurrentUser = isTriggeredByCurrentUser
+    }
+}
+
 struct AttentionDetail: Hashable, Sendable {
     let contextPillTitle: String?
     let why: AttentionWhy
     let evidence: [AttentionEvidence]
+    let updates: [AttentionUpdate]
     let actions: [AttentionAction]
     let acknowledgement: String?
 
@@ -527,14 +552,167 @@ struct AttentionDetail: Hashable, Sendable {
         contextPillTitle: String? = nil,
         why: AttentionWhy,
         evidence: [AttentionEvidence],
+        updates: [AttentionUpdate] = [],
         actions: [AttentionAction],
         acknowledgement: String? = nil
     ) {
         self.contextPillTitle = contextPillTitle
         self.why = why
         self.evidence = evidence
+        self.updates = updates
         self.actions = actions
         self.acknowledgement = acknowledgement
+    }
+}
+
+enum AttentionUpdateHistoryPolicy {
+    static func merging(
+        existing: [AttentionUpdate],
+        current: [AttentionUpdate],
+        limit: Int? = nil
+    ) -> [AttentionUpdate] {
+        let sorted = (current + existing).sorted { lhs, rhs in
+            if lhs.timestamp == rhs.timestamp {
+                return lhs.id > rhs.id
+            }
+            return lhs.timestamp > rhs.timestamp
+        }
+
+        var merged = [AttentionUpdate]()
+        var seen = Set<String>()
+        for update in sorted {
+            guard seen.insert(update.id).inserted else {
+                continue
+            }
+            merged.append(update)
+            if let limit, merged.count == limit {
+                break
+            }
+        }
+
+        return merged
+    }
+
+    static func pruningInvalidWorkflowUpdates(
+        _ updates: [AttentionUpdate],
+        mergedAt: Date?
+    ) -> [AttentionUpdate] {
+        updates.filter {
+            WorkflowRunAttributionPolicy.shouldRetainHistoricalUpdate($0, mergedAt: mergedAt)
+        }
+    }
+}
+
+enum AttentionUpdateHistoryProjection {
+    static func applying(
+        persistedHistoryBySubjectKey: [String: [AttentionUpdate]],
+        to items: [AttentionItem]
+    ) -> (items: [AttentionItem], historyBySubjectKey: [String: [AttentionUpdate]]) {
+        var historyBySubjectKey = persistedHistoryBySubjectKey.filter { !$0.value.isEmpty }
+
+        let itemsWithHistory = items.map { item in
+            let mergedUpdates = AttentionUpdateHistoryPolicy.merging(
+                existing: historyBySubjectKey[item.subjectKey] ?? [],
+                current: item.detail.updates
+            )
+
+            if mergedUpdates.isEmpty {
+                historyBySubjectKey[item.subjectKey] = nil
+            } else {
+                historyBySubjectKey[item.subjectKey] = mergedUpdates
+            }
+
+            let detail = AttentionDetail(
+                contextPillTitle: item.detail.contextPillTitle,
+                why: item.detail.why,
+                evidence: item.detail.evidence,
+                updates: mergedUpdates,
+                actions: item.detail.actions,
+                acknowledgement: item.detail.acknowledgement
+            )
+
+            return item.replacing(detail: detail)
+        }
+
+        return (itemsWithHistory, historyBySubjectKey)
+    }
+}
+
+enum AttentionUpdateHistoryStore {
+    static func load(from defaults: UserDefaults, key: String) -> [String: [AttentionUpdate]] {
+        guard let data = defaults.data(forKey: key) else {
+            return [:]
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        guard let history = try? decoder.decode([String: [AttentionUpdate]].self, from: data) else {
+            return [:]
+        }
+
+        return history.filter { !$0.value.isEmpty }
+    }
+
+    static func persist(
+        _ historyBySubjectKey: [String: [AttentionUpdate]],
+        to defaults: UserDefaults,
+        key: String
+    ) {
+        let filteredHistory = historyBySubjectKey.filter { !$0.value.isEmpty }
+        guard !filteredHistory.isEmpty else {
+            defaults.removeObject(forKey: key)
+            return
+        }
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+
+        guard let data = try? encoder.encode(filteredHistory) else {
+            return
+        }
+
+        defaults.set(data, forKey: key)
+    }
+}
+
+struct AttentionSubjectRefresh: Sendable {
+    static let localSupplementalItemIDPrefix = "focus-supplemental:"
+
+    let subjectKey: String
+    let labels: [GitHubLabel]
+    let mergedAt: Date?
+    let supplementalItems: [AttentionItem]
+}
+
+enum AttentionSubjectRefreshPolicy {
+    static func applying(
+        _ refresh: AttentionSubjectRefresh,
+        to items: [AttentionItem]
+    ) -> [AttentionItem] {
+        let filteredItems = items.filter { item in
+            !(item.subjectKey == refresh.subjectKey &&
+                item.id.hasPrefix(AttentionSubjectRefresh.localSupplementalItemIDPrefix))
+        }
+
+        let relabeledItems = filteredItems.map { item in
+            guard item.subjectKey == refresh.subjectKey else {
+                return item
+            }
+
+            return item.replacing(labels: refresh.labels)
+        }
+
+        return relabeledItems + refresh.supplementalItems
+    }
+}
+
+enum AttentionUpdateNotificationPolicy {
+    static func shouldDeliver(
+        item: AttentionItem,
+        includeSelfTriggeredUpdates: Bool
+    ) -> Bool {
+        includeSelfTriggeredUpdates || !item.isTriggeredByCurrentUser
     }
 }
 
@@ -1173,6 +1351,7 @@ struct PullRequestFocus: Hashable, Sendable {
     let sourceType: AttentionItemType
     let mode: PullRequestFocusMode
     let resolution: GitHubSubjectResolution
+    let mergedAt: Date?
     let author: AttentionActor?
     let labels: [GitHubLabel]
     let headerFacts: [PullRequestHeaderFact]
@@ -1483,6 +1662,177 @@ struct PullRequestHeaderFact: Identifiable, Hashable, Sendable {
 struct PullRequestFocusResult: Sendable {
     let focus: PullRequestFocus
     let rateLimits: GitHubRateLimitSnapshot?
+    let subjectRefresh: AttentionSubjectRefresh
+}
+
+enum WorkflowRunAttributionPolicy {
+    static let mergedRunLeadingSkew: TimeInterval = 300
+    static let mergedRunAssociationWindow: TimeInterval = 7_200
+
+    static func shouldAssociate(
+        runTitle: String?,
+        workflowName: String?,
+        event: String,
+        createdAt: Date,
+        mergedAt: Date?
+    ) -> Bool {
+        if isClearlyScheduled(
+            runTitle: runTitle,
+            workflowName: workflowName,
+            event: event
+        ) {
+            return false
+        }
+
+        guard let mergedAt else {
+            return true
+        }
+
+        return createdAt >= mergedAt.addingTimeInterval(-mergedRunLeadingSkew) &&
+            createdAt <= mergedAt.addingTimeInterval(mergedRunAssociationWindow)
+    }
+
+    static func shouldRetainHistoricalUpdate(
+        _ update: AttentionUpdate,
+        mergedAt: Date?
+    ) -> Bool {
+        guard update.type.isWorkflowActivity else {
+            return true
+        }
+
+        return shouldAssociate(
+            runTitle: update.detail,
+            workflowName: nil,
+            event: "",
+            createdAt: update.timestamp,
+            mergedAt: mergedAt
+        )
+    }
+
+    private static func isClearlyScheduled(
+        runTitle: String?,
+        workflowName: String?,
+        event: String
+    ) -> Bool {
+        if event.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("schedule") == .orderedSame {
+            return true
+        }
+
+        let normalizedTitles = [runTitle, workflowName]
+            .compactMap {
+                $0?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+            }
+
+        return normalizedTitles.contains("scheduled")
+    }
+}
+
+enum PullRequestHeaderTimestampPolicy {
+    static func primaryTimestamp(
+        resolution: GitHubSubjectResolution,
+        itemTimestamp: Date,
+        mergedAt: Date?
+    ) -> Date {
+        if resolution == .merged, let mergedAt {
+            return mergedAt
+        }
+
+        return itemTimestamp
+    }
+
+    static func shouldShowLastUpdate(
+        resolution: GitHubSubjectResolution,
+        itemTimestamp: Date,
+        mergedAt: Date?,
+        referenceDate: Date
+    ) -> Bool {
+        guard
+            resolution == .merged,
+            let mergedAt,
+            itemTimestamp.timeIntervalSince(mergedAt) > 60
+        else {
+            return false
+        }
+
+        return relativeTimestampText(for: itemTimestamp, referenceDate: referenceDate) !=
+            relativeTimestampText(for: mergedAt, referenceDate: referenceDate)
+    }
+
+    private static func relativeTimestampText(
+        for date: Date,
+        referenceDate: Date
+    ) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: referenceDate)
+    }
+}
+
+enum AttentionViewerPresentationPolicy {
+    static func actorLabel(
+        for actor: AttentionActor,
+        viewerLogin: String?
+    ) -> String {
+        guard
+            let viewerLogin,
+            actor.login.caseInsensitiveCompare(viewerLogin) == .orderedSame
+        else {
+            return actor.login
+        }
+
+        return "you"
+    }
+
+    static func personalizing(
+        _ text: String,
+        viewerLogin: String?
+    ) -> String {
+        guard let viewerLogin, !viewerLogin.isEmpty else {
+            return text
+        }
+
+        if text.caseInsensitiveCompare(viewerLogin) == .orderedSame {
+            return "you"
+        }
+
+        let prefix = "\(viewerLogin) · "
+        guard let range = text.range(
+            of: prefix,
+            options: [.anchored, .caseInsensitive]
+        ) else {
+            return text
+        }
+
+        return text.replacingCharacters(in: range, with: "you · ")
+    }
+
+    static func updateDetailText(
+        actor: AttentionActor?,
+        detail: String?,
+        viewerLogin: String?
+    ) -> String? {
+        let personalizedDetail = detail.map {
+            personalizing($0, viewerLogin: viewerLogin)
+        }
+
+        guard let actor else {
+            return personalizedDetail
+        }
+
+        let actorLabel = actorLabel(for: actor, viewerLogin: viewerLogin)
+        guard let personalizedDetail, !personalizedDetail.isEmpty else {
+            return actorLabel
+        }
+
+        let prefix = "\(actorLabel) · "
+        if personalizedDetail.range(of: prefix, options: [.anchored, .caseInsensitive]) != nil {
+            return personalizedDetail
+        }
+
+        return "\(actorLabel) · \(personalizedDetail)"
+    }
 }
 
 struct PullRequestContextBadge: Identifiable, Hashable, Sendable {
@@ -1653,6 +2003,7 @@ extension PullRequestFocus {
             sourceType: sourceType,
             mode: mode,
             resolution: resolution,
+            mergedAt: mergedAt,
             author: author,
             labels: labels,
             headerFacts: headerFacts,
@@ -1798,32 +2149,18 @@ extension PullRequestHeaderFact {
     ) -> [PullRequestHeaderFact] {
         switch sourceType {
         case .readyToMerge:
-            guard let approver = sourceActor ?? latestApprover else {
-                return []
-            }
-
-            return [
-                PullRequestHeaderFact(
-                    id: "approved-by",
-                    label: "approved by",
-                    actor: approver,
-                    additionalActorCount: max(0, approvalCount - 1)
-                )
-            ]
+            return authorApprovalFacts(
+                author: author,
+                approver: sourceActor ?? latestApprover,
+                approvalOverflowCount: max(0, approvalCount - 1)
+            )
 
         case .reviewApproved:
-            guard let approver = sourceActor ?? latestApprover else {
-                return []
-            }
-
-            return [
-                PullRequestHeaderFact(
-                    id: "approved-by",
-                    label: "approved by",
-                    actor: approver,
-                    additionalActorCount: 0
-                )
-            ]
+            return authorApprovalFacts(
+                author: author,
+                approver: sourceActor ?? latestApprover,
+                approvalOverflowCount: 0
+            )
 
         case .reviewComment:
             guard let sourceActor else {
@@ -1943,6 +2280,49 @@ extension PullRequestHeaderFact {
                 )
             ]
         }
+    }
+
+    private static func authorApprovalFacts(
+        author: AttentionActor?,
+        approver: AttentionActor?,
+        approvalOverflowCount: Int
+    ) -> [PullRequestHeaderFact] {
+        if let author, let approver, author.isSameAccount(as: approver) {
+            return [
+                PullRequestHeaderFact(
+                    id: "created-and-approved-by",
+                    label: "created and approved by",
+                    actor: author,
+                    additionalActorCount: approvalOverflowCount
+                )
+            ]
+        }
+
+        var facts = [PullRequestHeaderFact]()
+
+        if let author {
+            facts.append(
+                PullRequestHeaderFact(
+                    id: "created-by",
+                    label: "created by",
+                    actor: author,
+                    additionalActorCount: 0
+                )
+            )
+        }
+
+        if let approver {
+            facts.append(
+                PullRequestHeaderFact(
+                    id: "approved-by",
+                    label: "approved by",
+                    actor: approver,
+                    additionalActorCount: approvalOverflowCount
+                )
+            )
+        }
+
+        return facts
     }
 }
 
@@ -2363,10 +2743,14 @@ extension PullRequestStatusSummary {
 
 struct AttentionItem: Identifiable, Hashable, Sendable {
     let id: String
-    let ignoreKey: String
+    let subjectKey: String
+    let updateKey: String
+    let latestSourceID: String
     let stream: AttentionStream
     let type: AttentionItemType
     let secondaryIndicatorType: AttentionItemType?
+    let focusType: AttentionItemType?
+    let focusActor: AttentionActor?
     let title: String
     let subtitle: String
     let repository: String?
@@ -2374,16 +2758,23 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     let timestamp: Date
     let url: URL
     let actor: AttentionActor?
+    let isTriggeredByCurrentUser: Bool
     let detail: AttentionDetail
     let isHistoricalLogEntry: Bool
+    let closureNotificationEligibleOverride: Bool?
+    let postMergeWatchEligibleOverride: Bool?
     var isUnread: Bool
 
     init(
         id: String,
-        ignoreKey: String,
+        subjectKey: String,
+        updateKey: String? = nil,
+        latestSourceID: String? = nil,
         stream: AttentionStream? = nil,
         type: AttentionItemType,
         secondaryIndicatorType: AttentionItemType? = nil,
+        focusType: AttentionItemType? = nil,
+        focusActor: AttentionActor? = nil,
         title: String,
         subtitle: String,
         repository: String? = nil,
@@ -2391,15 +2782,22 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         timestamp: Date,
         url: URL,
         actor: AttentionActor? = nil,
+        isTriggeredByCurrentUser: Bool = false,
         detail: AttentionDetail? = nil,
         isHistoricalLogEntry: Bool = false,
+        closureNotificationEligibleOverride: Bool? = nil,
+        postMergeWatchEligibleOverride: Bool? = nil,
         isUnread: Bool = true
     ) {
         self.id = id
-        self.ignoreKey = ignoreKey
+        self.subjectKey = subjectKey
+        self.updateKey = updateKey ?? id
+        self.latestSourceID = latestSourceID ?? id
         self.stream = stream ?? type.defaultStream
         self.type = type
         self.secondaryIndicatorType = secondaryIndicatorType
+        self.focusType = focusType
+        self.focusActor = focusActor
         self.title = title
         self.subtitle = subtitle
         self.repository = repository
@@ -2407,6 +2805,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         self.timestamp = timestamp
         self.url = url
         self.actor = actor
+        self.isTriggeredByCurrentUser = isTriggeredByCurrentUser
         self.detail = detail ?? Self.defaultDetail(
             type: type,
             subtitle: subtitle,
@@ -2414,7 +2813,65 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             actor: actor
         )
         self.isHistoricalLogEntry = isHistoricalLogEntry
+        self.closureNotificationEligibleOverride = closureNotificationEligibleOverride
+        self.postMergeWatchEligibleOverride = postMergeWatchEligibleOverride
         self.isUnread = isUnread
+    }
+
+    var ignoreKey: String { subjectKey }
+
+    func replacing(detail: AttentionDetail) -> AttentionItem {
+        AttentionItem(
+            id: id,
+            subjectKey: subjectKey,
+            updateKey: updateKey,
+            latestSourceID: latestSourceID,
+            stream: stream,
+            type: type,
+            secondaryIndicatorType: secondaryIndicatorType,
+            focusType: focusType,
+            focusActor: focusActor,
+            title: title,
+            subtitle: subtitle,
+            repository: repository,
+            labels: labels,
+            timestamp: timestamp,
+            url: url,
+            actor: actor,
+            isTriggeredByCurrentUser: isTriggeredByCurrentUser,
+            detail: detail,
+            isHistoricalLogEntry: isHistoricalLogEntry,
+            closureNotificationEligibleOverride: closureNotificationEligibleOverride,
+            postMergeWatchEligibleOverride: postMergeWatchEligibleOverride,
+            isUnread: isUnread
+        )
+    }
+
+    func replacing(labels: [GitHubLabel]) -> AttentionItem {
+        AttentionItem(
+            id: id,
+            subjectKey: subjectKey,
+            updateKey: updateKey,
+            latestSourceID: latestSourceID,
+            stream: stream,
+            type: type,
+            secondaryIndicatorType: secondaryIndicatorType,
+            focusType: focusType,
+            focusActor: focusActor,
+            title: title,
+            subtitle: subtitle,
+            repository: repository,
+            labels: labels,
+            timestamp: timestamp,
+            url: url,
+            actor: actor,
+            isTriggeredByCurrentUser: isTriggeredByCurrentUser,
+            detail: detail,
+            isHistoricalLogEntry: isHistoricalLogEntry,
+            closureNotificationEligibleOverride: closureNotificationEligibleOverride,
+            postMergeWatchEligibleOverride: postMergeWatchEligibleOverride,
+            isUnread: isUnread
+        )
     }
 
     var nativeNotificationTitle: String {
@@ -2477,6 +2934,10 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     }
 
     var isClosureNotificationEligible: Bool {
+        if let closureNotificationEligibleOverride {
+            return closureNotificationEligibleOverride
+        }
+
         switch type {
         case .authoredPullRequest,
                 .reviewedPullRequest,
@@ -2499,6 +2960,8 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
                 .reviewRequested,
                 .teamReviewRequested,
                 .ciActivity,
+                .workflowRunning,
+                .workflowSucceeded,
                 .workflowFailed,
                 .workflowApprovalRequired:
             return false
@@ -2508,6 +2971,10 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     var isPostMergeWatchEligible: Bool {
         guard pullRequestReference != nil else {
             return false
+        }
+
+        if let postMergeWatchEligibleOverride {
+            return postMergeWatchEligibleOverride
         }
 
         switch type {
@@ -2532,6 +2999,8 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
                 .authoredIssue,
                 .commentedIssue,
                 .ciActivity,
+                .workflowRunning,
+                .workflowSucceeded,
                 .workflowFailed,
                 .workflowApprovalRequired:
             return false
@@ -2644,6 +3113,10 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             return "A pull request you are tracking changed state."
         case .ciActivity:
             return "GitHub Actions activity needs attention."
+        case .workflowRunning:
+            return "A workflow run is currently in progress."
+        case .workflowSucceeded:
+            return "A workflow run finished successfully."
         case .workflowFailed:
             return "A workflow run failed and likely needs intervention."
         case .workflowApprovalRequired:
@@ -2661,6 +3134,10 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             name: reference.name,
             number: reference.number
         )
+    }
+
+    static func subjectReference(fromSubjectKey value: String) -> GitHubSubjectReference? {
+        subjectReference(from: value)
     }
 
     private static func subjectReference(from value: String) -> GitHubSubjectReference? {
@@ -2698,6 +3175,347 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     }
 }
 
+extension AttentionItemType {
+    var isRelationshipType: Bool {
+        switch self {
+        case .assignedPullRequest,
+                .authoredPullRequest,
+                .reviewedPullRequest,
+                .commentedPullRequest,
+                .assignedIssue,
+                .authoredIssue,
+                .commentedIssue:
+            return true
+        case .readyToMerge,
+                .comment,
+                .mention,
+                .teamMention,
+                .newCommitsAfterComment,
+                .newCommitsAfterReview,
+                .reviewRequested,
+                .teamReviewRequested,
+                .reviewApproved,
+                .reviewChangesRequested,
+                .reviewComment,
+                .pullRequestStateChanged,
+                .ciActivity,
+                .workflowRunning,
+                .workflowSucceeded,
+                .workflowFailed,
+                .workflowApprovalRequired:
+            return false
+        }
+    }
+
+    var isSelfTriggeredRelationshipType: Bool {
+        switch self {
+        case .authoredPullRequest,
+                .reviewedPullRequest,
+                .commentedPullRequest,
+                .authoredIssue,
+                .commentedIssue:
+            return true
+        case .assignedPullRequest,
+                .assignedIssue,
+                .readyToMerge,
+                .comment,
+                .mention,
+                .teamMention,
+                .newCommitsAfterComment,
+                .newCommitsAfterReview,
+                .reviewRequested,
+                .teamReviewRequested,
+                .reviewApproved,
+                .reviewChangesRequested,
+                .reviewComment,
+                .pullRequestStateChanged,
+                .ciActivity,
+                .workflowRunning,
+                .workflowSucceeded,
+                .workflowFailed,
+                .workflowApprovalRequired:
+            return false
+        }
+    }
+
+    var relationshipPriority: Int {
+        switch self {
+        case .authoredPullRequest, .assignedIssue:
+            return 4
+        case .assignedPullRequest, .authoredIssue:
+            return 3
+        case .reviewedPullRequest:
+            return 2
+        case .commentedPullRequest, .commentedIssue:
+            return 1
+        default:
+            return 0
+        }
+    }
+
+    var aggregateDisplayPriority: Int {
+        switch self {
+        case .workflowApprovalRequired:
+            return 9
+        case .workflowFailed:
+            return 8
+        case .reviewChangesRequested:
+            return 7
+        case .reviewRequested, .teamReviewRequested:
+            return 6
+        case .reviewApproved, .readyToMerge:
+            return 5
+        case .reviewComment, .comment, .mention, .teamMention:
+            return 4
+        case .newCommitsAfterComment, .newCommitsAfterReview, .pullRequestStateChanged:
+            return 3
+        case .workflowRunning:
+            return 2
+        case .workflowSucceeded, .ciActivity:
+            return 1
+        case .assignedPullRequest,
+                .authoredPullRequest,
+                .reviewedPullRequest,
+                .commentedPullRequest,
+                .assignedIssue,
+                .authoredIssue,
+                .commentedIssue:
+            return 0
+        }
+    }
+
+    var aggregateUpdateTitle: String {
+        switch self {
+        case .workflowRunning:
+            return "Workflow running"
+        case .workflowSucceeded:
+            return "Workflow succeeded"
+        case .workflowFailed:
+            return "Workflow failed"
+        case .workflowApprovalRequired:
+            return "Workflow waiting for approval"
+        default:
+            return accessibilityLabel
+        }
+    }
+
+    var badgeMeaningLabel: String {
+        switch self {
+        case .assignedPullRequest, .assignedIssue:
+            return "Assigned to you"
+        case .authoredPullRequest, .authoredIssue:
+            return "Created by you"
+        case .reviewedPullRequest:
+            return "Reviewed by you"
+        case .commentedPullRequest, .commentedIssue:
+            return "Commented on by you"
+        default:
+            return accessibilityLabel
+        }
+    }
+
+    static func badgeHelpText(
+        primary: AttentionItemType,
+        secondary: AttentionItemType?
+    ) -> String {
+        guard let secondary else {
+            return primary.badgeMeaningLabel
+        }
+
+        return "\(primary.badgeMeaningLabel)\n\(secondary.badgeMeaningLabel)"
+    }
+}
+
+private struct AttentionSubjectAggregation {
+    let subjectItem: AttentionItem
+    let relationshipItem: AttentionItem?
+}
+
+enum AttentionSubjectViewPolicy {
+    static func collapsingUpdates(in items: [AttentionItem]) -> [AttentionItem] {
+        let grouped = Dictionary(grouping: items, by: \.subjectKey)
+        return grouped.values
+            .compactMap(aggregate)
+            .sorted { $0.subjectItem.timestamp > $1.subjectItem.timestamp }
+            .map(\.subjectItem)
+    }
+
+    static func preferredRelationship(in items: [AttentionItem]) -> AttentionItem? {
+        aggregate(items)?.relationshipItem
+    }
+
+    private static func aggregate(_ items: [AttentionItem]) -> AttentionSubjectAggregation? {
+        guard let subjectKey = items.first?.subjectKey else {
+            return nil
+        }
+
+        let relationshipItem = items
+            .filter { $0.type.isRelationshipType }
+            .max(by: relationshipSort(lhs:rhs:))
+
+        let updateItems = items.filter { !$0.type.isRelationshipType }
+        let primaryItem = updateItems.max(by: updateSort(lhs:rhs:)) ??
+            relationshipItem ??
+            items.max(by: updateSort(lhs:rhs:))
+
+        guard let primaryItem else {
+            return nil
+        }
+
+        let titleSource = items.first {
+            !$0.type.iconName.contains("bolt") && !$0.title.isEmpty
+        } ?? items.max(by: updateSort(lhs:rhs:))
+
+        let title = titleSource?.title ?? subjectLabel(for: subjectKey)
+        let repository = items.compactMap(\.repository).first
+        let labels = items
+            .sorted {
+                if $0.labels.count == $1.labels.count {
+                    return $0.timestamp > $1.timestamp
+                }
+                return $0.labels.count > $1.labels.count
+            }
+            .first?.labels ?? []
+
+        let updates = updateItems
+            .sorted(by: { lhs, rhs in
+                if lhs.timestamp == rhs.timestamp {
+                    return lhs.type.aggregateDisplayPriority > rhs.type.aggregateDisplayPriority
+                }
+                return lhs.timestamp > rhs.timestamp
+            })
+            .reduce(into: [AttentionUpdate]()) { partialResult, item in
+                guard partialResult.contains(where: { $0.id == item.updateKey }) == false else {
+                    return
+                }
+                partialResult.append(
+                    AttentionUpdate(
+                        id: item.updateKey,
+                        type: item.type,
+                        title: item.type.aggregateUpdateTitle,
+                        detail: updateDetail(for: item),
+                        timestamp: item.timestamp,
+                        actor: item.actor,
+                        url: item.url,
+                        isTriggeredByCurrentUser: item.isTriggeredByCurrentUser
+                    )
+                )
+            }
+
+        let focusItem = relationshipItem ?? primaryItem
+        let detail = AttentionDetail(
+            contextPillTitle: primaryItem.detail.contextPillTitle,
+            why: primaryItem.detail.why,
+            evidence: primaryItem.detail.evidence,
+            updates: updates,
+            actions: primaryItem.detail.actions,
+            acknowledgement: primaryItem.detail.acknowledgement
+        )
+
+        let subjectItem = AttentionItem(
+            id: subjectKey,
+            subjectKey: subjectKey,
+            updateKey: primaryItem.updateKey,
+            latestSourceID: primaryItem.latestSourceID,
+            stream: stream(for: primaryItem, subjectKey: subjectKey),
+            type: primaryItem.type,
+            secondaryIndicatorType: secondaryIndicator(
+                primaryType: primaryItem.type,
+                relationshipItem: relationshipItem
+            ),
+            focusType: focusItem.type,
+            focusActor: focusItem.actor,
+            title: title,
+            subtitle: primaryItem.subtitle,
+            repository: repository,
+            labels: labels,
+            timestamp: primaryItem.timestamp,
+            url: primaryItem.url,
+            actor: primaryItem.actor,
+            isTriggeredByCurrentUser: primaryItem.isTriggeredByCurrentUser,
+            detail: detail,
+            isHistoricalLogEntry: items.allSatisfy(\.isHistoricalLogEntry),
+            closureNotificationEligibleOverride: items.contains(where: \.isClosureNotificationEligible),
+            postMergeWatchEligibleOverride: items.contains(where: \.isPostMergeWatchEligible),
+            isUnread: items.contains(where: \.isUnread)
+        )
+
+        return AttentionSubjectAggregation(
+            subjectItem: subjectItem,
+            relationshipItem: relationshipItem
+        )
+    }
+
+    private static func relationshipSort(lhs: AttentionItem, rhs: AttentionItem) -> Bool {
+        if lhs.type.relationshipPriority == rhs.type.relationshipPriority {
+            return lhs.timestamp < rhs.timestamp
+        }
+        return lhs.type.relationshipPriority < rhs.type.relationshipPriority
+    }
+
+    private static func updateSort(lhs: AttentionItem, rhs: AttentionItem) -> Bool {
+        if lhs.timestamp == rhs.timestamp {
+            return lhs.type.aggregateDisplayPriority < rhs.type.aggregateDisplayPriority
+        }
+        return lhs.timestamp < rhs.timestamp
+    }
+
+    private static func secondaryIndicator(
+        primaryType: AttentionItemType,
+        relationshipItem: AttentionItem?
+    ) -> AttentionItemType? {
+        guard let relationshipItem, relationshipItem.type != primaryType else {
+            return nil
+        }
+
+        return relationshipItem.type
+    }
+
+    private static func stream(
+        for item: AttentionItem,
+        subjectKey: String
+    ) -> AttentionStream {
+        if let reference = item.subjectReference ?? AttentionItem.subjectReference(fromSubjectKey: subjectKey) {
+            switch reference.kind {
+            case .pullRequest:
+                return .pullRequests
+            case .issue:
+                return .issues
+            }
+        }
+
+        return item.stream
+    }
+
+    private static func updateDetail(for item: AttentionItem) -> String? {
+        if item.type == .workflowRunning ||
+            item.type == .workflowSucceeded ||
+            item.type == .workflowFailed ||
+            item.type == .workflowApprovalRequired {
+            return item.detail.evidence.first(where: { $0.id == "run" })?.detail ?? item.subtitle
+        }
+
+        if let detail = item.detail.why.detail, !detail.isEmpty {
+            return detail
+        }
+
+        return item.subtitle
+    }
+
+    private static func subjectLabel(for subjectKey: String) -> String {
+        if let reference = AttentionItem.subjectReference(fromSubjectKey: subjectKey) {
+            switch reference.kind {
+            case .pullRequest:
+                return "Pull Request #\(reference.number)"
+            case .issue:
+                return "Issue #\(reference.number)"
+            }
+        }
+
+        return subjectKey
+    }
+}
+
 struct PullRequestSummary: Identifiable, Hashable, Sendable {
     let id: Int
     let ignoreKey: String
@@ -2723,7 +3541,15 @@ struct TrackedSubjectSummary: Identifiable, Hashable, Sendable {
     let url: URL
     let updatedAt: Date
     let actor: AttentionActor?
+    let isTriggeredByCurrentUser: Bool
+    let latestSelfUpdate: TrackedSubjectSelfUpdateSummary?
     let resolution: GitHubSubjectResolution
+}
+
+struct TrackedSubjectSelfUpdateSummary: Hashable, Sendable {
+    let type: AttentionItemType
+    let timestamp: Date
+    let actor: AttentionActor?
 }
 
 struct ReadyToMergeSummary: Identifiable, Hashable, Sendable {
@@ -2752,6 +3578,7 @@ struct NotificationSummary: Identifiable, Hashable, Sendable {
     let updatedAt: Date
     let unread: Bool
     let actor: AttentionActor?
+    let isTriggeredByCurrentUser: Bool
     let targetLabel: String?
     let stateTransition: PullRequestStateTransition?
     let detailEvidence: [AttentionEvidence]
@@ -2805,14 +3632,16 @@ enum PullRequestStateTransition: String, Hashable, Sendable {
 
 struct ActionRunSummary: Identifiable, Hashable, Sendable {
     let id: String
-    let ignoreKey: String
+    let subjectKey: String
     let type: AttentionItemType
-    let title: String
+    let subjectTitle: String
+    let runTitle: String
     let subtitle: String
     let repository: String
-    let createdAt: Date
+    let updatedAt: Date
     let url: URL
     let actor: AttentionActor?
+    let isTriggeredByCurrentUser: Bool
 }
 
 enum AutoMarkReadSetting: Int, CaseIterable, Hashable, Sendable {

@@ -26,19 +26,22 @@ final class AppModel: ObservableObject {
     @Published private(set) var ignoreUndoState: IgnoreUndoState?
     @Published private(set) var pollIntervalSeconds = 60
     @Published private(set) var autoMarkReadSetting: AutoMarkReadSetting = .threeSeconds
+    @Published private(set) var notifyOnSelfTriggeredUpdates = false
     @Published private(set) var pullRequestWatchRevision = 0
     @Published private(set) var showsDebugRateLimitDetails = false
 
-    private let readStateStoreKey = "attention-item-read-state-v1"
+    private let readStateStoreKey = "attention-subject-read-state-v2"
     private let ignoredSubjectStoreKey = "ignored-attention-subjects-v2"
     private let legacyIgnoredSubjectStoreKey = "ignored-attention-subjects-v1"
     private let pollIntervalStoreKey = "poll-interval-seconds-v1"
     private let autoMarkReadStoreKey = "auto-mark-read-setting-v1"
+    private let notifyOnSelfTriggeredUpdatesStoreKey = "notify-on-self-triggered-updates-v1"
     private let debugRateLimitDetailsStoreKey = "debug-rate-limit-details-v1"
     private let notificationScanStateStoreKey = "notification-scan-state-v1"
     private let teamMembershipStoreKey = "team-membership-cache-v1"
     private let postMergeWatchStoreKey = "post-merge-watches-v1"
     private let mergeMethodPreferenceStoreKey = "merge-method-preferences-v1"
+    private let attentionUpdateHistoryStoreKey = "attention-update-history-v1"
     private let client = GitHubClient()
     private let notifier = UserNotifier()
     private let pullRequestFocusCacheTTL: TimeInterval = 300
@@ -46,6 +49,7 @@ final class AppModel: ObservableObject {
 
     private struct PullRequestFocusCacheEntry {
         let focus: PullRequestFocus
+        let subjectRefresh: AttentionSubjectRefresh
         let sourceTimestamp: Date
         let loadedAt: Date
     }
@@ -55,7 +59,7 @@ final class AppModel: ObservableObject {
     private var pollingTask: Task<Void, Never>?
     private var watchedPullRequestTask: Task<Void, Never>?
     private var latestSnapshotAttentionItems: [AttentionItem] = []
-    private var knownItemIDs = Set<String>()
+    private var knownLatestUpdateKeyBySubjectKey = [String: String]()
     private var notificationScanState = NotificationScanState.default
     private var teamMembershipCache = TeamMembershipCache.default
     private var postMergeWatchesByKey = [String: PostMergeWatch]()
@@ -65,7 +69,8 @@ final class AppModel: ObservableObject {
     private var ignoredItemsByKey = [String: IgnoredAttentionSubject]()
     private var mergeMethodPreferenceByRepository = [String: PullRequestMergeMethod]()
     private var ignoreUndoDismissTask: Task<Void, Never>?
-    private var readStateByItemID: [String: Date] = [:]
+    private var readStateBySubjectKey: [String: Date] = [:]
+    private var updateHistoryBySubjectKey = [String: [AttentionUpdate]]()
     private var suppressedTransitionNotificationKeys = Set<String>()
     private let relativeDateFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -82,6 +87,10 @@ final class AppModel: ObservableObject {
         autoMarkReadSetting = Self.loadAutoMarkReadSetting(
             from: UserDefaults.standard,
             key: autoMarkReadStoreKey
+        )
+        notifyOnSelfTriggeredUpdates = Self.loadBooleanSetting(
+            from: UserDefaults.standard,
+            key: notifyOnSelfTriggeredUpdatesStoreKey
         )
         showsDebugRateLimitDetails = Self.loadBooleanSetting(
             from: UserDefaults.standard,
@@ -103,9 +112,13 @@ final class AppModel: ObservableObject {
             from: UserDefaults.standard,
             key: mergeMethodPreferenceStoreKey
         )
-        readStateByItemID = Self.loadReadState(
+        readStateBySubjectKey = Self.loadReadState(
             from: UserDefaults.standard,
             key: readStateStoreKey
+        )
+        updateHistoryBySubjectKey = AttentionUpdateHistoryStore.load(
+            from: UserDefaults.standard,
+            key: attentionUpdateHistoryStoreKey
         )
         ignoredItemsByKey = Self.loadIgnoredItems(
             from: UserDefaults.standard,
@@ -140,6 +153,10 @@ final class AppModel: ObservableObject {
         !(token ?? "").isEmpty
     }
 
+    var viewerLogin: String? {
+        userLogin
+    }
+
     var actionableCount: Int {
         actionableAttentionItems.count
     }
@@ -149,7 +166,7 @@ final class AppModel: ObservableObject {
     }
 
     var combinedAttentionItems: [AttentionItem] {
-        AttentionCombinedViewPolicy.collapsingDuplicates(in: attentionItems)
+        attentionItems
     }
 
     var actionableAttentionItems: [AttentionItem] {
@@ -199,6 +216,15 @@ final class AppModel: ObservableObject {
 
         showsDebugRateLimitDetails = value
         UserDefaults.standard.set(value, forKey: debugRateLimitDetailsStoreKey)
+    }
+
+    func setNotifyOnSelfTriggeredUpdates(_ value: Bool) {
+        guard notifyOnSelfTriggeredUpdates != value else {
+            return
+        }
+
+        notifyOnSelfTriggeredUpdates = value
+        UserDefaults.standard.set(value, forKey: notifyOnSelfTriggeredUpdatesStoreKey)
     }
 
     func rateLimitBucketSummary(
@@ -256,6 +282,8 @@ final class AppModel: ObservableObject {
     }
 
     func clearToken() {
+        let existingSubjectKeys = Array(attentionItems.map(\.subjectKey))
+
         token = nil
         tokenInput = ""
         usingGitHubCLIToken = false
@@ -265,16 +293,19 @@ final class AppModel: ObservableObject {
         lastUpdated = nil
         lastError = nil
         clearRateLimitState()
-        knownItemIDs.removeAll()
+        knownLatestUpdateKeyBySubjectKey.removeAll()
         notificationScanState = .default
         teamMembershipCache = .default
         pullRequestFocusCache = [:]
         suppressedTransitionNotificationKeys = []
         clearIgnoreUndoState()
+        notifier.removeSubjectNotifications(subjectKeys: existingSubjectKeys)
         UserDefaults.standard.removeObject(forKey: notificationScanStateStoreKey)
         UserDefaults.standard.removeObject(forKey: teamMembershipStoreKey)
         UserDefaults.standard.removeObject(forKey: postMergeWatchStoreKey)
+        UserDefaults.standard.removeObject(forKey: attentionUpdateHistoryStoreKey)
         postMergeWatchesByKey.removeAll()
+        updateHistoryBySubjectKey.removeAll()
 
         pollingTask?.cancel()
         pollingTask = nil
@@ -309,13 +340,18 @@ final class AppModel: ObservableObject {
     }
 
     func refreshNow() {
-        guard hasToken, !isRefreshing else {
-            return
+        Task {
+            await forceRefresh()
+        }
+    }
+
+    func forceRefresh(item: AttentionItem? = nil) async {
+        if let item, item.pullRequestReference != nil {
+            pullRequestFocusCache[item.ignoreKey] = nil
+            pullRequestWatchRevision &+= 1
         }
 
-        Task {
-            await refresh(force: true)
-        }
+        await refresh(force: true)
     }
 
     func setWatchedPullRequest(_ item: AttentionItem?) {
@@ -361,6 +397,7 @@ final class AppModel: ObservableObject {
             cached.sourceTimestamp >= item.timestamp,
             Date().timeIntervalSince(cached.loadedAt) < pullRequestFocusCacheTTL
         {
+            applyPullRequestFocusSubjectRefresh(cached.subjectRefresh)
             return cached.focus
         }
 
@@ -368,8 +405,8 @@ final class AppModel: ObservableObject {
             token: token,
             login: userLogin,
             reference: reference,
-            sourceType: item.type,
-            sourceActor: item.actor
+            sourceType: item.focusType ?? item.type,
+            sourceActor: item.focusActor ?? item.actor
         )
         let preferredMergeMethod = preferredMergeMethod(
             for: reference,
@@ -379,9 +416,11 @@ final class AppModel: ObservableObject {
         let focus = result.focus.applyingPreferredMergeMethod(preferredMergeMethod)
 
         mergeRateLimitState(with: result.rateLimits)
+        applyPullRequestFocusSubjectRefresh(result.subjectRefresh)
 
         pullRequestFocusCache[cacheKey] = PullRequestFocusCacheEntry(
             focus: focus,
+            subjectRefresh: result.subjectRefresh,
             sourceTimestamp: item.timestamp,
             loadedAt: Date()
         )
@@ -406,6 +445,7 @@ final class AppModel: ObservableObject {
 
             return PullRequestFocusCacheEntry(
                 focus: entry.focus.applyingPreferredMergeMethod(mergeMethod),
+                subjectRefresh: entry.subjectRefresh,
                 sourceTimestamp: entry.sourceTimestamp,
                 loadedAt: entry.loadedAt
             )
@@ -483,6 +523,7 @@ final class AppModel: ObservableObject {
         syncIgnoredItems()
         persistIgnoredItems()
         presentIgnoreUndo(for: ignoredSummaries)
+        notifier.removeSubjectNotifications(subjectKeys: Array(ignoredKeys))
         reconcileAttentionItemsFromSnapshot()
     }
 
@@ -696,7 +737,7 @@ final class AppModel: ObservableObject {
             userLogin = validatedLogin
             usingGitHubCLIToken = source == .githubCLI
             tokenInput = source == .githubCLI ? "" : candidate
-            knownItemIDs.removeAll()
+            knownLatestUpdateKeyBySubjectKey.removeAll()
             lastError = nil
             clearRateLimitState()
             pullRequestFocusCache = [:]
@@ -705,8 +746,10 @@ final class AppModel: ObservableObject {
             if previousLogin?.caseInsensitiveCompare(validatedLogin) != .orderedSame {
                 teamMembershipCache = .default
                 postMergeWatchesByKey.removeAll()
+                updateHistoryBySubjectKey.removeAll()
                 UserDefaults.standard.removeObject(forKey: teamMembershipStoreKey)
                 UserDefaults.standard.removeObject(forKey: postMergeWatchStoreKey)
+                UserDefaults.standard.removeObject(forKey: attentionUpdateHistoryStoreKey)
                 clearWatchedPullRequest()
             }
 
@@ -749,23 +792,25 @@ final class AppModel: ObservableObject {
     }
 
     private func notifyIfNeeded(previousItems: [AttentionItem], token: String) async {
-        let currentIDs = Set(attentionItems.map(\.id))
+        let currentItemsBySubjectKey = Dictionary(
+            uniqueKeysWithValues: attentionItems.map { ($0.subjectKey, $0) }
+        )
         let suppressedWorkflowItemIDs = Set(
             postMergeWatchesByKey.values.flatMap(\.suppressedWorkflowItemIDs)
         )
         var registeredNewPostMergeWatch = false
         let newItems = attentionItems
-            .filter { currentIDs.contains($0.id) && !knownItemIDs.contains($0.id) }
+            .filter { knownLatestUpdateKeyBySubjectKey[$0.subjectKey] != $0.updateKey }
             .sorted { $0.timestamp < $1.timestamp }
 
-        if !knownItemIDs.isEmpty {
+        if !knownLatestUpdateKeyBySubjectKey.isEmpty {
             var deliveredItemNotifications = 0
             for item in newItems {
                 guard deliveredItemNotifications < 5 else {
                     break
                 }
 
-                if suppressedWorkflowItemIDs.contains(item.id) {
+                if suppressedWorkflowItemIDs.contains(item.latestSourceID) {
                     continue
                 }
 
@@ -773,35 +818,36 @@ final class AppModel: ObservableObject {
                     continue
                 }
 
+                if !AttentionUpdateNotificationPolicy.shouldDeliver(
+                    item: item,
+                    includeSelfTriggeredUpdates: notifyOnSelfTriggeredUpdates
+                ) {
+                    notifier.removeSubjectNotifications(subjectKeys: [item.subjectKey])
+                    continue
+                }
+
                 notifier.notify(item: item)
                 deliveredItemNotifications += 1
             }
 
-            let removedItems = previousItems.filter { knownItemIDs.contains($0.id) && !currentIDs.contains($0.id) }
-            let groupedRemovedItems = Dictionary(grouping: removedItems, by: \.ignoreKey)
-            let sortedRemovedGroups = groupedRemovedItems.values.sorted { lhs, rhs in
-                let lhsTimestamp = lhs.map(\.timestamp).max() ?? .distantPast
-                let rhsTimestamp = rhs.map(\.timestamp).max() ?? .distantPast
-                return lhsTimestamp > rhsTimestamp
-            }
+            let removedItems = previousItems
+                .filter { currentItemsBySubjectKey[$0.subjectKey] == nil }
+                .sorted { $0.timestamp > $1.timestamp }
+
+            notifier.removeSubjectNotifications(subjectKeys: removedItems.map(\.subjectKey))
 
             var deliveredTransitionNotifications = 0
-            for removedGroup in sortedRemovedGroups {
+            for removedItem in removedItems {
                 guard deliveredTransitionNotifications < 3 else {
                     break
                 }
 
-                guard let ignoreKey = removedGroup.first?.ignoreKey else {
-                    continue
-                }
-
-                if suppressedTransitionNotificationKeys.remove(ignoreKey) != nil {
+                if suppressedTransitionNotificationKeys.remove(removedItem.subjectKey) != nil {
                     continue
                 }
 
                 guard
-                    let representative = removedGroup.max(by: { $0.timestamp < $1.timestamp }),
-                    let subjectReference = representative.subjectReference
+                    let subjectReference = removedItem.subjectReference
                 else {
                     continue
                 }
@@ -813,7 +859,7 @@ final class AppModel: ObservableObject {
                         login: userLogin
                     )
                     if let transition = AttentionRemovalNotificationPolicy.notification(
-                        for: removedGroup,
+                        for: [removedItem],
                         state: state
                     ) {
                         notifier.notify(transition: transition)
@@ -821,7 +867,7 @@ final class AppModel: ObservableObject {
                     }
 
                     if registerResolvedPostMergeWatchIfNeeded(
-                        for: removedGroup,
+                        for: [removedItem],
                         state: state
                     ) {
                         registeredNewPostMergeWatch = true
@@ -832,7 +878,9 @@ final class AppModel: ObservableObject {
             }
         }
 
-        knownItemIDs = currentIDs
+        knownLatestUpdateKeyBySubjectKey = Dictionary(
+            uniqueKeysWithValues: attentionItems.map { ($0.subjectKey, $0.updateKey) }
+        )
 
         if registeredNewPostMergeWatch {
             await processPostMergeWatches(token: token)
@@ -938,33 +986,36 @@ final class AppModel: ObservableObject {
     }
 
     private func isLocallyUnread(_ item: AttentionItem) -> Bool {
-        guard let readAt = readStateByItemID[item.id] else {
+        guard let readAt = readStateBySubjectKey[item.subjectKey] else {
             return true
         }
         return readAt < item.timestamp
     }
 
     private func updateReadState(for items: [AttentionItem], isUnread: Bool) {
-        let itemIDs = Set(items.map(\.id))
-        guard !itemIDs.isEmpty else {
+        let subjectKeys = Set(items.map(\.subjectKey))
+        guard !subjectKeys.isEmpty else {
             return
         }
 
         let timestamp = Date()
-        for itemID in itemIDs {
+        for subjectKey in subjectKeys {
             if isUnread {
-                readStateByItemID[itemID] = nil
+                readStateBySubjectKey[subjectKey] = nil
             } else {
-                readStateByItemID[itemID] = timestamp
+                readStateBySubjectKey[subjectKey] = timestamp
             }
         }
 
         persistReadState()
+        if !isUnread {
+            notifier.removeSubjectNotifications(subjectKeys: Array(subjectKeys))
+        }
         reconcileAttentionItemsFromSnapshot()
     }
 
     private func persistReadState() {
-        let raw = readStateByItemID.mapValues(\.timeIntervalSince1970)
+        let raw = readStateBySubjectKey.mapValues(\.timeIntervalSince1970)
         UserDefaults.standard.set(raw, forKey: readStateStoreKey)
     }
 
@@ -1039,11 +1090,42 @@ final class AppModel: ObservableObject {
     }
 
     private func reconcileAttentionItemsFromSnapshot() {
-        attentionItems = AttentionItemVisibilityPolicy
+        let visibleItems = AttentionItemVisibilityPolicy
             .excludingIgnoredSubjects(
-                latestSnapshotAttentionItems.map(applyingLocalReadState),
+                latestSnapshotAttentionItems,
                 ignoredKeys: Set(ignoredItemsByKey.keys)
             )
+        let aggregatedItems = AttentionCombinedViewPolicy
+            .collapsingDuplicates(in: visibleItems)
+        let projection = AttentionUpdateHistoryProjection.applying(
+            persistedHistoryBySubjectKey: updateHistoryBySubjectKey,
+            to: aggregatedItems
+        )
+
+        updateHistoryBySubjectKey = projection.historyBySubjectKey
+        AttentionUpdateHistoryStore.persist(
+            updateHistoryBySubjectKey,
+            to: UserDefaults.standard,
+            key: attentionUpdateHistoryStoreKey
+        )
+        attentionItems = projection.items.map(applyingLocalReadState)
+    }
+
+    private func applyPullRequestFocusSubjectRefresh(_ refresh: AttentionSubjectRefresh) {
+        latestSnapshotAttentionItems = AttentionSubjectRefreshPolicy.applying(
+            refresh,
+            to: latestSnapshotAttentionItems
+        )
+        if let existingHistory = updateHistoryBySubjectKey[refresh.subjectKey] {
+            let sanitizedHistory = AttentionUpdateHistoryPolicy.pruningInvalidWorkflowUpdates(
+                existingHistory,
+                mergedAt: refresh.mergedAt
+            )
+            updateHistoryBySubjectKey[refresh.subjectKey] = sanitizedHistory.isEmpty
+                ? nil
+                : sanitizedHistory
+        }
+        reconcileAttentionItemsFromSnapshot()
     }
 
     private func presentIgnoreUndo(for ignoredItems: [IgnoredAttentionSubject]) {
@@ -1217,7 +1299,11 @@ final class AppModel: ObservableObject {
             .teamMention,
             .pullRequestStateChanged:
             return 3
-        case .workflowFailed, .workflowApprovalRequired, .ciActivity:
+        case .workflowRunning,
+                .workflowSucceeded,
+                .workflowFailed,
+                .workflowApprovalRequired,
+                .ciActivity:
             return 2
         }
     }
@@ -1373,11 +1459,15 @@ final class AppModel: ObservableObject {
         usingGitHubCLIToken = false
         isValidatingToken = false
         clearRateLimitState()
-        knownItemIDs = Set(fixture.attentionItems.map(\.id))
+        knownLatestUpdateKeyBySubjectKey = Dictionary(
+            uniqueKeysWithValues: fixture.attentionItems.map { ($0.subjectKey, $0.updateKey) }
+        )
         ignoredItemsByKey = [:]
         ignoredItems = []
-        readStateByItemID = [:]
+        readStateBySubjectKey = [:]
+        updateHistoryBySubjectKey = [:]
         autoMarkReadSetting = fixture.autoMarkReadSetting
+        notifyOnSelfTriggeredUpdates = false
         showsDebugRateLimitDetails = false
         notificationScanState = .default
         teamMembershipCache = .default
@@ -1407,7 +1497,7 @@ private struct LaunchFixture {
 
         let primaryItem = AttentionItem(
             id: "fixture-primary",
-            ignoreKey: "https://github.com/\(repository)/pull/1",
+            subjectKey: "https://github.com/\(repository)/pull/1",
             type: .reviewRequested,
             title: "Primary fixture item",
             subtitle: "\(repository) · Review requested",
@@ -1422,7 +1512,7 @@ private struct LaunchFixture {
 
         let secondaryItem = AttentionItem(
             id: "fixture-secondary",
-            ignoreKey: "https://github.com/\(repository)/pull/2",
+            subjectKey: "https://github.com/\(repository)/pull/2",
             type: .comment,
             title: "Secondary fixture item",
             subtitle: "\(repository) · New comment",

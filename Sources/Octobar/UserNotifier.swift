@@ -2,8 +2,22 @@ import Foundation
 import UserNotifications
 
 @MainActor
+protocol UserNotificationCenterProtocol: AnyObject {
+    func requestAuthorization(options: UNAuthorizationOptions) async throws -> Bool
+    func add(_ request: UNNotificationRequest) async throws
+    func removePendingNotificationRequests(withIdentifiers identifiers: [String])
+    func removeDeliveredNotifications(withIdentifiers identifiers: [String])
+}
+
+extension UNUserNotificationCenter: UserNotificationCenterProtocol {}
+
+@MainActor
 final class UserNotifier {
-    private let center = UNUserNotificationCenter.current()
+    private let center: any UserNotificationCenterProtocol
+
+    init(center: any UserNotificationCenterProtocol = UNUserNotificationCenter.current()) {
+        self.center = center
+    }
 
     func requestAuthorization() async {
         do {
@@ -14,8 +28,9 @@ final class UserNotifier {
     }
 
     func notify(item: AttentionItem) {
-        notify(
-            identifier: item.id,
+        replaceSubjectNotification(
+            subjectKey: item.subjectKey,
+            updateKey: item.updateKey,
             title: item.nativeNotificationTitle,
             subtitle: item.title,
             body: item.subtitle,
@@ -31,6 +46,16 @@ final class UserNotifier {
             body: transition.body,
             url: transition.url
         )
+    }
+
+    func removeSubjectNotifications(subjectKeys: [String]) {
+        let identifiers = Array(Set(subjectKeys))
+        guard !identifiers.isEmpty else {
+            return
+        }
+
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
     }
 
     private func notify(
@@ -53,6 +78,42 @@ final class UserNotifier {
             trigger: nil
         )
 
-        center.add(request)
+        Task {
+            try? await center.add(request)
+        }
+    }
+
+    private func replaceSubjectNotification(
+        subjectKey: String,
+        updateKey: String,
+        title: String,
+        subtitle: String,
+        body: String,
+        url: URL
+    ) {
+        center.removePendingNotificationRequests(withIdentifiers: [subjectKey])
+        center.removeDeliveredNotifications(withIdentifiers: [subjectKey])
+
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.subtitle = subtitle
+        content.body = body
+        content.sound = .default
+        content.threadIdentifier = subjectKey
+        content.userInfo = [
+            "url": url.absoluteString,
+            "subjectKey": subjectKey,
+            "updateKey": updateKey
+        ]
+
+        let request = UNNotificationRequest(
+            identifier: subjectKey,
+            content: content,
+            trigger: nil
+        )
+
+        Task {
+            try? await center.add(request)
+        }
     }
 }

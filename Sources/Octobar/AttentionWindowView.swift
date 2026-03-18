@@ -83,13 +83,6 @@ struct AttentionWindowView: View {
         return formatter
     }()
 
-    private let timestampFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter
-    }()
-
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             ZStack(alignment: .bottomTrailing) {
@@ -178,6 +171,26 @@ struct AttentionWindowView: View {
                     }
                     .appInteractiveHover()
                     .help(selectionActionItems.count == 1 ? selectionActionItems[0].ignoreActionTitle : "Ignore selected items")
+                }
+            }
+
+            if selectedItem != nil, model.hasToken {
+                ToolbarItem {
+                    Button {
+                        guard let item = selectedItem else {
+                            return
+                        }
+
+                        Task {
+                            await model.forceRefresh(item: item)
+                        }
+                    } label: {
+                        Label("Refresh Item", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(model.isRefreshing)
+                    .appInteractiveHover()
+                    .keyboardShortcut("r", modifiers: [.command])
+                    .help("Refresh selected item")
                 }
             }
 
@@ -294,6 +307,7 @@ struct AttentionWindowView: View {
                     List(displayedItems, selection: selectionBinding) { item in
                         AttentionSidebarRow(
                             item: item,
+                            viewerLogin: model.viewerLogin,
                             relativeTimestamp: relativeFormatter.localizedString(
                                 for: item.timestamp,
                             relativeTo: referenceDate
@@ -478,11 +492,8 @@ struct AttentionWindowView: View {
             } else if let item = selectedItem {
                 AttentionDetailView(
                     item: item,
-                    absoluteTimestamp: timestampFormatter.string(from: item.timestamp),
-                    relativeTimestamp: relativeFormatter.localizedString(
-                        for: item.timestamp,
-                        relativeTo: referenceDate
-                    ),
+                    itemTimestamp: item.timestamp,
+                    viewerLogin: model.viewerLogin,
                     referenceDate: referenceDate,
                     pullRequestFocusState: pullRequestFocusState,
                     reviewMergeState: reviewMergeState,
@@ -783,6 +794,7 @@ private enum PullRequestReviewMergeState: Equatable {
 
 private struct AttentionSidebarRow: View {
     let item: AttentionItem
+    let viewerLogin: String?
     let relativeTimestamp: String
 
     private let maximumDisplayedLabels = 2
@@ -811,7 +823,14 @@ private struct AttentionSidebarRow: View {
             .filter { !$0.isEmpty && $0 != repository }
         let collapsed = segments.joined(separator: " · ")
 
-        return collapsed.isEmpty ? nil : collapsed
+        guard !collapsed.isEmpty else {
+            return nil
+        }
+
+        return AttentionViewerPresentationPolicy.personalizing(
+            collapsed,
+            viewerLogin: viewerLogin
+        )
     }
 
     var body: some View {
@@ -865,7 +884,7 @@ private struct AttentionSidebarRow: View {
 
                 HStack(spacing: 8) {
                     if let actor = item.actor {
-                        AttentionActorChip(actor: actor)
+                        AttentionActorChip(actor: actor, viewerLogin: viewerLogin)
                     }
 
                     Text(relativeTimestamp)
@@ -880,8 +899,8 @@ private struct AttentionSidebarRow: View {
 
 private struct AttentionDetailView: View {
     let item: AttentionItem
-    let absoluteTimestamp: String
-    let relativeTimestamp: String
+    let itemTimestamp: Date
+    let viewerLogin: String?
     let referenceDate: Date
     let pullRequestFocusState: PullRequestFocusLoadState
     let reviewMergeState: PullRequestReviewMergeState
@@ -896,12 +915,71 @@ private struct AttentionDetailView: View {
         }
     }
 
+    private var visibleUpdates: [AttentionUpdate] {
+        item.detail.updates
+    }
+
     private var loadedPullRequestFocus: PullRequestFocus? {
         guard case let .loaded(focus) = pullRequestFocusState else {
             return nil
         }
 
         return focus
+    }
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+
+    private static let absoluteFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    private var primaryHeaderTimestamp: Date {
+        PullRequestHeaderTimestampPolicy.primaryTimestamp(
+            resolution: loadedPullRequestFocus?.resolution ?? .open,
+            itemTimestamp: itemTimestamp,
+            mergedAt: loadedPullRequestFocus?.mergedAt
+        )
+    }
+
+    private var primaryHeaderTimestampText: String {
+        Self.relativeFormatter.localizedString(
+            for: primaryHeaderTimestamp,
+            relativeTo: referenceDate
+        )
+    }
+
+    private var primaryHeaderTimestampHelp: String {
+        Self.absoluteFormatter.string(from: primaryHeaderTimestamp)
+    }
+
+    private var secondaryHeaderTimestampText: String? {
+        guard
+            PullRequestHeaderTimestampPolicy.shouldShowLastUpdate(
+                resolution: loadedPullRequestFocus?.resolution ?? .open,
+                itemTimestamp: itemTimestamp,
+                mergedAt: loadedPullRequestFocus?.mergedAt,
+                referenceDate: referenceDate
+            )
+        else {
+            return nil
+        }
+
+        let relativeLastUpdate = Self.relativeFormatter.localizedString(
+            for: itemTimestamp,
+            relativeTo: referenceDate
+        )
+        return "last update \(relativeLastUpdate)"
+    }
+
+    private var secondaryHeaderTimestampHelp: String {
+        Self.absoluteFormatter.string(from: itemTimestamp)
     }
 
     private var headerPillTitleOverride: String? {
@@ -988,6 +1066,7 @@ private struct AttentionDetailView: View {
 
                                 PullRequestHeaderFactView(
                                     fact: focus.headerFacts[index],
+                                    viewerLogin: viewerLogin,
                                     onOpenURL: onOpenURL
                                 )
                             }
@@ -996,10 +1075,21 @@ private struct AttentionDetailView: View {
                                 .font(.subheadline)
                                 .foregroundStyle(.tertiary)
 
-                            Text(relativeTimestamp)
+                            Text(primaryHeaderTimestampText)
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
-                                .help(absoluteTimestamp)
+                                .help(primaryHeaderTimestampHelp)
+
+                            if let secondaryHeaderTimestampText {
+                                Text("·")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.tertiary)
+
+                                Text(secondaryHeaderTimestampText)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .help(secondaryHeaderTimestampHelp)
+                            }
                         }
                     } else {
                         HStack(alignment: .center, spacing: 10) {
@@ -1014,6 +1104,7 @@ private struct AttentionDetailView: View {
 
                                 ActorLinkLabel(
                                     actor: actor,
+                                    viewerLogin: viewerLogin,
                                     onOpenURL: onOpenURL
                                 )
                             }
@@ -1022,10 +1113,10 @@ private struct AttentionDetailView: View {
                                 .font(.subheadline)
                                 .foregroundStyle(.tertiary)
 
-                            Text(relativeTimestamp)
+                            Text(primaryHeaderTimestampText)
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
-                                .help(absoluteTimestamp)
+                                .help(primaryHeaderTimestampHelp)
                         }
                     }
                 }
@@ -1036,6 +1127,7 @@ private struct AttentionDetailView: View {
                             ForEach(visibleEvidence) { evidence in
                                 DetailEvidenceRow(
                                     evidence: evidence,
+                                    viewerLogin: viewerLogin,
                                     onOpenURL: onOpenURL
                                 )
                             }
@@ -1044,6 +1136,21 @@ private struct AttentionDetailView: View {
                 }
 
                 pullRequestFocusContent
+
+                if !visibleUpdates.isEmpty {
+                    DetailCard(title: "All updates") {
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(visibleUpdates) { update in
+                                AttentionUpdateRow(
+                                    update: update,
+                                    viewerLogin: viewerLogin,
+                                    referenceDate: referenceDate,
+                                    onOpenURL: onOpenURL
+                                )
+                            }
+                        }
+                    }
+                }
             }
             .padding(32)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1218,6 +1325,7 @@ private struct DetailTitleLinkButton: View {
 
 private struct DetailEvidenceRow: View {
     let evidence: AttentionEvidence
+    let viewerLogin: String?
     let onOpenURL: (URL) -> Void
 
     var body: some View {
@@ -1232,7 +1340,12 @@ private struct DetailEvidenceRow: View {
                     .font(.subheadline.weight(.semibold))
 
                 if let detail = evidence.detail {
-                    Text(detail)
+                    Text(
+                        AttentionViewerPresentationPolicy.personalizing(
+                            detail,
+                            viewerLogin: viewerLogin
+                        )
+                    )
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1279,6 +1392,62 @@ private struct DetailCard<Content: View>: View {
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+        )
+    }
+}
+
+private struct AttentionUpdateRow: View {
+    let update: AttentionUpdate
+    let viewerLogin: String?
+    let referenceDate: Date
+    let onOpenURL: (URL) -> Void
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: update.type.iconName)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(update.type.badgeForeground)
+                .frame(width: 20, height: 20)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(update.title)
+                    .font(.subheadline.weight(.semibold))
+
+                if let detail = renderedDetail {
+                    Text(detail)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Text(Self.relativeFormatter.localizedString(for: update.timestamp, relativeTo: referenceDate))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Spacer(minLength: 12)
+
+            if let url = update.url {
+                Button("Open") {
+                    onOpenURL(url)
+                }
+                .buttonStyle(.link)
+                .appLinkHover()
+            }
+        }
+    }
+
+    private var renderedDetail: String? {
+        AttentionViewerPresentationPolicy.updateDetailText(
+            actor: update.actor,
+            detail: update.detail,
+            viewerLogin: viewerLogin
         )
     }
 }
@@ -1651,6 +1820,7 @@ private struct PullRequestContextBadgeView: View {
 
 private struct PullRequestHeaderFactView: View {
     let fact: PullRequestHeaderFact
+    let viewerLogin: String?
     let onOpenURL: (URL) -> Void
 
     var body: some View {
@@ -1663,6 +1833,7 @@ private struct PullRequestHeaderFactView: View {
 
             ActorLinkLabel(
                 actor: fact.actor,
+                viewerLogin: viewerLogin,
                 onOpenURL: onOpenURL
             )
 
@@ -1677,11 +1848,12 @@ private struct PullRequestHeaderFactView: View {
 
 private struct ActorLinkLabel: View {
     let actor: AttentionActor
+    let viewerLogin: String?
     let onOpenURL: (URL) -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 6) {
-            Button(actor.login) {
+            Button(AttentionViewerPresentationPolicy.actorLabel(for: actor, viewerLogin: viewerLogin)) {
                 onOpenURL(actor.profileURL)
             }
             .font(.subheadline.weight(.medium))
@@ -2096,6 +2268,8 @@ private struct EventBadge: View {
     var size: CGFloat = 24
 
     var body: some View {
+        let helpText = AttentionItemType.badgeHelpText(primary: type, secondary: secondaryType)
+
         RoundedRectangle(cornerRadius: size * 0.33, style: .continuous)
             .fill(type.badgeBackground)
             .frame(width: size, height: size)
@@ -2119,13 +2293,18 @@ private struct EventBadge: View {
                         .offset(x: size * 0.12, y: size * 0.12)
                 }
             }
-            .accessibilityLabel(type.accessibilityLabel)
+            .help(helpText)
+            .accessibilityLabel(helpText)
     }
 
     private func compactSecondaryIconName(for type: AttentionItemType) -> String {
         switch type {
         case .workflowApprovalRequired:
             return "hand.raised.fill"
+        case .workflowRunning:
+            return "clock.fill"
+        case .workflowSucceeded:
+            return "checkmark"
         case .workflowFailed:
             return "xmark"
         default:
@@ -2486,11 +2665,12 @@ private struct GitHubLabelColorComponents {
 
 private struct AttentionActorChip: View {
     let actor: AttentionActor
+    let viewerLogin: String?
 
     var body: some View {
         HStack(spacing: 6) {
             DetailActorAvatar(actor: actor, size: 16)
-            Text(actor.login)
+            Text(AttentionViewerPresentationPolicy.actorLabel(for: actor, viewerLogin: viewerLogin))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -2579,6 +2759,10 @@ private extension AttentionItemType {
             return .brown
         case .ciActivity:
             return .teal
+        case .workflowRunning:
+            return .blue
+        case .workflowSucceeded:
+            return .green
         case .workflowFailed:
             return .red
         case .workflowApprovalRequired:
@@ -2626,6 +2810,10 @@ private extension AttentionItemType {
             return .brown.opacity(0.14)
         case .ciActivity:
             return .teal.opacity(0.14)
+        case .workflowRunning:
+            return .blue.opacity(0.14)
+        case .workflowSucceeded:
+            return .green.opacity(0.14)
         case .workflowFailed:
             return .red.opacity(0.14)
         case .workflowApprovalRequired:

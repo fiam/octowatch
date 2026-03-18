@@ -221,7 +221,7 @@ struct SettingsView: View {
         settingsCard {
             cardIntro(
                 title: "Inbox",
-                message: "Choose how quickly selected items are marked as read."
+                message: "Choose how the inbox handles read state and self-triggered notifications."
             ) {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(.blue.gradient)
@@ -254,6 +254,24 @@ struct SettingsView: View {
                 .pickerStyle(.menu)
                 .frame(width: 140)
                 .labelsHidden()
+            }
+
+            Divider()
+                .padding(.leading, 20)
+
+            settingsRow(
+                title: "Notify on Your Updates",
+                subtitle: "When off, Octowatch keeps your own commits, comments, reviews, and workflows in the update history but does not raise macOS notifications for them."
+            ) {
+                Toggle(
+                    "Notify on Your Updates",
+                    isOn: Binding(
+                        get: { model.notifyOnSelfTriggeredUpdates },
+                        set: { model.setNotifyOnSelfTriggeredUpdates($0) }
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
             }
         }
     }

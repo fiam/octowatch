@@ -90,6 +90,7 @@ struct GitHubClient {
           }
           state
           merged
+          mergedAt
           isInMergeQueue
           isDraft
           reviewDecision
@@ -401,7 +402,6 @@ struct GitHubClient {
         actionRuns: [ActionRunSummary],
         trackedIssues: [TrackedSubjectSummary]
     ) -> [AttentionItem] {
-        let workflowAttentionByIgnoreKey = workflowAttentionIndicatorsByIgnoreKey(actionRuns)
         let pullRequestItems = pullRequests.map { pullRequest in
             AttentionItem(
                 id: pullRequestItemID(
@@ -409,16 +409,17 @@ struct GitHubClient {
                     baseID: "\(pullRequest.id)",
                     resolution: pullRequest.resolution
                 ),
-                ignoreKey: pullRequest.ignoreKey,
+                subjectKey: pullRequest.ignoreKey,
+                updateKey: "relationship:assigned-pr:\(pullRequest.id)",
                 stream: .pullRequests,
                 type: .assignedPullRequest,
-                secondaryIndicatorType: workflowAttentionByIgnoreKey[pullRequest.ignoreKey],
                 title: pullRequest.title,
                 subtitle: pullRequest.subtitle,
                 repository: pullRequest.repository,
                 labels: pullRequest.labels,
                 timestamp: pullRequest.updatedAt,
                 url: pullRequest.url,
+                isTriggeredByCurrentUser: false,
                 detail: detail(for: pullRequest),
                 isHistoricalLogEntry: pullRequest.resolution == .merged,
                 isUnread: pullRequest.resolution != .merged
@@ -428,10 +429,10 @@ struct GitHubClient {
         let readyToMergeItems = readyToMerge.map { pullRequest in
             AttentionItem(
                 id: "ready:\(pullRequest.id)",
-                ignoreKey: pullRequest.ignoreKey,
+                subjectKey: pullRequest.ignoreKey,
+                updateKey: "ready:\(pullRequest.id)",
                 stream: .pullRequests,
                 type: .readyToMerge,
-                secondaryIndicatorType: workflowAttentionByIgnoreKey[pullRequest.ignoreKey],
                 title: pullRequest.title,
                 subtitle: pullRequest.subtitle,
                 repository: pullRequest.repository,
@@ -439,6 +440,7 @@ struct GitHubClient {
                 timestamp: pullRequest.updatedAt,
                 url: pullRequest.url,
                 actor: pullRequest.actor,
+                isTriggeredByCurrentUser: false,
                 detail: detail(for: pullRequest)
             )
         }
@@ -446,7 +448,9 @@ struct GitHubClient {
         let notificationItems = notifications.map { notification in
             AttentionItem(
                 id: "notif:\(notification.id)",
-                ignoreKey: notification.ignoreKey,
+                subjectKey: notification.ignoreKey,
+                updateKey:
+                    "notif:\(notification.id):\(notification.type.rawValue):\(Int(notification.updatedAt.timeIntervalSince1970))",
                 stream: .notifications,
                 type: notification.type,
                 title: notification.title,
@@ -456,6 +460,7 @@ struct GitHubClient {
                 timestamp: notification.updatedAt,
                 url: notification.url,
                 actor: notification.actor,
+                isTriggeredByCurrentUser: notification.isTriggeredByCurrentUser,
                 detail: detail(for: notification),
                 isUnread: notification.unread
             )
@@ -464,20 +469,40 @@ struct GitHubClient {
         let actionRunItems = actionRuns.map { run in
             AttentionItem(
                 id: "run:\(run.id)",
-                ignoreKey: run.ignoreKey,
+                subjectKey: run.subjectKey,
+                updateKey: "run:\(run.id):\(run.type.rawValue):\(Int(run.updatedAt.timeIntervalSince1970))",
                 stream: .pullRequests,
                 type: run.type,
-                title: run.title,
+                title: run.subjectTitle,
                 subtitle: run.subtitle,
                 repository: run.repository,
-                timestamp: run.createdAt,
+                timestamp: run.updatedAt,
                 url: run.url,
                 actor: run.actor,
+                isTriggeredByCurrentUser: run.isTriggeredByCurrentUser,
                 detail: detail(for: run)
             )
         }
 
         let directPullRequestKeys = Set((pullRequestItems + readyToMergeItems).map(\.ignoreKey))
+        let trackedPullRequestUpdateItems: [AttentionItem] = trackedPullRequests.compactMap { trackedSubject in
+            guard let selfUpdate = trackedSubject.latestSelfUpdate else {
+                return nil
+            }
+
+            return selfUpdateAttentionItem(
+                idPrefix: "tracked-update",
+                subjectKey: trackedSubject.ignoreKey,
+                stableBaseID: trackedSubject.id,
+                title: trackedSubject.title,
+                repository: trackedSubject.repository,
+                labels: trackedSubject.labels,
+                url: trackedSubject.url,
+                selfUpdate: selfUpdate,
+                detail: detail(for: trackedSubject, selfUpdate: selfUpdate),
+                isUnread: trackedSubject.resolution != .merged
+            )
+        }
         let trackedPullRequestItems = trackedPullRequests
             .filter { !directPullRequestKeys.contains($0.ignoreKey) }
             .map { trackedSubject in
@@ -487,16 +512,17 @@ struct GitHubClient {
                         baseID: trackedSubject.id,
                         resolution: trackedSubject.resolution
                     ),
-                    ignoreKey: trackedSubject.ignoreKey,
+                    subjectKey: trackedSubject.ignoreKey,
+                    updateKey: "relationship:\(trackedSubject.type.rawValue):\(trackedSubject.id)",
                     stream: .pullRequests,
                     type: trackedSubject.type,
-                    secondaryIndicatorType: workflowAttentionByIgnoreKey[trackedSubject.ignoreKey],
                     title: trackedSubject.title,
                     subtitle: trackedSubject.subtitle,
                     repository: trackedSubject.repository,
                     labels: trackedSubject.labels,
                     timestamp: trackedSubject.updatedAt,
                     url: trackedSubject.url,
+                    isTriggeredByCurrentUser: trackedSubject.isTriggeredByCurrentUser,
                     detail: detail(for: trackedSubject),
                     isHistoricalLogEntry: trackedSubject.resolution == .merged,
                     isUnread: trackedSubject.resolution != .merged
@@ -506,7 +532,8 @@ struct GitHubClient {
         let trackedIssueItems = trackedIssues.map { trackedSubject in
             AttentionItem(
                 id: "tracked-issue:\(trackedSubject.id)",
-                ignoreKey: trackedSubject.ignoreKey,
+                subjectKey: trackedSubject.ignoreKey,
+                updateKey: "relationship:\(trackedSubject.type.rawValue):\(trackedSubject.id)",
                 stream: .issues,
                 type: trackedSubject.type,
                 title: trackedSubject.title,
@@ -515,6 +542,7 @@ struct GitHubClient {
                 labels: trackedSubject.labels,
                 timestamp: trackedSubject.updatedAt,
                 url: trackedSubject.url,
+                isTriggeredByCurrentUser: trackedSubject.isTriggeredByCurrentUser,
                 detail: detail(for: trackedSubject)
             )
         }
@@ -522,6 +550,7 @@ struct GitHubClient {
         return (
             pullRequestItems +
                 trackedPullRequestItems +
+                trackedPullRequestUpdateItems +
                 readyToMergeItems +
                 notificationItems +
                 actionRunItems +
@@ -592,22 +621,6 @@ struct GitHubClient {
         }
 
         return "\(prefix):\(baseID)"
-    }
-
-    private func workflowAttentionIndicatorsByIgnoreKey(
-        _ actionRuns: [ActionRunSummary]
-    ) -> [String: AttentionItemType] {
-        Dictionary(grouping: actionRuns, by: \.ignoreKey).compactMapValues { runs in
-            if runs.contains(where: { $0.type == .workflowFailed }) {
-                return .workflowFailed
-            }
-
-            if runs.contains(where: { $0.type == .workflowApprovalRequired }) {
-                return .workflowApprovalRequired
-            }
-
-            return nil
-        }
     }
 
     private func detail(for trackedSubject: TrackedSubjectSummary) -> AttentionDetail {
@@ -683,6 +696,23 @@ struct GitHubClient {
             evidence: evidence,
             actions: actions,
             acknowledgement: "Use the toolbar to mark this read or ignore it."
+        )
+    }
+
+    private func detail(
+        for trackedSubject: TrackedSubjectSummary,
+        selfUpdate: TrackedSubjectSelfUpdateSummary
+    ) -> AttentionDetail {
+        let base = detail(for: trackedSubject)
+        return AttentionDetail(
+            contextPillTitle: base.contextPillTitle,
+            why: AttentionWhy(
+                summary: whySummary(for: selfUpdate.type, actor: selfUpdate.actor),
+                detail: nil
+            ),
+            evidence: base.evidence,
+            actions: base.actions,
+            acknowledgement: base.acknowledgement
         )
     }
 
@@ -830,13 +860,13 @@ struct GitHubClient {
     }
 
     private func detail(for run: ActionRunSummary) -> AttentionDetail {
-        let pullRequestURL = URL(string: run.ignoreKey)
+        let pullRequestURL = URL(string: run.subjectKey)
 
         var evidence = [
             AttentionEvidence(
                 id: "run",
                 title: "Workflow run",
-                detail: run.title,
+                detail: run.runTitle,
                 iconName: run.type.iconName,
                 url: run.url
             ),
@@ -971,6 +1001,7 @@ struct GitHubClient {
                     $0.state.caseInsensitiveCompare("PENDING") != .orderedSame
             }
             .max { $0.submittedAt < $1.submittedAt }
+        let focusLabels = pullRequest.labels.nodes.compactMap { $0?.gitHubLabel }
 
         let participatedThreads = threads.filter { thread in
             thread.comments.nodes.compactMap { $0 }.contains(where: \.viewerDidAuthor)
@@ -1082,8 +1113,9 @@ struct GitHubClient {
             sourceType: sourceType,
             mode: focusMode,
             resolution: resolution,
+            mergedAt: pullRequest.mergedAt,
             author: author,
-            labels: pullRequest.labels.nodes.compactMap { $0?.gitHubLabel },
+            labels: focusLabels,
             headerFacts: headerFacts,
             contextBadges: contextBadges,
             descriptionHTML: renderedPullRequestDescriptionHTML(pullRequest.bodyHTML),
@@ -1104,7 +1136,30 @@ struct GitHubClient {
 
         return PullRequestFocusResult(
             focus: focus,
-            rateLimits: await observer.snapshot()
+            rateLimits: await observer.snapshot(),
+            subjectRefresh: AttentionSubjectRefresh(
+                subjectKey: reference.pullRequestURL.absoluteString,
+                labels: focusLabels,
+                mergedAt: pullRequest.mergedAt,
+                supplementalItems: latestViewerReview
+                    .flatMap(viewerReviewUpdateSummary(from:))
+                    .map {
+                        [
+                            selfUpdateAttentionItem(
+                                idPrefix: AttentionSubjectRefresh.localSupplementalItemIDPrefix,
+                                subjectKey: reference.pullRequestURL.absoluteString,
+                                stableBaseID: "\(reference.repository)#\(reference.number)",
+                                title: pullRequest.title,
+                                repository: reference.repository,
+                                labels: focusLabels,
+                                url: pullRequest.url,
+                                selfUpdate: $0,
+                                detail: nil,
+                                isUnread: true
+                            )
+                        ]
+                    } ?? []
+            )
         )
     }
 
@@ -1881,8 +1936,15 @@ struct GitHubClient {
         let reviewed = try await reviewedTask
         let commented = try await commentedTask
 
-        return try await enrichMergedTrackedPullRequests(
+        let merged = try await enrichMergedTrackedPullRequests(
             mergeTrackedSubjects(authored + reviewed + commented),
+            token: token,
+            login: login,
+            observer: observer
+        )
+
+        return try await enrichTrackedPullRequestSelfUpdates(
+            merged,
             token: token,
             login: login,
             observer: observer
@@ -1996,6 +2058,66 @@ struct GitHubClient {
                                 url: summary.url,
                                 updatedAt: state.mergedAt ?? summary.updatedAt,
                                 actor: mergedBy,
+                                isTriggeredByCurrentUser: summary.isTriggeredByCurrentUser,
+                                latestSelfUpdate: summary.latestSelfUpdate,
+                                resolution: summary.resolution
+                            )
+                        )
+                    } catch {
+                        return (index, summary)
+                    }
+                }
+            }
+
+            var enriched = summaries
+            for await (index, summary) in group {
+                enriched[index] = summary
+            }
+
+            return enriched
+        }
+    }
+
+    private func enrichTrackedPullRequestSelfUpdates(
+        _ summaries: [TrackedSubjectSummary],
+        token: String,
+        login: String,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [TrackedSubjectSummary] {
+        await withTaskGroup(of: (Int, TrackedSubjectSummary).self) { group in
+            for (index, summary) in summaries.enumerated() {
+                group.addTask {
+                    guard summary.type == .reviewedPullRequest else {
+                        return (index, summary)
+                    }
+
+                    do {
+                        let reviews = try await self.fetchPullRequestReviews(
+                            token: token,
+                            repository: summary.repository,
+                            number: summary.number,
+                            observer: observer
+                        )
+
+                        return (
+                            index,
+                            TrackedSubjectSummary(
+                                id: summary.id,
+                                ignoreKey: summary.ignoreKey,
+                                type: summary.type,
+                                number: summary.number,
+                                title: summary.title,
+                                subtitle: summary.subtitle,
+                                repository: summary.repository,
+                                labels: summary.labels,
+                                url: summary.url,
+                                updatedAt: summary.updatedAt,
+                                actor: summary.actor,
+                                isTriggeredByCurrentUser: summary.isTriggeredByCurrentUser,
+                                latestSelfUpdate: self.latestViewerReviewUpdate(
+                                    reviews: reviews,
+                                    login: login
+                                ),
                                 resolution: summary.resolution
                             )
                         )
@@ -2169,6 +2291,8 @@ struct GitHubClient {
                 url: issue.htmlURL,
                 updatedAt: issue.updatedAt,
                 actor: nil,
+                isTriggeredByCurrentUser: type.isSelfTriggeredRelationshipType,
+                latestSelfUpdate: nil,
                 resolution: resolution
             )
         }
@@ -2463,6 +2587,7 @@ struct GitHubClient {
             updatedAt: thread.updatedAt,
             unread: thread.unread,
             actor: actor,
+            isTriggeredByCurrentUser: timelineContext?.isTriggeredByCurrentUser ?? false,
             targetLabel: notificationTargetLabel(
                 reason: thread.reason,
                 type: type,
@@ -2511,6 +2636,7 @@ struct GitHubClient {
             updatedAt: thread.updatedAt,
             unread: thread.unread,
             actor: nil,
+            isTriggeredByCurrentUser: false,
             targetLabel: notificationTargetLabel(
                 reason: thread.reason,
                 type: type,
@@ -2634,11 +2760,8 @@ struct GitHubClient {
             }
 
             let event = (entry.event ?? "").lowercased()
+            let isTriggeredByCurrentUser = timelineActorMatches(entry, login: currentLogin)
             guard !event.isEmpty else {
-                continue
-            }
-
-            guard !timelineActorMatches(entry, login: currentLogin) else {
                 continue
             }
 
@@ -2670,7 +2793,7 @@ struct GitHubClient {
                 continue
             }
 
-            let followUp = followUpRelationship(
+            let followUp = isTriggeredByCurrentUser ? nil : followUpRelationship(
                 in: sortedTimeline,
                 latestChangeAt: timestamp,
                 currentLogin: currentLogin
@@ -2678,14 +2801,17 @@ struct GitHubClient {
 
             let detailEvidence: [AttentionEvidence]
             let stateTransition: PullRequestStateTransition?
-            if event == "committed" || event == "head_ref_force_pushed",
-                let followUp {
-                detailEvidence = commitEvidence(
-                    in: sortedTimeline,
-                    reference: reference,
-                    after: followUp.timestamp,
-                    currentLogin: currentLogin
-                )
+            if event == "committed" || event == "head_ref_force_pushed" {
+                if let followUp {
+                    detailEvidence = commitEvidence(
+                        in: sortedTimeline,
+                        reference: reference,
+                        after: followUp.timestamp,
+                        currentLogin: currentLogin
+                    )
+                } else {
+                    detailEvidence = []
+                }
                 stateTransition = .synchronized
             } else if event == "merged" {
                 detailEvidence = []
@@ -2708,7 +2834,8 @@ struct GitHubClient {
                 timestamp: timestamp,
                 followUpRelationship: followUp?.relationship,
                 stateTransition: stateTransition,
-                detailEvidence: detailEvidence
+                detailEvidence: detailEvidence,
+                isTriggeredByCurrentUser: isTriggeredByCurrentUser
             )
         }
 
@@ -3107,14 +3234,14 @@ struct GitHubClient {
             var mergedByRunID = [String: ActionRunSummary]()
             for await runs in group {
                 for run in runs {
-                    if let existing = mergedByRunID[run.id], existing.createdAt >= run.createdAt {
+                    if let existing = mergedByRunID[run.id], existing.updatedAt >= run.updatedAt {
                         continue
                     }
                     mergedByRunID[run.id] = run
                 }
             }
 
-            return mergedByRunID.values.sorted { $0.createdAt > $1.createdAt }
+            return mergedByRunID.values.sorted { $0.updatedAt > $1.updatedAt }
         }
     }
 
@@ -3248,6 +3375,16 @@ struct GitHubClient {
         )
 
         return runs.compactMap { run in
+            guard WorkflowRunAttributionPolicy.shouldAssociate(
+                runTitle: run.displayTitle,
+                workflowName: run.name,
+                event: run.event,
+                createdAt: run.createdAt,
+                mergedAt: pullRequest.mergedAt
+            ) else {
+                return nil
+            }
+
             guard let type = AttentionItemType.workflowType(
                 status: run.status,
                 conclusion: run.conclusion
@@ -3266,17 +3403,19 @@ struct GitHubClient {
 
             return ActionRunSummary(
                 id: "\(candidate.repository)-\(run.id)",
-                ignoreKey: pullRequestWebURL(
+                subjectKey: pullRequestWebURL(
                     repository: candidate.repository,
                     number: candidate.number
                 ).absoluteString,
                 type: type,
-                title: summaryTitle,
+                subjectTitle: pullRequest.title,
+                runTitle: summaryTitle,
                 subtitle: summarySubtitle,
                 repository: candidate.repository,
-                createdAt: run.createdAt,
+                updatedAt: run.updatedAt ?? run.createdAt,
                 url: run.htmlURL ?? runWebURL(repository: candidate.repository, runID: run.id),
-                actor: actor
+                actor: actor,
+                isTriggeredByCurrentUser: actor?.login.caseInsensitiveCompare(login) == .orderedSame
             )
         }
     }
@@ -3315,6 +3454,92 @@ struct GitHubClient {
             ],
             token: token,
             observer: observer
+        )
+    }
+
+    func latestViewerReviewUpdate(
+        reviews: [PullRequestReview],
+        login: String
+    ) -> TrackedSubjectSelfUpdateSummary? {
+        let latestViewerReview = reviews
+            .filter { $0.user.login.caseInsensitiveCompare(login) == .orderedSame }
+            .max { lhs, rhs in
+                lhs.submittedAt < rhs.submittedAt
+            }
+
+        guard let latestViewerReview,
+            let type = attentionType(forViewerReviewState: latestViewerReview.state) else {
+            return nil
+        }
+
+        return TrackedSubjectSelfUpdateSummary(
+            type: type,
+            timestamp: latestViewerReview.submittedAt,
+            actor: attentionActor(from: latestViewerReview.user)
+        )
+    }
+
+    private func viewerReviewUpdateSummary(
+        from review: PullRequestFocusGraphQLReview
+    ) -> TrackedSubjectSelfUpdateSummary? {
+        guard let type = attentionType(forViewerReviewState: review.state) else {
+            return nil
+        }
+
+        return TrackedSubjectSelfUpdateSummary(
+            type: type,
+            timestamp: review.submittedAt,
+            actor: attentionActor(from: review.author)
+        )
+    }
+
+    func attentionType(forViewerReviewState state: String) -> AttentionItemType? {
+        switch state.uppercased() {
+        case "APPROVED":
+            return .reviewApproved
+        case "CHANGES_REQUESTED":
+            return .reviewChangesRequested
+        case "COMMENTED":
+            return .reviewComment
+        default:
+            return nil
+        }
+    }
+
+    private func selfUpdateAttentionItem(
+        idPrefix: String,
+        subjectKey: String,
+        stableBaseID: String,
+        title: String,
+        repository: String,
+        labels: [GitHubLabel],
+        url: URL,
+        selfUpdate: TrackedSubjectSelfUpdateSummary,
+        detail: AttentionDetail?,
+        isUnread: Bool
+    ) -> AttentionItem {
+        let stableID = "\(stableBaseID):\(selfUpdate.type.rawValue):\(Int(selfUpdate.timestamp.timeIntervalSince1970))"
+        return AttentionItem(
+            id: "\(idPrefix):\(stableID)",
+            subjectKey: subjectKey,
+            updateKey: "self-update:\(stableID)",
+            stream: .pullRequests,
+            type: selfUpdate.type,
+            title: title,
+            subtitle: notificationSubtitle(
+                type: selfUpdate.type,
+                repository: repository,
+                actor: selfUpdate.actor,
+                stateTransition: nil
+            ),
+            repository: repository,
+            labels: labels,
+            timestamp: selfUpdate.timestamp,
+            url: url,
+            actor: selfUpdate.actor,
+            isTriggeredByCurrentUser: true,
+            detail: detail,
+            isUnread: isUnread
         )
     }
 
@@ -3819,6 +4044,10 @@ struct GitHubClient {
             return "A pull request you are tracking changed state."
         case .ciActivity:
             return "GitHub Actions reported activity that needs attention."
+        case .workflowRunning:
+            return "A watched workflow run is in progress."
+        case .workflowSucceeded:
+            return "A watched workflow run succeeded."
         case .workflowFailed:
             return "A watched workflow run failed."
         case .workflowApprovalRequired:
@@ -4349,6 +4578,7 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
     let baseRef: PullRequestGraphQLRef?
     let state: String
     let merged: Bool
+    let mergedAt: Date?
     let isInMergeQueue: Bool
     let isDraft: Bool
     let reviewDecision: String?
@@ -4374,6 +4604,7 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
         case baseRef
         case state
         case merged
+        case mergedAt
         case isInMergeQueue
         case isDraft
         case reviewDecision
@@ -4692,6 +4923,7 @@ private struct TimelineContext: Hashable, Sendable {
     let followUpRelationship: NotificationFollowUpRelationship?
     let stateTransition: PullRequestStateTransition?
     let detailEvidence: [AttentionEvidence]
+    let isTriggeredByCurrentUser: Bool
 }
 
 private struct GitHubRESTLabel: Decodable {
@@ -4796,7 +5028,7 @@ private struct IssueStateResponse: Decodable {
     }
 }
 
-private struct PullRequestReview: Decodable {
+struct PullRequestReview: Decodable {
     let state: String
     let user: GitHubUser
     let submittedAt: Date
@@ -4814,7 +5046,7 @@ private struct LatestApprovalSummary {
     let latestApprover: AttentionActor?
 }
 
-private struct GitHubUser: Decodable {
+struct GitHubUser: Decodable {
     let login: String
     let avatarURL: URL?
     let htmlURL: URL?
@@ -4992,6 +5224,7 @@ private struct WorkflowRun: Decodable {
     let status: String?
     let conclusion: String?
     let createdAt: Date
+    let updatedAt: Date?
     let actor: GitHubUser?
     let triggeringActor: GitHubUser?
 
@@ -5005,6 +5238,7 @@ private struct WorkflowRun: Decodable {
         case status
         case conclusion
         case createdAt = "created_at"
+        case updatedAt = "updated_at"
         case actor
         case triggeringActor = "triggering_actor"
     }

@@ -96,7 +96,12 @@ struct MenuBarContentView: View {
                                             .font(item.isUnread ? .callout.weight(.semibold) : .callout)
                                             .lineLimit(2)
 
-                                        Text(item.subtitle)
+                                        Text(
+                                            AttentionViewerPresentationPolicy.personalizing(
+                                                item.subtitle,
+                                                viewerLogin: model.viewerLogin
+                                            )
+                                        )
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                             .lineLimit(1)
@@ -152,6 +157,11 @@ struct MenuBarContentView: View {
 
     @ViewBuilder
     private func eventBadge(for item: AttentionItem) -> some View {
+        let helpText = AttentionItemType.badgeHelpText(
+            primary: item.type,
+            secondary: item.secondaryIndicatorType
+        )
+
         RoundedRectangle(cornerRadius: 8, style: .continuous)
             .fill(iconBackground(for: item.type))
             .frame(width: 24, height: 24)
@@ -175,13 +185,18 @@ struct MenuBarContentView: View {
                         .offset(x: 3, y: 3)
                 }
             }
-            .accessibilityLabel(item.type.accessibilityLabel)
+            .help(helpText)
+            .accessibilityLabel(helpText)
     }
 
     private func compactSecondaryIconName(for itemType: AttentionItemType) -> String {
         switch itemType {
         case .workflowApprovalRequired:
             return "hand.raised.fill"
+        case .workflowRunning:
+            return "clock.fill"
+        case .workflowSucceeded:
+            return "checkmark"
         case .workflowFailed:
             return "xmark"
         default:
@@ -229,6 +244,10 @@ struct MenuBarContentView: View {
             return .brown
         case .ciActivity:
             return .teal
+        case .workflowRunning:
+            return .blue
+        case .workflowSucceeded:
+            return .green
         case .workflowFailed:
             return .red
         case .workflowApprovalRequired:
@@ -277,6 +296,10 @@ struct MenuBarContentView: View {
             return .brown.opacity(0.14)
         case .ciActivity:
             return .teal.opacity(0.14)
+        case .workflowRunning:
+            return .blue.opacity(0.14)
+        case .workflowSucceeded:
+            return .green.opacity(0.14)
         case .workflowFailed:
             return .red.opacity(0.14)
         case .workflowApprovalRequired:

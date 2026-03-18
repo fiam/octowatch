@@ -135,6 +135,50 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testLatestViewerReviewUpdateUsesNewestReviewFromCurrentUser() {
+        let client = GitHubClient()
+        let olderReview = PullRequestReview(
+            state: "COMMENTED",
+            user: GitHubUser(login: "alberto", avatarURL: nil, htmlURL: nil),
+            submittedAt: Date(timeIntervalSince1970: 100)
+        )
+        let newerReview = PullRequestReview(
+            state: "APPROVED",
+            user: GitHubUser(login: "alberto", avatarURL: nil, htmlURL: nil),
+            submittedAt: Date(timeIntervalSince1970: 200)
+        )
+        let otherReview = PullRequestReview(
+            state: "CHANGES_REQUESTED",
+            user: GitHubUser(login: "someone-else", avatarURL: nil, htmlURL: nil),
+            submittedAt: Date(timeIntervalSince1970: 300)
+        )
+
+        let update = client.latestViewerReviewUpdate(
+            reviews: [olderReview, newerReview, otherReview],
+            login: "alberto"
+        )
+
+        XCTAssertEqual(update?.type, .reviewApproved)
+        XCTAssertEqual(update?.timestamp, newerReview.submittedAt)
+        XCTAssertEqual(update?.actor?.login, "alberto")
+    }
+
+    func testLatestViewerReviewUpdateIgnoresDismissedReviews() {
+        let client = GitHubClient()
+        let dismissedReview = PullRequestReview(
+            state: "DISMISSED",
+            user: GitHubUser(login: "alberto", avatarURL: nil, htmlURL: nil),
+            submittedAt: Date(timeIntervalSince1970: 100)
+        )
+
+        XCTAssertNil(
+            client.latestViewerReviewUpdate(
+                reviews: [dismissedReview],
+                login: "alberto"
+            )
+        )
+    }
+
     func testReviewRequestedNotificationsStayStickyForUnrelatedApproval() {
         XCTAssertEqual(
             AttentionItemType.notificationType(
@@ -181,11 +225,423 @@ final class AttentionClassificationTests: XCTestCase {
             .workflowApprovalRequired
         )
         XCTAssertEqual(
+            AttentionItemType.workflowType(status: "in_progress", conclusion: nil),
+            .workflowRunning
+        )
+        XCTAssertEqual(
             AttentionItemType.workflowType(status: "completed", conclusion: "failure"),
             .workflowFailed
         )
-        XCTAssertNil(
-            AttentionItemType.workflowType(status: "completed", conclusion: "success")
+        XCTAssertEqual(
+            AttentionItemType.workflowType(status: "completed", conclusion: "success"),
+            .workflowSucceeded
+        )
+    }
+
+    func testWorkflowRunAttributionPolicyRejectsScheduledRunsAfterMerge() {
+        let mergedAt = Date(timeIntervalSince1970: 1_000)
+
+        XCTAssertFalse(
+            WorkflowRunAttributionPolicy.shouldAssociate(
+                runTitle: "Scheduled",
+                workflowName: "Scheduled",
+                event: "dynamic",
+                createdAt: mergedAt.addingTimeInterval(10_800),
+                mergedAt: mergedAt
+            )
+        )
+        XCTAssertFalse(
+            WorkflowRunAttributionPolicy.shouldAssociate(
+                runTitle: "Update Gradle Wrapper",
+                workflowName: "Update Gradle Wrapper",
+                event: "schedule",
+                createdAt: mergedAt.addingTimeInterval(3_600),
+                mergedAt: mergedAt
+            )
+        )
+    }
+
+    func testWorkflowRunAttributionPolicyKeepsMergeAdjacentRuns() {
+        let mergedAt = Date(timeIntervalSince1970: 1_000)
+
+        XCTAssertTrue(
+            WorkflowRunAttributionPolicy.shouldAssociate(
+                runTitle: "Push on main",
+                workflowName: "Push on main",
+                event: "dynamic",
+                createdAt: mergedAt.addingTimeInterval(2),
+                mergedAt: mergedAt
+            )
+        )
+        XCTAssertTrue(
+            WorkflowRunAttributionPolicy.shouldAssociate(
+                runTitle: "[cloud-uc-services] sync uc-lease-protocol proto (#1104)",
+                workflowName: "Build",
+                event: "push",
+                createdAt: mergedAt.addingTimeInterval(4),
+                mergedAt: mergedAt
+            )
+        )
+    }
+
+    func testAttentionUpdateHistoryPolicyPrunesLateWorkflowUpdatesAfterMerge() {
+        let mergedAt = Date(timeIntervalSince1970: 1_000)
+        let scheduledUpdate = AttentionUpdate(
+            id: "run:scheduled",
+            type: .workflowSucceeded,
+            title: "Workflow succeeded",
+            detail: "Scheduled",
+            timestamp: mergedAt.addingTimeInterval(10_800),
+            actor: AttentionActor(login: "github-advanced-security[bot]", avatarURL: nil),
+            url: nil
+        )
+        let mergeAdjacentUpdate = AttentionUpdate(
+            id: "run:push",
+            type: .workflowSucceeded,
+            title: "Workflow succeeded",
+            detail: "Push on main",
+            timestamp: mergedAt.addingTimeInterval(5),
+            actor: AttentionActor(login: "fiam", avatarURL: nil),
+            url: nil
+        )
+        let reviewUpdate = AttentionUpdate(
+            id: "review:approved",
+            type: .reviewApproved,
+            title: "Review approved",
+            detail: nil,
+            timestamp: mergedAt.addingTimeInterval(-5),
+            actor: AttentionActor(login: "fiam", avatarURL: nil),
+            url: nil
+        )
+
+        let pruned = AttentionUpdateHistoryPolicy.pruningInvalidWorkflowUpdates(
+            [scheduledUpdate, mergeAdjacentUpdate, reviewUpdate],
+            mergedAt: mergedAt
+        )
+
+        XCTAssertEqual(pruned.map(\.id), ["run:push", "review:approved"])
+    }
+
+    func testPullRequestHeaderTimestampPolicyPrefersMergeTimeAndShowsDistinctLastUpdate() {
+        let mergedAt = Date(timeIntervalSince1970: 1_000)
+        let lastUpdate = mergedAt.addingTimeInterval(10_800)
+        let referenceDate = lastUpdate.addingTimeInterval(600)
+
+        XCTAssertEqual(
+            PullRequestHeaderTimestampPolicy.primaryTimestamp(
+                resolution: .merged,
+                itemTimestamp: lastUpdate,
+                mergedAt: mergedAt
+            ),
+            mergedAt
+        )
+        XCTAssertTrue(
+            PullRequestHeaderTimestampPolicy.shouldShowLastUpdate(
+                resolution: .merged,
+                itemTimestamp: lastUpdate,
+                mergedAt: mergedAt,
+                referenceDate: referenceDate
+            )
+        )
+    }
+
+    func testPullRequestHeaderTimestampPolicyHidesDuplicateLastUpdateLabel() {
+        let mergedAt = Date(timeIntervalSince1970: 1_000)
+        let lastUpdate = mergedAt.addingTimeInterval(30)
+        let referenceDate = mergedAt.addingTimeInterval(57_600)
+
+        XCTAssertFalse(
+            PullRequestHeaderTimestampPolicy.shouldShowLastUpdate(
+                resolution: .merged,
+                itemTimestamp: lastUpdate,
+                mergedAt: mergedAt,
+                referenceDate: referenceDate
+            )
+        )
+    }
+
+    func testAttentionUpdateHistoryMergesCurrentAndPreviousUpdatesWithoutDuplicates() {
+        let now = Date(timeIntervalSince1970: 200)
+        let previous = [
+            AttentionUpdate(
+                id: "workflow:failed",
+                type: .workflowFailed,
+                title: "Workflow failed",
+                detail: "CI",
+                timestamp: now.addingTimeInterval(-20),
+                actor: nil,
+                url: nil
+            )
+        ]
+        let current = [
+            AttentionUpdate(
+                id: "workflow:succeeded",
+                type: .workflowSucceeded,
+                title: "Workflow succeeded",
+                detail: "CI",
+                timestamp: now,
+                actor: nil,
+                url: nil
+            ),
+            AttentionUpdate(
+                id: "workflow:failed",
+                type: .workflowFailed,
+                title: "Workflow failed",
+                detail: "CI",
+                timestamp: now.addingTimeInterval(-20),
+                actor: nil,
+                url: nil
+            )
+        ]
+
+        XCTAssertEqual(
+            AttentionUpdateHistoryPolicy.merging(existing: previous, current: current).map(\.id),
+            ["workflow:succeeded", "workflow:failed"]
+        )
+    }
+
+    func testAttentionUpdateHistoryMergingKeepsAllUpdatesByDefault() {
+        let updates = (0..<16).map { offset in
+            AttentionUpdate(
+                id: "update-\(offset)",
+                type: .comment,
+                title: "Update \(offset)",
+                detail: nil,
+                timestamp: Date(timeIntervalSince1970: Double(200 - offset)),
+                actor: nil,
+                url: nil
+            )
+        }
+
+        XCTAssertEqual(
+            AttentionUpdateHistoryPolicy.merging(existing: [], current: updates).map(\.id),
+            updates.map(\.id)
+        )
+    }
+
+    func testAttentionUpdateHistoryProjectionRetainsDetachedSubjectsAndMergesCurrentUpdates() {
+        let orphanURL = URL(string: "https://github.com/example/repo/pull/1")!
+        let activeURL = URL(string: "https://github.com/example/repo/pull/2")!
+        let orphanUpdate = AttentionUpdate(
+            id: "orphan:comment",
+            type: .comment,
+            title: "Comment",
+            detail: "Old discussion",
+            timestamp: Date(timeIntervalSince1970: 100),
+            actor: nil,
+            url: orphanURL
+        )
+        let previousActiveUpdate = AttentionUpdate(
+            id: "active:requested",
+            type: .reviewRequested,
+            title: "Review requested",
+            detail: nil,
+            timestamp: Date(timeIntervalSince1970: 150),
+            actor: nil,
+            url: activeURL
+        )
+        let currentActiveUpdate = AttentionUpdate(
+            id: "active:approved",
+            type: .reviewApproved,
+            title: "Approved",
+            detail: nil,
+            timestamp: Date(timeIntervalSince1970: 200),
+            actor: AttentionActor(login: "octocat", avatarURL: nil),
+            url: activeURL,
+            isTriggeredByCurrentUser: true
+        )
+        let activeItem = AttentionItem(
+            id: activeURL.absoluteString,
+            subjectKey: activeURL.absoluteString,
+            updateKey: currentActiveUpdate.id,
+            type: .reviewApproved,
+            title: "Example PR",
+            subtitle: "example/repo · Approved",
+            repository: "example/repo",
+            timestamp: currentActiveUpdate.timestamp,
+            url: activeURL,
+            actor: currentActiveUpdate.actor,
+            isTriggeredByCurrentUser: true,
+            detail: AttentionDetail(
+                why: AttentionWhy(summary: "Approved", detail: nil),
+                evidence: [],
+                updates: [currentActiveUpdate],
+                actions: []
+            )
+        )
+
+        let projection = AttentionUpdateHistoryProjection.applying(
+            persistedHistoryBySubjectKey: [
+                orphanURL.absoluteString: [orphanUpdate],
+                activeURL.absoluteString: [previousActiveUpdate]
+            ],
+            to: [activeItem]
+        )
+
+        XCTAssertEqual(projection.items.count, 1)
+        XCTAssertEqual(
+            projection.items[0].detail.updates.map(\.id),
+            ["active:approved", "active:requested"]
+        )
+        XCTAssertEqual(
+            projection.historyBySubjectKey[orphanURL.absoluteString]?.map(\.id),
+            ["orphan:comment"]
+        )
+        XCTAssertEqual(
+            projection.historyBySubjectKey[activeURL.absoluteString]?.map(\.id),
+            ["active:approved", "active:requested"]
+        )
+    }
+
+    func testAttentionUpdateHistoryStoreRoundTripsSelfTriggeredUpdates() {
+        let defaults = temporaryUserDefaults()
+        let key = "attention-update-history-store-test"
+        let url = URL(string: "https://github.com/example/repo/pull/42")!
+        let history = [
+            url.absoluteString: [
+                AttentionUpdate(
+                    id: "comment:1",
+                    type: .comment,
+                    title: "Commented",
+                    detail: "You commented",
+                    timestamp: Date(timeIntervalSince1970: 300),
+                    actor: AttentionActor(login: "octocat", avatarURL: nil),
+                    url: url,
+                    isTriggeredByCurrentUser: true
+                )
+            ]
+        ]
+
+        AttentionUpdateHistoryStore.persist(history, to: defaults, key: key)
+
+        XCTAssertEqual(
+            AttentionUpdateHistoryStore.load(from: defaults, key: key),
+            history
+        )
+
+        AttentionUpdateHistoryStore.persist([:], to: defaults, key: key)
+
+        XCTAssertNil(defaults.data(forKey: key))
+    }
+
+    func testAttentionUpdateNotificationPolicySkipsSelfTriggeredUpdatesUnlessEnabled() {
+        let url = URL(string: "https://github.com/example/repo/pull/42")!
+        let selfTriggeredItem = AttentionItem(
+            id: url.absoluteString,
+            subjectKey: url.absoluteString,
+            type: .comment,
+            title: "Example PR",
+            subtitle: "example/repo · Comment",
+            timestamp: Date(timeIntervalSince1970: 100),
+            url: url,
+            isTriggeredByCurrentUser: true
+        )
+        let externalItem = AttentionItem(
+            id: "external",
+            subjectKey: "https://github.com/example/repo/pull/43",
+            type: .comment,
+            title: "External PR",
+            subtitle: "example/repo · Comment",
+            timestamp: Date(timeIntervalSince1970: 101),
+            url: URL(string: "https://github.com/example/repo/pull/43")!
+        )
+
+        XCTAssertFalse(
+            AttentionUpdateNotificationPolicy.shouldDeliver(
+                item: selfTriggeredItem,
+                includeSelfTriggeredUpdates: false
+            )
+        )
+        XCTAssertTrue(
+            AttentionUpdateNotificationPolicy.shouldDeliver(
+                item: selfTriggeredItem,
+                includeSelfTriggeredUpdates: true
+            )
+        )
+        XCTAssertTrue(
+            AttentionUpdateNotificationPolicy.shouldDeliver(
+                item: externalItem,
+                includeSelfTriggeredUpdates: false
+            )
+        )
+    }
+
+    func testAttentionSubjectRefreshPolicyRelabelsSubjectAndReplacesFocusSupplementalItems() {
+        let url = URL(string: "https://github.com/example/repo/pull/42")!
+        let existingItem = AttentionItem(
+            id: "tracked-pr:42",
+            subjectKey: url.absoluteString,
+            type: .reviewedPullRequest,
+            title: "Example PR",
+            subtitle: "example/repo · Reviewed by you",
+            repository: "example/repo",
+            labels: [
+                GitHubLabel(name: "old", colorHex: "111111", description: nil)
+            ],
+            timestamp: Date(timeIntervalSince1970: 100),
+            url: url
+        )
+        let staleSupplemental = AttentionItem(
+            id: "\(AttentionSubjectRefresh.localSupplementalItemIDPrefix)old",
+            subjectKey: url.absoluteString,
+            updateKey: "self-update:old",
+            type: .reviewComment,
+            title: "Example PR",
+            subtitle: "example/repo · Review comment",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 110),
+            url: url,
+            isTriggeredByCurrentUser: true
+        )
+        let otherItem = AttentionItem(
+            id: "tracked-pr:7",
+            subjectKey: "https://github.com/example/repo/pull/7",
+            type: .comment,
+            title: "Other PR",
+            subtitle: "example/repo · Comment",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 120),
+            url: URL(string: "https://github.com/example/repo/pull/7")!
+        )
+        let freshSupplemental = AttentionItem(
+            id: "\(AttentionSubjectRefresh.localSupplementalItemIDPrefix)new",
+            subjectKey: url.absoluteString,
+            updateKey: "self-update:new",
+            type: .reviewApproved,
+            title: "Example PR",
+            subtitle: "alberto · example/repo · Review approved",
+            repository: "example/repo",
+            labels: [
+                GitHubLabel(name: "fresh", colorHex: "00ff00", description: nil)
+            ],
+            timestamp: Date(timeIntervalSince1970: 130),
+            url: url,
+            actor: AttentionActor(login: "alberto", avatarURL: nil),
+            isTriggeredByCurrentUser: true
+        )
+
+        let refreshed = AttentionSubjectRefreshPolicy.applying(
+            AttentionSubjectRefresh(
+                subjectKey: url.absoluteString,
+                labels: [
+                    GitHubLabel(name: "fresh", colorHex: "00ff00", description: nil)
+                ],
+                mergedAt: nil,
+                supplementalItems: [freshSupplemental]
+            ),
+            to: [existingItem, staleSupplemental, otherItem]
+        )
+
+        XCTAssertEqual(refreshed.count, 3)
+        XCTAssertEqual(
+            refreshed.first(where: { $0.id == "tracked-pr:42" })?.labels.map(\.name),
+            ["fresh"]
+        )
+        XCTAssertNil(refreshed.first(where: { $0.id == staleSupplemental.id }))
+        XCTAssertEqual(refreshed.first(where: { $0.id == freshSupplemental.id })?.type, .reviewApproved)
+        XCTAssertEqual(
+            refreshed.first(where: { $0.id == "tracked-pr:7" })?.labels.map(\.name),
+            []
         )
     }
 
@@ -193,6 +649,80 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(AttentionItemType.comment.defaultStream, .notifications)
         XCTAssertEqual(AttentionItemType.authoredPullRequest.defaultStream, .pullRequests)
         XCTAssertEqual(AttentionItemType.assignedIssue.defaultStream, .issues)
+    }
+
+    func testBadgeHelpTextExplainsPrimaryAndSecondaryBadges() {
+        XCTAssertEqual(
+            AttentionItemType.badgeHelpText(
+                primary: .workflowFailed,
+                secondary: .authoredPullRequest
+            ),
+            "Workflow failed\nCreated by you"
+        )
+        XCTAssertEqual(
+            AttentionItemType.badgeHelpText(
+                primary: .reviewRequested,
+                secondary: nil
+            ),
+            "Review requested"
+        )
+    }
+
+    func testAttentionViewerPresentationPolicyUsesYouForCurrentActor() {
+        let actor = AttentionActor(login: "fiam", avatarURL: nil)
+
+        XCTAssertEqual(
+            AttentionViewerPresentationPolicy.actorLabel(
+                for: actor,
+                viewerLogin: "fiam"
+            ),
+            "you"
+        )
+        XCTAssertEqual(
+            AttentionViewerPresentationPolicy.actorLabel(
+                for: actor,
+                viewerLogin: "someone-else"
+            ),
+            "fiam"
+        )
+    }
+
+    func testAttentionViewerPresentationPolicyPersonalizesLeadingViewerLogin() {
+        XCTAssertEqual(
+            AttentionViewerPresentationPolicy.personalizing(
+                "fiam · ExampleOrg/sample-services · Review approved",
+                viewerLogin: "fiam"
+            ),
+            "you · ExampleOrg/sample-services · Review approved"
+        )
+        XCTAssertEqual(
+            AttentionViewerPresentationPolicy.personalizing(
+                "fiam/repo",
+                viewerLogin: "fiam"
+            ),
+            "fiam/repo"
+        )
+    }
+
+    func testAttentionViewerPresentationPolicyAvoidsDuplicateUpdateActorPrefix() {
+        let actor = AttentionActor(login: "fiam", avatarURL: nil)
+
+        XCTAssertEqual(
+            AttentionViewerPresentationPolicy.updateDetailText(
+                actor: actor,
+                detail: "fiam · ExampleOrg/sample-services · Review approved",
+                viewerLogin: "fiam"
+            ),
+            "you · ExampleOrg/sample-services · Review approved"
+        )
+        XCTAssertEqual(
+            AttentionViewerPresentationPolicy.updateDetailText(
+                actor: actor,
+                detail: "ExampleOrg/sample-services · Review approved",
+                viewerLogin: "fiam"
+            ),
+            "you · ExampleOrg/sample-services · Review approved"
+        )
     }
 
     func testPullRequestStateTransitionUsesSpecificLabels() {
@@ -214,11 +744,11 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(PullRequestStateTransition.synchronized.title, "Updated")
     }
 
-    func testCombinedAttentionViewPrefersNotificationDuplicateOverDirectPullRequestItem() {
+    func testCombinedAttentionViewCollapsesNotificationAndDirectPullRequestIntoOneSubject() {
         let url = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/pull/638")!
         let directItem = AttentionItem(
             id: "pr:638",
-            ignoreKey: url.absoluteString,
+            subjectKey: url.absoluteString,
             stream: .pullRequests,
             type: .assignedPullRequest,
             title: "[cloud-uc-services/cp] deploying uc-cp/uc-cp-api:873",
@@ -229,7 +759,7 @@ final class AttentionClassificationTests: XCTestCase {
         )
         let notificationItem = AttentionItem(
             id: "notif:638",
-            ignoreKey: url.absoluteString,
+            subjectKey: url.absoluteString,
             stream: .notifications,
             type: .assignedPullRequest,
             title: "[cloud-uc-services/cp] deploying uc-cp/uc-cp-api:873",
@@ -244,14 +774,17 @@ final class AttentionClassificationTests: XCTestCase {
             in: [notificationItem, directItem]
         )
 
-        XCTAssertEqual(combined.map(\.id), ["notif:638"])
+        XCTAssertEqual(combined.map(\.id), [url.absoluteString])
+        XCTAssertEqual(combined.first?.stream, .pullRequests)
+        XCTAssertEqual(combined.first?.type, .assignedPullRequest)
+        XCTAssertEqual(combined.first?.actor?.login, "testcontainers-manifests-deploy[bot]")
     }
 
-    func testCombinedAttentionViewKeepsDistinctAttentionTypesForSamePullRequest() {
+    func testCombinedAttentionViewBuildsTimelineForDistinctUpdatesOnSamePullRequest() {
         let url = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/pull/638")!
         let reviewRequest = AttentionItem(
             id: "notif:review",
-            ignoreKey: url.absoluteString,
+            subjectKey: url.absoluteString,
             stream: .notifications,
             type: .reviewRequested,
             title: "Review me",
@@ -262,7 +795,7 @@ final class AttentionClassificationTests: XCTestCase {
         )
         let readyToMerge = AttentionItem(
             id: "ready:638",
-            ignoreKey: url.absoluteString,
+            subjectKey: url.absoluteString,
             stream: .pullRequests,
             type: .readyToMerge,
             title: "Review me",
@@ -276,7 +809,96 @@ final class AttentionClassificationTests: XCTestCase {
             in: [reviewRequest, readyToMerge]
         )
 
-        XCTAssertEqual(combined.map(\.id), ["notif:review", "ready:638"])
+        XCTAssertEqual(combined.map(\.id), [url.absoluteString])
+        XCTAssertEqual(combined.first?.type, .readyToMerge)
+        XCTAssertEqual(
+            combined.first?.detail.updates.map(\.type),
+            [.readyToMerge, .reviewRequested]
+        )
+    }
+
+    func testCombinedAttentionViewUsesRelationshipAsSecondaryIndicatorForLatestUpdate() {
+        let url = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/pull/638")!
+        let authoredItem = AttentionItem(
+            id: "tracked-pr:638",
+            subjectKey: url.absoluteString,
+            type: .authoredPullRequest,
+            title: "Review me",
+            subtitle: "ExampleOrg/cloud-uc-manifests · Created by you",
+            repository: "ExampleOrg/cloud-uc-manifests",
+            timestamp: Date(timeIntervalSince1970: 100),
+            url: url
+        )
+        let workflowItem = AttentionItem(
+            id: "run:638",
+            subjectKey: url.absoluteString,
+            type: .workflowFailed,
+            title: "Review me",
+            subtitle: "ExampleOrg/cloud-uc-manifests · Workflow failed",
+            repository: "ExampleOrg/cloud-uc-manifests",
+            timestamp: Date(timeIntervalSince1970: 101),
+            url: url
+        )
+        let commentItem = AttentionItem(
+            id: "notif:comment",
+            subjectKey: url.absoluteString,
+            type: .comment,
+            title: "Review me",
+            subtitle: "ExampleOrg/cloud-uc-manifests · New comment",
+            repository: "ExampleOrg/cloud-uc-manifests",
+            timestamp: Date(timeIntervalSince1970: 102),
+            url: url
+        )
+
+        let combined = AttentionCombinedViewPolicy.collapsingDuplicates(
+            in: [authoredItem, workflowItem, commentItem]
+        )
+
+        XCTAssertEqual(combined.count, 1)
+        XCTAssertEqual(combined.first?.type, .comment)
+        XCTAssertEqual(combined.first?.secondaryIndicatorType, .authoredPullRequest)
+        XCTAssertEqual(
+            combined.first?.detail.updates.map(\.type),
+            [.comment, .workflowFailed]
+        )
+        XCTAssertTrue(combined.first?.isClosureNotificationEligible ?? false)
+        XCTAssertTrue(combined.first?.isPostMergeWatchEligible ?? false)
+    }
+
+    func testCombinedAttentionViewPreservesSelfTriggeredStateFromLatestUpdate() {
+        let url = URL(string: "https://github.com/example/repo/pull/99")!
+        let relationshipItem = AttentionItem(
+            id: "tracked-pr:99",
+            subjectKey: url.absoluteString,
+            type: .reviewedPullRequest,
+            title: "Example PR",
+            subtitle: "example/repo · Reviewed by you",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 100),
+            url: url,
+            isTriggeredByCurrentUser: true
+        )
+        let selfComment = AttentionItem(
+            id: "notif:self-comment",
+            subjectKey: url.absoluteString,
+            updateKey: "notif:self-comment",
+            type: .comment,
+            title: "Example PR",
+            subtitle: "example/repo · Comment",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 101),
+            url: url,
+            actor: AttentionActor(login: "octocat", avatarURL: nil),
+            isTriggeredByCurrentUser: true
+        )
+
+        let combined = AttentionCombinedViewPolicy.collapsingDuplicates(
+            in: [relationshipItem, selfComment]
+        )
+
+        XCTAssertEqual(combined.count, 1)
+        XCTAssertTrue(combined[0].isTriggeredByCurrentUser)
+        XCTAssertEqual(combined[0].detail.updates.map(\.isTriggeredByCurrentUser), [true])
     }
 
     func testTrackedPullRequestPriorityPrefersAuthoredOverReviewedAndCommented() {
@@ -373,7 +995,7 @@ final class AttentionClassificationTests: XCTestCase {
     func testHistoricalLogEntriesStayOutOfActionableAttention() {
         let historicalItem = AttentionItem(
             id: "tracked-pr:1:merged",
-            ignoreKey: "https://github.com/acme/example/pull/1",
+            subjectKey: "https://github.com/acme/example/pull/1",
             type: .authoredPullRequest,
             title: "Merged PR",
             subtitle: "acme/example · Created by you",
@@ -385,7 +1007,7 @@ final class AttentionClassificationTests: XCTestCase {
         )
         let activeItem = AttentionItem(
             id: "tracked-pr:2",
-            ignoreKey: "https://github.com/acme/example/pull/2",
+            subjectKey: "https://github.com/acme/example/pull/2",
             type: .reviewRequested,
             title: "Needs review",
             subtitle: "acme/example · Review requested",
@@ -547,7 +1169,7 @@ final class AttentionClassificationTests: XCTestCase {
 
         let ignoredPullRequest = AttentionItem(
             id: "pr:1",
-            ignoreKey: ignoredKey,
+            subjectKey: ignoredKey,
             type: .assignedPullRequest,
             title: "Ignored PR",
             subtitle: "#42 · acme/example",
@@ -556,7 +1178,7 @@ final class AttentionClassificationTests: XCTestCase {
         )
         let ignoredWorkflow = AttentionItem(
             id: "run:1",
-            ignoreKey: ignoredKey,
+            subjectKey: ignoredKey,
             type: .workflowFailed,
             title: "Ignored workflow",
             subtitle: "acme/example · PR #42 · Workflow failed",
@@ -565,7 +1187,7 @@ final class AttentionClassificationTests: XCTestCase {
         )
         let keptPullRequest = AttentionItem(
             id: "pr:2",
-            ignoreKey: keptKey,
+            subjectKey: keptKey,
             type: .assignedPullRequest,
             title: "Kept PR",
             subtitle: "#43 · acme/example",
@@ -888,6 +1510,76 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(facts.count, 1)
         XCTAssertEqual(facts.first?.label, "approved by")
         XCTAssertEqual(facts.first?.overflowLabel, "and 2 more people")
+    }
+
+    func testReadyToMergeHeaderFactsIncludeAuthorAndApprover() {
+        let facts = PullRequestHeaderFact.build(
+            sourceType: .readyToMerge,
+            resolution: .open,
+            sourceActor: nil,
+            author: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
+            assigner: nil,
+            latestApprover: AttentionActor(login: "nicksieger", avatarURL: nil, isBot: false),
+            approvalCount: 3,
+            mergedBy: nil
+        )
+
+        XCTAssertEqual(facts.map(\.label), ["created by", "approved by"])
+        XCTAssertEqual(facts.map(\.actor.login), ["fiam", "nicksieger"])
+        XCTAssertEqual(facts.last?.overflowLabel, "and 2 more people")
+    }
+
+    func testReadyToMergeHeaderFactsCombineSameAuthorAndApprover() {
+        let facts = PullRequestHeaderFact.build(
+            sourceType: .readyToMerge,
+            resolution: .open,
+            sourceActor: nil,
+            author: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
+            assigner: nil,
+            latestApprover: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
+            approvalCount: 2,
+            mergedBy: nil
+        )
+
+        XCTAssertEqual(facts.count, 1)
+        XCTAssertEqual(facts.first?.id, "created-and-approved-by")
+        XCTAssertEqual(facts.first?.label, "created and approved by")
+        XCTAssertEqual(facts.first?.actor.login, "fiam")
+        XCTAssertEqual(facts.first?.overflowLabel, "and 1 more person")
+    }
+
+    func testReviewApprovedHeaderFactsIncludeAuthorAndApprover() {
+        let facts = PullRequestHeaderFact.build(
+            sourceType: .reviewApproved,
+            resolution: .open,
+            sourceActor: AttentionActor(login: "nicksieger", avatarURL: nil, isBot: false),
+            author: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
+            assigner: nil,
+            latestApprover: nil,
+            approvalCount: 1,
+            mergedBy: nil
+        )
+
+        XCTAssertEqual(facts.map(\.label), ["created by", "approved by"])
+        XCTAssertEqual(facts.map(\.actor.login), ["fiam", "nicksieger"])
+    }
+
+    func testReviewApprovedHeaderFactsCombineSameAuthorAndApprover() {
+        let facts = PullRequestHeaderFact.build(
+            sourceType: .reviewApproved,
+            resolution: .open,
+            sourceActor: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
+            author: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
+            assigner: nil,
+            latestApprover: nil,
+            approvalCount: 1,
+            mergedBy: nil
+        )
+
+        XCTAssertEqual(facts.count, 1)
+        XCTAssertEqual(facts.first?.id, "created-and-approved-by")
+        XCTAssertEqual(facts.first?.label, "created and approved by")
+        XCTAssertEqual(facts.first?.actor.login, "fiam")
     }
 
     func testAssignedPullRequestHeaderFactsIncludeAuthorAndAssigner() {
@@ -2062,7 +2754,7 @@ final class AttentionClassificationTests: XCTestCase {
     func testAttentionItemParsesPullRequestReferenceFromCanonicalURL() {
         let item = AttentionItem(
             id: "pr:1",
-            ignoreKey: "https://github.com/acme/example/pull/42",
+            subjectKey: "https://github.com/acme/example/pull/42",
             type: .assignedPullRequest,
             title: "Example",
             subtitle: "acme/example · Review requested",
@@ -2080,7 +2772,7 @@ final class AttentionClassificationTests: XCTestCase {
     func testAttentionItemDoesNotParseIssueAsPullRequestReference() {
         let item = AttentionItem(
             id: "issue:1",
-            ignoreKey: "https://github.com/acme/example/issues/42",
+            subjectKey: "https://github.com/acme/example/issues/42",
             type: .mention,
             title: "Example issue",
             subtitle: "acme/example · Mentioned you",
@@ -2095,7 +2787,7 @@ final class AttentionClassificationTests: XCTestCase {
     func testRemovedAssignedPullRequestCanNotifyUnassigned() {
         let item = AttentionItem(
             id: "pr:assign",
-            ignoreKey: "https://github.com/acme/cloud-infra-terraform/pull/638",
+            subjectKey: "https://github.com/acme/cloud-infra-terraform/pull/638",
             type: .assignedPullRequest,
             title: "chore(deps): update module",
             subtitle: "acme/cloud-infra-terraform · Assigned pull request",
@@ -2126,7 +2818,7 @@ final class AttentionClassificationTests: XCTestCase {
     func testRemovedReadyToMergeCanNotifyMergedPullRequest() {
         let item = AttentionItem(
             id: "pr:ready",
-            ignoreKey: "https://github.com/ExampleOrg/offload-tools/pull/56",
+            subjectKey: "https://github.com/ExampleOrg/offload-tools/pull/56",
             type: .readyToMerge,
             title: "Add aj zones subcommand",
             subtitle: "ExampleOrg/offload-tools · Ready to merge",
@@ -2160,7 +2852,7 @@ final class AttentionClassificationTests: XCTestCase {
     func testRemovedIssueCommentCanNotifyClosedIssue() {
         let item = AttentionItem(
             id: "issue:comment",
-            ignoreKey: "https://github.com/acme/saas-mega/issues/17748",
+            subjectKey: "https://github.com/acme/saas-mega/issues/17748",
             type: .comment,
             title: "Investigate flaky deploy",
             subtitle: "acme/saas-mega · New comment",
@@ -2194,7 +2886,7 @@ final class AttentionClassificationTests: XCTestCase {
     func testRemovedTeamReviewRequestedDoesNotNotifyClosedPullRequest() {
         let item = AttentionItem(
             id: "pr:team-review",
-            ignoreKey: "https://github.com/ExampleOrg/testcontainers-cloud-web/pull/1038",
+            subjectKey: "https://github.com/ExampleOrg/testcontainers-cloud-web/pull/1038",
             type: .teamReviewRequested,
             title: "chore(deps): bump axios",
             subtitle: "ExampleOrg/testcontainers-cloud-web · Team review requested",
@@ -2224,7 +2916,7 @@ final class AttentionClassificationTests: XCTestCase {
     func testRemovedReviewRequestedCanRegisterPostMergeWatch() {
         let item = AttentionItem(
             id: "pr:review",
-            ignoreKey: "https://github.com/ExampleOrg/sample-services/pull/1102",
+            subjectKey: "https://github.com/ExampleOrg/sample-services/pull/1102",
             type: .reviewRequested,
             title: "DCL-1591 add billing-mode setting",
             subtitle: "ExampleOrg/sample-services · Review requested",
@@ -2260,7 +2952,7 @@ final class AttentionClassificationTests: XCTestCase {
     func testRemovedClosedIssueDoesNotRegisterPostMergeWatch() {
         let item = AttentionItem(
             id: "issue:authored",
-            ignoreKey: "https://github.com/ExampleOrg/sample-services/issues/42",
+            subjectKey: "https://github.com/ExampleOrg/sample-services/issues/42",
             type: .authoredIssue,
             title: "Track usage billing mode",
             subtitle: "ExampleOrg/sample-services · Issue you opened",
@@ -2288,4 +2980,11 @@ final class AttentionClassificationTests: XCTestCase {
             )
         )
     }
+}
+
+private func temporaryUserDefaults() -> UserDefaults {
+    let suiteName = "AttentionClassificationTests-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    return defaults
 }
