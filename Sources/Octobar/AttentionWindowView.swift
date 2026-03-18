@@ -808,28 +808,12 @@ private struct AttentionSidebarRow: View {
     }
 
     private var sidebarContextSubtitle: String? {
-        let trimmedSubtitle = item.subtitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedSubtitle.isEmpty else {
-            return nil
-        }
-
-        guard let repository = item.repository else {
-            return trimmedSubtitle
-        }
-
-        let segments = trimmedSubtitle
-            .components(separatedBy: " · ")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0 != repository }
-        let collapsed = segments.joined(separator: " · ")
-
-        guard !collapsed.isEmpty else {
-            return nil
-        }
-
-        return AttentionViewerPresentationPolicy.personalizing(
-            collapsed,
-            viewerLogin: viewerLogin
+        AttentionViewerPresentationPolicy.listContextSubtitle(
+            subtitle: item.subtitle,
+            actor: item.actor,
+            repository: item.repository,
+            viewerLogin: viewerLogin,
+            hidesRepository: true
         )
     }
 
@@ -1906,28 +1890,6 @@ private struct ActorLinkLabel: View {
             for: actor,
             viewerLogin: viewerLogin
         )
-    }
-}
-
-private struct BotAccountChip: View {
-    let login: String
-    var compact: Bool = false
-
-    var body: some View {
-        Image(systemName: "cpu")
-            .font(compact ? .caption2.weight(.semibold) : .caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, compact ? 5 : 7)
-            .padding(.vertical, compact ? 3 : 5)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(Color.secondary.opacity(0.14))
-            )
-            .overlay(
-                Capsule(style: .continuous)
-                    .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
-            )
-            .help("\(login) is a bot account")
     }
 }
 

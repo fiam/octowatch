@@ -1909,6 +1909,37 @@ enum AttentionViewerPresentationPolicy {
         return presentation.detail
     }
 
+    static func listContextSubtitle(
+        subtitle: String,
+        actor: AttentionActor?,
+        repository: String?,
+        viewerLogin: String?,
+        hidesRepository: Bool
+    ) -> String? {
+        let presentation = updatePresentation(
+            actor: actor,
+            detail: subtitle,
+            viewerLogin: viewerLogin
+        )
+
+        guard var detail = presentation.detail else {
+            return nil
+        }
+
+        if hidesRepository, let repository = normalizedDetail(repository) {
+            detail = detail
+                .components(separatedBy: " · ")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter {
+                    !$0.isEmpty &&
+                        $0.caseInsensitiveCompare(repository) != .orderedSame
+                }
+                .joined(separator: " · ")
+        }
+
+        return normalizedDetail(detail)
+    }
+
     private static func normalizedDetail(_ detail: String?) -> String? {
         guard let detail else {
             return nil

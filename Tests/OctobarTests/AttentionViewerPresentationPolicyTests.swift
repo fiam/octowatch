@@ -77,4 +77,68 @@ final class AttentionViewerPresentationPolicyTests: XCTestCase {
         XCTAssertEqual(presentation.actor?.label, "you")
         XCTAssertEqual(presentation.detail, "Trigger Terraform")
     }
+
+    func testListContextSubtitleStripsActorAndRepositoryForSidebarRows() {
+        let actor = AttentionActor(
+            login: "desktop-merge-queue[bot]",
+            avatarURL: nil,
+            isBot: true
+        )
+
+        let subtitle = AttentionViewerPresentationPolicy.listContextSubtitle(
+            subtitle: "desktop-merge-queue[bot] · acme/pinata · Review requested",
+            actor: actor,
+            repository: "acme/pinata",
+            viewerLogin: nil,
+            hidesRepository: true
+        )
+
+        XCTAssertEqual(subtitle, "Review requested")
+    }
+
+    func testListContextSubtitleStripsRawBotPrefixAndKeepsRepositoryForMenubarRows() {
+        let actor = AttentionActor(
+            login: "desktop-merge-queue[bot]",
+            avatarURL: nil,
+            isBot: true
+        )
+
+        let subtitle = AttentionViewerPresentationPolicy.listContextSubtitle(
+            subtitle: "desktop-merge-queue[bot] · acme/pinata · Review requested",
+            actor: actor,
+            repository: "acme/pinata",
+            viewerLogin: nil,
+            hidesRepository: false
+        )
+
+        XCTAssertEqual(subtitle, "acme/pinata · Review requested")
+    }
+
+    func testListContextSubtitleReturnsNilWhenActorAndRepositoryAreOnlyContext() {
+        let actor = AttentionActor(login: "alberto", avatarURL: nil)
+
+        let subtitle = AttentionViewerPresentationPolicy.listContextSubtitle(
+            subtitle: "alberto · acme/pinata",
+            actor: actor,
+            repository: "acme/pinata",
+            viewerLogin: nil,
+            hidesRepository: true
+        )
+
+        XCTAssertNil(subtitle)
+    }
+
+    func testListContextSubtitleStripsPersonalizedViewerActorPrefix() {
+        let actor = AttentionActor(login: "alberto", avatarURL: nil)
+
+        let subtitle = AttentionViewerPresentationPolicy.listContextSubtitle(
+            subtitle: "alberto · acme/pinata · Review approved",
+            actor: actor,
+            repository: "acme/pinata",
+            viewerLogin: "alberto",
+            hidesRepository: false
+        )
+
+        XCTAssertEqual(subtitle, "acme/pinata · Review approved")
+    }
 }

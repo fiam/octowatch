@@ -91,36 +91,63 @@ struct MenuBarContentView: View {
                                     model.markItemAsRead(item)
                                     openURL(item.url)
                                 } label: {
-                                    VStack(alignment: .leading, spacing: 2) {
+                                    let contextSubtitle = AttentionViewerPresentationPolicy.listContextSubtitle(
+                                        subtitle: item.subtitle,
+                                        actor: item.actor,
+                                        repository: item.repository,
+                                        viewerLogin: model.viewerLogin,
+                                        hidesRepository: false
+                                    )
+
+                                    VStack(alignment: .leading, spacing: 4) {
                                         Text(item.title)
                                             .font(item.isUnread ? .callout.weight(.semibold) : .callout)
                                             .lineLimit(2)
 
-                                        Text(
-                                            AttentionViewerPresentationPolicy.personalizing(
-                                                item.subtitle,
-                                                viewerLogin: model.viewerLogin
+                                        if let contextSubtitle {
+                                            Text(contextSubtitle)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+
+                                        HStack(alignment: .center, spacing: 6) {
+                                            if let actor = item.actor {
+                                                let actorPresentation =
+                                                    AttentionViewerPresentationPolicy.actorPresentation(
+                                                        for: actor,
+                                                        viewerLogin: model.viewerLogin
+                                                    )
+
+                                                HStack(alignment: .center, spacing: 6) {
+                                                    ActorAvatarView(actor: actor)
+
+                                                    Text(actorPresentation.label)
+                                                        .font(.caption.weight(.medium))
+                                                        .foregroundStyle(.secondary)
+                                                        .lineLimit(1)
+
+                                                    if actorPresentation.showsBotBadge {
+                                                        BotAccountChip(
+                                                            login: actor.login,
+                                                            compact: true
+                                                        )
+                                                    }
+                                                }
+                                            }
+
+                                            Spacer(minLength: 8)
+
+                                            RelativeTimestampText(
+                                                date: item.timestamp,
+                                                formatter: relativeFormatter
                                             )
-                                        )
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
+                                        }
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                                 .buttonStyle(.plain)
                                 .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 10)
-
-                                VStack(alignment: .trailing, spacing: 6) {
-                                    if let actor = item.actor {
-                                        ActorAvatarView(actor: actor)
-                                    }
-
-                                    RelativeTimestampText(
-                                        date: item.timestamp,
-                                        formatter: relativeFormatter
-                                    )
-                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -319,6 +346,28 @@ private struct RelativeTimestampText: View {
                 .foregroundStyle(.secondary)
                 .fixedSize()
         }
+    }
+}
+
+struct BotAccountChip: View {
+    let login: String
+    var compact: Bool = false
+
+    var body: some View {
+        Image(systemName: "cpu")
+            .font(compact ? .caption2.weight(.semibold) : .caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, compact ? 5 : 7)
+            .padding(.vertical, compact ? 3 : 5)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.secondary.opacity(0.14))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
+            )
+            .help("\(login) is a bot account")
     }
 }
 
