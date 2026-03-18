@@ -1,4 +1,5 @@
 import XCTest
+import GitHubWorkflowParsing
 @testable import Octowatch
 
 final class AttentionClassificationTests: XCTestCase {
@@ -1024,7 +1025,7 @@ final class AttentionClassificationTests: XCTestCase {
     }
 
     func testWorkflowFileParserReadsQuotedOnBlockWithFilters() {
-        let workflow = GitHubWorkflowFileParser.parse(
+        let result = GitHubWorkflowFileParser.parse(
             """
             name: Deploy
             'on':
@@ -1037,30 +1038,66 @@ final class AttentionClassificationTests: XCTestCase {
             """
         )
 
-        XCTAssertEqual(workflow?.name, "Deploy")
-        XCTAssertEqual(workflow?.pushTrigger?.branches, ["main"])
+        XCTAssertTrue(result.diagnostics.isEmpty)
+        XCTAssertEqual(result.definition?.name, "Deploy")
+        XCTAssertEqual(result.definition?.pushTrigger?.branches, ["main"])
         XCTAssertEqual(
-            workflow?.pushTrigger?.paths,
+            result.definition?.pushTrigger?.paths,
             ["Sources/**", "Package.swift"]
         )
     }
 
     func testWorkflowFileParserRecognizesInlinePushEvents() {
-        let workflow = GitHubWorkflowFileParser.parse(
+        let result = GitHubWorkflowFileParser.parse(
             """
             name: CI
             on: [pull_request, push]
             """
         )
 
-        XCTAssertEqual(workflow?.name, "CI")
-        XCTAssertEqual(workflow?.pushTrigger, .default)
+        XCTAssertTrue(result.diagnostics.isEmpty)
+        XCTAssertEqual(result.definition?.name, "CI")
+        XCTAssertEqual(result.definition?.pushTrigger, .default)
+    }
+
+    func testWorkflowFileParserSupportsFlowMappingsAndTagFilters() {
+        let result = GitHubWorkflowFileParser.parse(
+            """
+            name: Release
+            on: { push: { tags: ['v*'], paths: ['Sources/**'] } }
+            """
+        )
+
+        XCTAssertTrue(result.diagnostics.isEmpty)
+        XCTAssertEqual(result.definition?.name, "Release")
+        XCTAssertEqual(result.definition?.pushTrigger?.tags, ["v*"])
+        XCTAssertEqual(result.definition?.pushTrigger?.paths, ["Sources/**"])
+    }
+
+    func testWorkflowFileParserReturnsLocationForInvalidYAML() {
+        let result = GitHubWorkflowFileParser.parse(
+            """
+            on:
+              push:
+                branches:
+                  - main
+                paths:
+                  - Sources/**
+                 - broken
+            """
+        )
+
+        XCTAssertNil(result.definition)
+        XCTAssertEqual(result.diagnostics.first?.kind, .invalidYAML)
+        XCTAssertEqual(result.diagnostics.first?.location?.line, 7)
     }
 
     func testWorkflowPathFilterPolicyMatchesBranchAndPaths() {
         let trigger = GitHubWorkflowPushTrigger(
             branches: ["main"],
             branchesIgnore: [],
+            tags: [],
+            tagsIgnore: [],
             paths: ["Sources/**", "!Sources/Generated/**"],
             pathsIgnore: []
         )
@@ -1092,6 +1129,8 @@ final class AttentionClassificationTests: XCTestCase {
         let trigger = GitHubWorkflowPushTrigger(
             branches: [],
             branchesIgnore: [],
+            tags: [],
+            tagsIgnore: [],
             paths: [],
             pathsIgnore: ["docs/**", "*.md"]
         )
@@ -1108,6 +1147,25 @@ final class AttentionClassificationTests: XCTestCase {
                 trigger: trigger,
                 branch: "main",
                 changedFiles: ["docs/readme.md", "Sources/Octobar/AppModel.swift"]
+            )
+        )
+    }
+
+    func testWorkflowPathFilterPolicySkipsTagOnlyPushWorkflowsForBranchPredictions() {
+        let trigger = GitHubWorkflowPushTrigger(
+            branches: [],
+            branchesIgnore: [],
+            tags: ["v*"],
+            tagsIgnore: [],
+            paths: [],
+            pathsIgnore: []
+        )
+
+        XCTAssertFalse(
+            GitHubWorkflowPathFilterPolicy.matches(
+                trigger: trigger,
+                branch: "main",
+                changedFiles: ["Sources/Octobar/AppModel.swift"]
             )
         )
     }
@@ -1148,7 +1206,12 @@ final class AttentionClassificationTests: XCTestCase {
                     timestamp: Date(timeIntervalSince1970: 300)
                 )
             ],
-            isBestEffort: true
+            evaluationIssues: [
+                PullRequestPostMergeWorkflowEvaluationIssue(
+                    path: ".github/workflows/deploy.yml",
+                    message: "Expected <block end>, but found '-' (line 6, column 2)"
+                )
+            ]
         )
 
         XCTAssertEqual(preview.title, "Post-merge workflow")
@@ -1158,7 +1221,11 @@ final class AttentionClassificationTests: XCTestCase {
         )
         XCTAssertEqual(
             preview.footnote,
-            "Some workflow files could not be parsed, so this list may be incomplete."
+            "Some workflow files could not be evaluated, so this list may be incomplete."
+        )
+        XCTAssertEqual(
+            preview.footnoteHelpText,
+            ".github/workflows/deploy.yml: Expected <block end>, but found '-' (line 6, column 2)"
         )
     }
 
@@ -2978,6 +3045,38 @@ final class AttentionClassificationTests: XCTestCase {
                 for: [item],
                 state: state
             )
+        )
+    }
+
+    func testRepositoryWorkflowPathFiltersDynamicWorkflows() {
+        XCTAssertTrue(
+            GitHubClient.isRepositoryWorkflowPath(".github/workflows/build.yaml")
+        )
+        XCTAssertTrue(
+            GitHubClient.isRepositoryWorkflowPath(".github/workflows/deploy.yml")
+        )
+        XCTAssertFalse(
+            GitHubClient.isRepositoryWorkflowPath("dynamic/dependabot/dependabot-updates")
+        )
+        XCTAssertFalse(
+            GitHubClient.isRepositoryWorkflowPath("dynamic/github-code-scanning/codeql")
+        )
+    }
+
+    func testWorkflowPredictionRefPrefersMergeCommitWhenAvailable() {
+        XCTAssertEqual(
+            GitHubClient.workflowPredictionRef(
+                headRefOID: "head-oid",
+                mergeCommitSHA: nil
+            ),
+            "head-oid"
+        )
+        XCTAssertEqual(
+            GitHubClient.workflowPredictionRef(
+                headRefOID: "head-oid",
+                mergeCommitSHA: "merge-oid"
+            ),
+            "merge-oid"
         )
     }
 }

@@ -8,13 +8,30 @@ settings:
   base:
     PRODUCT_BUNDLE_IDENTIFIER: dev.octowatch.app
     SWIFT_VERSION: 6.0
+packages:
+  Yams:
+    url: https://github.com/jpsim/Yams
+    from: 6.2.1
 targets:
+  GitHubWorkflowParsing:
+    type: framework
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Sources/GitHubWorkflowParsing
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - package: Yams
   Octowatch:
     type: application
     platform: macOS
     deploymentTarget: "26.0"
     sources:
       - path: Sources/Octobar
+    dependencies:
+      - target: GitHubWorkflowParsing
     settings:
       base:
         PRODUCT_NAME: Octowatch
@@ -33,6 +50,7 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: Octowatch
+      - target: GitHubWorkflowParsing
   OctowatchUITests:
     type: bundle.ui-testing
     platform: macOS

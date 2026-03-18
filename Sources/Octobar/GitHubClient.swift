@@ -1,4 +1,5 @@
 import Foundation
+import GitHubWorkflowParsing
 
 enum GitHubClientError: LocalizedError {
     case invalidResponse
@@ -1035,6 +1036,10 @@ struct GitHubClient {
             token: token,
             reference: reference,
             branch: pullRequest.baseRefName,
+            workflowRef: Self.workflowPredictionRef(
+                headRefOID: pullRequest.headRefOID,
+                mergeCommitSHA: pullRequest.mergeCommit?.oid
+            ),
             mergeCommitSHA: pullRequest.mergeCommit?.oid,
             observer: observer
         )
@@ -3640,6 +3645,7 @@ struct GitHubClient {
         token: String,
         reference: PullRequestReference,
         branch: String,
+        workflowRef: String,
         mergeCommitSHA: String?,
         observer: GitHubRateLimitObserver
     ) async throws -> PullRequestPostMergeWorkflowPreview? {
@@ -3647,6 +3653,7 @@ struct GitHubClient {
             token: token,
             reference: reference,
             branch: branch,
+            workflowRef: workflowRef,
             observer: observer
         )
         let observed: [PostMergeObservedWorkflowRun]
@@ -3665,7 +3672,7 @@ struct GitHubClient {
             observed = []
         }
 
-        guard !predicted.workflows.isEmpty || !observed.isEmpty else {
+        guard !predicted.workflows.isEmpty || !observed.isEmpty || !predicted.issues.isEmpty else {
             return nil
         }
 
@@ -3674,7 +3681,7 @@ struct GitHubClient {
             predicted: predicted.workflows,
             observed: observed,
             isMerged: mergeCommitSHA != nil,
-            isBestEffort: predicted.isBestEffort
+            evaluationIssues: predicted.issues
         )
     }
 
@@ -3694,16 +3701,27 @@ struct GitHubClient {
         token: String,
         reference: PullRequestReference,
         branch: String,
+        workflowRef: String,
         observer: GitHubRateLimitObserver
     ) async throws -> PredictedPostMergeWorkflowSet {
-        let workflows = try await fetchRepositoryWorkflows(
+        let workflowFiles = try await fetchRepositoryWorkflowFiles(
+            token: token,
+            repository: reference.repository,
+            ref: workflowRef,
+            observer: observer
+        )
+        guard !workflowFiles.isEmpty else {
+            return PredictedPostMergeWorkflowSet(workflows: [], issues: [])
+        }
+
+        let workflowMetadata = (try? await fetchRepositoryWorkflows(
             token: token,
             repository: reference.repository,
             observer: observer
+        )) ?? []
+        let workflowMetadataByPath = Dictionary(
+            uniqueKeysWithValues: workflowMetadata.map { ($0.path, $0) }
         )
-        guard !workflows.isEmpty else {
-            return PredictedPostMergeWorkflowSet(workflows: [], isBestEffort: false)
-        }
 
         let changedFiles = try await fetchPullRequestChangedFiles(
             token: token,
@@ -3711,64 +3729,108 @@ struct GitHubClient {
             observer: observer
         )
         guard !changedFiles.isEmpty else {
-            return PredictedPostMergeWorkflowSet(workflows: [], isBestEffort: false)
+            return PredictedPostMergeWorkflowSet(workflows: [], issues: [])
         }
 
         return await withTaskGroup(of: PredictedPostMergeWorkflowOutcome.self) { group in
-            for workflow in workflows {
+            for workflowFile in workflowFiles {
                 group.addTask {
                     do {
-                        guard
-                            let content = try await self.fetchRepositoryFileContent(
-                                token: token,
-                                repository: reference.repository,
-                                path: workflow.path,
-                                ref: branch,
-                                observer: observer
-                            ),
-                            let definition = GitHubWorkflowFileParser.parse(content)
-                        else {
-                            return .bestEffortOnly
-                        }
+                        let workflow = workflowMetadataByPath[workflowFile.path]
+                        let contentResult = try await self.fetchRepositoryFileContent(
+                            token: token,
+                            repository: reference.repository,
+                            path: workflowFile.path,
+                            ref: workflowRef,
+                            observer: observer
+                        )
 
-                        guard let pushTrigger = definition.pushTrigger else {
-                            return .ignored
-                        }
+                        switch contentResult {
+                        case let .content(content):
+                            let parseResult = GitHubWorkflowFileParser.parse(content)
+                            if let diagnostic = parseResult.diagnostics.first {
+                                return .issue(
+                                    PullRequestPostMergeWorkflowEvaluationIssue(
+                                        path: workflowFile.path,
+                                        message: self.workflowIssueMessage(for: diagnostic)
+                                    )
+                                )
+                            }
 
-                        guard GitHubWorkflowPathFilterPolicy.matches(
-                            trigger: pushTrigger,
-                            branch: branch,
-                            changedFiles: changedFiles
-                        ) else {
-                            return .ignored
-                        }
+                            guard let definition = parseResult.definition else {
+                                return .issue(
+                                    PullRequestPostMergeWorkflowEvaluationIssue(
+                                        path: workflowFile.path,
+                                        message: "Octowatch could not evaluate this workflow file."
+                                    )
+                                )
+                            }
 
-                        let title = definition.name?.trimmingCharacters(in: .whitespacesAndNewlines)
-                        return .matched(
-                            PredictedPostMergeWorkflow(
-                                id: workflow.id,
-                                title: title?.isEmpty == false ? title! : workflow.name,
-                                url: workflow.htmlURL ?? self.repositoryWorkflowURL(
-                                    repository: reference.repository,
-                                    path: workflow.path
+                            guard let pushTrigger = definition.pushTrigger else {
+                                return .ignored
+                            }
+
+                            guard GitHubWorkflowPathFilterPolicy.matches(
+                                trigger: pushTrigger,
+                                branch: branch,
+                                changedFiles: changedFiles
+                            ) else {
+                                return .ignored
+                            }
+
+                            let title = definition.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+                            return .matched(
+                                PredictedPostMergeWorkflow(
+                                    workflowID: workflow?.id,
+                                    title: title?.isEmpty == false ? title! : workflow?.name ?? workflowFile.displayName,
+                                    url: workflow?.htmlURL ?? self.repositoryWorkflowURL(
+                                        repository: reference.repository,
+                                        path: workflowFile.path
+                                    )
                                 )
                             )
-                        )
+                        case .missing:
+                            return .issue(
+                                PullRequestPostMergeWorkflowEvaluationIssue(
+                                    path: workflowFile.path,
+                                    message: "GitHub did not return this workflow file for the predicted merge ref."
+                                )
+                            )
+                        case .unreadable:
+                            return .issue(
+                                PullRequestPostMergeWorkflowEvaluationIssue(
+                                    path: workflowFile.path,
+                                    message: "Octowatch could not decode this workflow file from GitHub."
+                                )
+                            )
+                        case .unsupportedContent:
+                            return .issue(
+                                PullRequestPostMergeWorkflowEvaluationIssue(
+                                    path: workflowFile.path,
+                                    message: "GitHub returned this workflow in an unsupported format."
+                                )
+                            )
+                        }
                     } catch {
-                        return .bestEffortOnly
+                        return .issue(
+                            PullRequestPostMergeWorkflowEvaluationIssue(
+                                path: workflowFile.path,
+                                message: "Octowatch could not fetch this workflow file from GitHub."
+                            )
+                        )
                     }
                 }
             }
 
             var predicted = [PredictedPostMergeWorkflow]()
-            var isBestEffort = false
+            var issues = [PullRequestPostMergeWorkflowEvaluationIssue]()
 
             for await outcome in group {
                 switch outcome {
                 case let .matched(workflow):
                     predicted.append(workflow)
-                case .bestEffortOnly:
-                    isBestEffort = true
+                case let .issue(issue):
+                    issues.append(issue)
                 case .ignored:
                     break
                 }
@@ -3777,9 +3839,12 @@ struct GitHubClient {
             predicted.sort { lhs, rhs in
                 lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
             }
+            issues.sort { lhs, rhs in
+                lhs.path.localizedCaseInsensitiveCompare(rhs.path) == .orderedAscending
+            }
             return PredictedPostMergeWorkflowSet(
                 workflows: predicted,
-                isBestEffort: isBestEffort
+                issues: issues
             )
         }
     }
@@ -3797,7 +3862,41 @@ struct GitHubClient {
         )
 
         return response.workflows.filter {
-            $0.state.caseInsensitiveCompare("active") == .orderedSame
+            $0.state.caseInsensitiveCompare("active") == .orderedSame &&
+                Self.isRepositoryWorkflowPath($0.path)
+        }
+    }
+
+    private func fetchRepositoryWorkflowFiles(
+        token: String,
+        repository: String,
+        ref: String,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [RepositoryWorkflowFile] {
+        let repositoryID = try parseRepositoryFullName(repository)
+
+        do {
+            let entries: [RepositoryContentEntry] = try await request(
+                path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/contents/.github/workflows",
+                queryItems: [
+                    URLQueryItem(name: "ref", value: ref)
+                ],
+                token: token,
+                observer: observer
+            )
+
+            return entries.compactMap { entry in
+                guard entry.type == "file", Self.isRepositoryWorkflowPath(entry.path) else {
+                    return nil
+                }
+
+                return RepositoryWorkflowFile(
+                    path: entry.path,
+                    displayName: entry.name
+                )
+            }
+        } catch let GitHubClientError.api(statusCode, _) where statusCode == 404 {
+            return []
         }
     }
 
@@ -3838,7 +3937,7 @@ struct GitHubClient {
         path: String,
         ref: String,
         observer: GitHubRateLimitObserver
-    ) async throws -> String? {
+    ) async throws -> RepositoryFileContentResult {
         let repositoryID = try parseRepositoryFullName(repository)
 
         do {
@@ -3851,8 +3950,12 @@ struct GitHubClient {
                 observer: observer
             )
 
-            guard file.type == "file", file.encoding == "base64", let encoded = file.content else {
-                return nil
+            guard file.type == "file" else {
+                return .unsupportedContent
+            }
+
+            guard file.encoding == "base64", let encoded = file.content else {
+                return .unreadable
             }
 
             let normalized = encoded.replacingOccurrences(of: "\n", with: "")
@@ -3860,12 +3963,12 @@ struct GitHubClient {
                 let data = Data(base64Encoded: normalized),
                 let content = String(data: data, encoding: .utf8)
             else {
-                return nil
+                return .unreadable
             }
 
-            return content
+            return .content(content)
         } catch let GitHubClientError.api(statusCode, _) where statusCode == 404 {
-            return nil
+            return .missing
         }
     }
 
@@ -3898,7 +4001,7 @@ struct GitHubClient {
         predicted: [PredictedPostMergeWorkflow],
         observed: [PostMergeObservedWorkflowRun],
         isMerged: Bool,
-        isBestEffort: Bool
+        evaluationIssues: [PullRequestPostMergeWorkflowEvaluationIssue]
     ) -> PullRequestPostMergeWorkflowPreview? {
         var latestObservedByKey = [String: PostMergeObservedWorkflowRun]()
         for run in observed {
@@ -3912,7 +4015,8 @@ struct GitHubClient {
 
         var workflows = [PullRequestPostMergeWorkflow]()
         for workflow in predicted {
-            let key = "workflow:\(workflow.id)"
+            let key = workflow.workflowID.map { "workflow:\($0)" } ??
+                "workflow-path:\(workflow.url.path.lowercased())"
             let fallbackKey = "name:\(workflow.title.lowercased())"
             let observedRun = latestObservedByKey.removeValue(forKey: key) ??
                 latestObservedByKey.removeValue(forKey: fallbackKey)
@@ -3948,7 +4052,7 @@ struct GitHubClient {
             )
         }
 
-        guard !workflows.isEmpty else {
+        guard !workflows.isEmpty || !evaluationIssues.isEmpty else {
             return nil
         }
 
@@ -3968,8 +4072,34 @@ struct GitHubClient {
         return PullRequestPostMergeWorkflowPreview(
             mode: isMerged ? .observed(branch: branch) : .predicted(branch: branch),
             workflows: Array(workflows.prefix(6)),
-            isBestEffort: isBestEffort
+            evaluationIssues: evaluationIssues
         )
+    }
+
+    private func workflowIssueMessage(
+        for diagnostic: GitHubWorkflowFileDiagnostic
+    ) -> String {
+        guard let location = diagnostic.location else {
+            return diagnostic.message
+        }
+
+        return "\(diagnostic.message) (line \(location.line), column \(location.column))"
+    }
+
+    static func workflowPredictionRef(
+        headRefOID: String,
+        mergeCommitSHA: String?
+    ) -> String {
+        mergeCommitSHA ?? headRefOID
+    }
+
+    static func isRepositoryWorkflowPath(_ path: String) -> Bool {
+        guard path.hasPrefix(".github/workflows/") else {
+            return false
+        }
+
+        let fileExtension = URL(fileURLWithPath: path).pathExtension.lowercased()
+        return fileExtension == "yml" || fileExtension == "yaml"
     }
 
     private func workflowSubtitle(
@@ -5270,24 +5400,42 @@ private struct RepositoryContentFile: Decodable {
     let encoding: String?
 }
 
+private struct RepositoryContentEntry: Decodable {
+    let name: String
+    let path: String
+    let type: String
+}
+
+private struct RepositoryWorkflowFile {
+    let path: String
+    let displayName: String
+}
+
 private struct PullRequestFile: Decodable {
     let filename: String
 }
 
+private enum RepositoryFileContentResult {
+    case content(String)
+    case missing
+    case unreadable
+    case unsupportedContent
+}
+
 private struct PredictedPostMergeWorkflowSet {
     let workflows: [PredictedPostMergeWorkflow]
-    let isBestEffort: Bool
+    let issues: [PullRequestPostMergeWorkflowEvaluationIssue]
 }
 
 private struct PredictedPostMergeWorkflow {
-    let id: Int
+    let workflowID: Int?
     let title: String
     let url: URL
 }
 
 private enum PredictedPostMergeWorkflowOutcome {
     case matched(PredictedPostMergeWorkflow)
-    case bestEffortOnly
+    case issue(PullRequestPostMergeWorkflowEvaluationIssue)
     case ignored
 }
 

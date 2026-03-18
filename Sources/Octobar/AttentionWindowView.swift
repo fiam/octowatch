@@ -1708,9 +1708,18 @@ private struct PullRequestFocusView: View {
                         }
 
                         if let footnote = postMergeWorkflowPreview.footnote {
-                            Text(footnote)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            HStack(alignment: .top, spacing: 6) {
+                                Text(footnote)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                if let footnoteHelpText = postMergeWorkflowPreview.footnoteHelpText {
+                                    Image(systemName: "info.circle")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .help(footnoteHelpText)
+                                }
+                            }
                         }
                     }
                 }

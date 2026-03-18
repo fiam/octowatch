@@ -1483,7 +1483,7 @@ enum PullRequestPostMergeWorkflowPreviewMode: Hashable, Sendable {
 struct PullRequestPostMergeWorkflowPreview: Hashable, Sendable {
     let mode: PullRequestPostMergeWorkflowPreviewMode
     let workflows: [PullRequestPostMergeWorkflow]
-    let isBestEffort: Bool
+    let evaluationIssues: [PullRequestPostMergeWorkflowEvaluationIssue]
 
     var attentionType: AttentionItemType? {
         if workflows.contains(where: { $0.status == .failed }) {
@@ -1529,11 +1529,19 @@ struct PullRequestPostMergeWorkflowPreview: Hashable, Sendable {
     }
 
     var footnote: String? {
-        guard isBestEffort else {
+        guard !evaluationIssues.isEmpty else {
             return nil
         }
 
-        return "Some workflow files could not be parsed, so this list may be incomplete."
+        return "Some workflow files could not be evaluated, so this list may be incomplete."
+    }
+
+    var footnoteHelpText: String? {
+        guard !evaluationIssues.isEmpty else {
+            return nil
+        }
+
+        return evaluationIssues.map(\.helpText).joined(separator: "\n")
     }
 }
 
@@ -1543,6 +1551,19 @@ struct PullRequestPostMergeWorkflow: Identifiable, Hashable, Sendable {
     let url: URL
     let status: PullRequestPostMergeWorkflowStatus
     let timestamp: Date?
+}
+
+struct PullRequestPostMergeWorkflowEvaluationIssue: Identifiable, Hashable, Sendable {
+    let path: String
+    let message: String
+
+    var id: String {
+        path + "\n" + message
+    }
+
+    var helpText: String {
+        "\(path): \(message)"
+    }
 }
 
 enum PullRequestMergeMethod: String, Hashable, Sendable {
@@ -4303,430 +4324,5 @@ enum PullRequestAttentionPolicy {
         }
 
         return mergedAt >= now.addingTimeInterval(-86_400)
-    }
-}
-
-struct GitHubWorkflowPushTrigger: Hashable, Sendable {
-    let branches: [String]
-    let branchesIgnore: [String]
-    let paths: [String]
-    let pathsIgnore: [String]
-
-    static let `default` = GitHubWorkflowPushTrigger(
-        branches: [],
-        branchesIgnore: [],
-        paths: [],
-        pathsIgnore: []
-    )
-}
-
-struct GitHubWorkflowFileDefinition: Hashable, Sendable {
-    let name: String?
-    let pushTrigger: GitHubWorkflowPushTrigger?
-}
-
-enum GitHubWorkflowFileParser {
-    static func parse(_ content: String) -> GitHubWorkflowFileDefinition? {
-        let lines = content.split(whereSeparator: \.isNewline).map(String.init)
-        var parsedLines = [ParsedLine]()
-        parsedLines.reserveCapacity(lines.count)
-
-        for rawLine in lines {
-            guard let parsedLine = ParsedLine(rawLine) else {
-                continue
-            }
-            parsedLines.append(parsedLine)
-        }
-
-        guard !parsedLines.isEmpty else {
-            return nil
-        }
-
-        var workflowName: String?
-        var onLineIndex: Int?
-
-        for (index, line) in parsedLines.enumerated() {
-            guard line.indent == 0, let keyValue = line.keyValue else {
-                continue
-            }
-
-            let key = normalizedKey(keyValue.key)
-            if key == "name", workflowName == nil {
-                workflowName = scalarValues(from: keyValue.value).first
-            } else if key == "on" {
-                onLineIndex = index
-                break
-            }
-        }
-
-        guard let onLineIndex else {
-            return GitHubWorkflowFileDefinition(name: workflowName, pushTrigger: nil)
-        }
-
-        let onLine = parsedLines[onLineIndex]
-        let pushTrigger: GitHubWorkflowPushTrigger?
-        if let value = onLine.keyValue?.value, !value.isEmpty {
-            let events = scalarValues(from: value).map { $0.lowercased() }
-            pushTrigger = events.contains("push") ? .default : nil
-        } else {
-            pushTrigger = parseOnBlock(
-                parsedLines,
-                startIndex: onLineIndex + 1,
-                parentIndent: onLine.indent
-            )
-        }
-
-        return GitHubWorkflowFileDefinition(name: workflowName, pushTrigger: pushTrigger)
-    }
-
-    private static func parseOnBlock(
-        _ lines: [ParsedLine],
-        startIndex: Int,
-        parentIndent: Int
-    ) -> GitHubWorkflowPushTrigger? {
-        var pushTrigger: GitHubWorkflowPushTrigger?
-
-        var index = startIndex
-        while index < lines.count {
-            let line = lines[index]
-            guard line.indent > parentIndent else {
-                break
-            }
-
-            guard let keyValue = line.keyValue else {
-                index += 1
-                continue
-            }
-
-            let key = normalizedKey(keyValue.key)
-            if key == "push" {
-                if keyValue.value.isEmpty {
-                    pushTrigger = parsePushBlock(
-                        lines,
-                        startIndex: index + 1,
-                        parentIndent: line.indent
-                    ) ?? .default
-                } else {
-                    pushTrigger = .default
-                }
-                break
-            }
-
-            index += 1
-        }
-
-        return pushTrigger
-    }
-
-    private static func parsePushBlock(
-        _ lines: [ParsedLine],
-        startIndex: Int,
-        parentIndent: Int
-    ) -> GitHubWorkflowPushTrigger? {
-        var branches = [String]()
-        var branchesIgnore = [String]()
-        var paths = [String]()
-        var pathsIgnore = [String]()
-        var sawFilter = false
-
-        var index = startIndex
-        while index < lines.count {
-            let line = lines[index]
-            guard line.indent > parentIndent else {
-                break
-            }
-
-            guard let keyValue = line.keyValue else {
-                index += 1
-                continue
-            }
-
-            let key = normalizedKey(keyValue.key)
-            let values: [String]
-            if keyValue.value.isEmpty {
-                let sequence = blockSequence(
-                    lines,
-                    startIndex: index + 1,
-                    parentIndent: line.indent
-                )
-                values = sequence.values
-                index = sequence.nextIndex
-            } else {
-                values = scalarValues(from: keyValue.value)
-                index += 1
-            }
-
-            switch key {
-            case "branches":
-                branches = values
-                sawFilter = true
-            case "branches-ignore":
-                branchesIgnore = values
-                sawFilter = true
-            case "paths":
-                paths = values
-                sawFilter = true
-            case "paths-ignore":
-                pathsIgnore = values
-                sawFilter = true
-            default:
-                break
-            }
-        }
-
-        guard sawFilter else {
-            return nil
-        }
-
-        return GitHubWorkflowPushTrigger(
-            branches: branches,
-            branchesIgnore: branchesIgnore,
-            paths: paths,
-            pathsIgnore: pathsIgnore
-        )
-    }
-
-    private static func normalizedKey(_ key: String) -> String {
-        normalizeScalar(key).lowercased()
-    }
-
-    private static func scalarValues(from rawValue: String) -> [String] {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return []
-        }
-
-        if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
-            let inner = String(trimmed.dropFirst().dropLast())
-            return splitCommaSeparated(inner).map(normalizeScalar)
-        }
-
-        return [normalizeScalar(trimmed)]
-    }
-
-    private static func normalizeScalar(_ rawValue: String) -> String {
-        rawValue
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-    }
-
-    private static func splitCommaSeparated(_ value: String) -> [String] {
-        var result = [String]()
-        var current = ""
-        var insideSingleQuotes = false
-        var insideDoubleQuotes = false
-
-        for character in value {
-            switch character {
-            case "'" where !insideDoubleQuotes:
-                insideSingleQuotes.toggle()
-                current.append(character)
-            case "\"" where !insideSingleQuotes:
-                insideDoubleQuotes.toggle()
-                current.append(character)
-            case "," where !insideSingleQuotes && !insideDoubleQuotes:
-                result.append(current)
-                current = ""
-            default:
-                current.append(character)
-            }
-        }
-
-        if !current.isEmpty {
-            result.append(current)
-        }
-
-        return result
-    }
-
-    private static func blockSequence(
-        _ lines: [ParsedLine],
-        startIndex: Int,
-        parentIndent: Int
-    ) -> (values: [String], nextIndex: Int) {
-        var values = [String]()
-        var index = startIndex
-
-        while index < lines.count {
-            let line = lines[index]
-            guard line.indent > parentIndent else {
-                break
-            }
-
-            if let listItem = line.listItem {
-                values.append(normalizeScalar(listItem))
-                index += 1
-                continue
-            }
-
-            if line.keyValue != nil, line.indent == parentIndent + 2 {
-                break
-            }
-
-            index += 1
-        }
-
-        return (values, index)
-    }
-
-    private struct ParsedLine {
-        let indent: Int
-        let content: String
-
-        init?(_ rawLine: String) {
-            let expanded = rawLine.replacingOccurrences(of: "\t", with: "  ")
-            let withoutComment = Self.removingComment(from: expanded)
-            let trimmed = withoutComment.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
-                return nil
-            }
-
-            indent = withoutComment.prefix { $0 == " " }.count
-            content = trimmed
-        }
-
-        var keyValue: (key: String, value: String)? {
-            var insideSingleQuotes = false
-            var insideDoubleQuotes = false
-
-            for character in content {
-                switch character {
-                case "'" where !insideDoubleQuotes:
-                    insideSingleQuotes.toggle()
-                case "\"" where !insideSingleQuotes:
-                    insideDoubleQuotes.toggle()
-                case ":" where !insideSingleQuotes && !insideDoubleQuotes:
-                    let parts = content.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-                    guard parts.count == 2 else {
-                        return nil
-                    }
-
-                    return (
-                        key: String(parts[0]),
-                        value: String(parts[1])
-                    )
-                default:
-                    break
-                }
-            }
-
-            return nil
-        }
-
-        var listItem: String? {
-            guard content.hasPrefix("- ") else {
-                return nil
-            }
-
-            return String(content.dropFirst(2))
-        }
-
-        private static func removingComment(from line: String) -> String {
-            var result = ""
-            var insideSingleQuotes = false
-            var insideDoubleQuotes = false
-            var previous: Character?
-
-            for character in line {
-                switch character {
-                case "'" where !insideDoubleQuotes:
-                    insideSingleQuotes.toggle()
-                    result.append(character)
-                case "\"" where !insideSingleQuotes:
-                    insideDoubleQuotes.toggle()
-                    result.append(character)
-                case "#" where !insideSingleQuotes && !insideDoubleQuotes && (previous == nil || previous?.isWhitespace == true):
-                    return result
-                default:
-                    result.append(character)
-                }
-
-                previous = character
-            }
-
-            return result
-        }
-    }
-}
-
-enum GitHubWorkflowPathFilterPolicy {
-    static func matches(
-        trigger: GitHubWorkflowPushTrigger,
-        branch: String,
-        changedFiles: [String]
-    ) -> Bool {
-        if !trigger.branches.isEmpty &&
-            !matchesOrderedPatterns(trigger.branches, value: branch) {
-            return false
-        }
-
-        if trigger.branchesIgnore.contains(where: { matchesPattern($0, value: branch) }) {
-            return false
-        }
-
-        if !trigger.paths.isEmpty {
-            guard changedFiles.contains(where: { matchesOrderedPatterns(trigger.paths, value: $0) }) else {
-                return false
-            }
-        }
-
-        if !trigger.pathsIgnore.isEmpty {
-            let allIgnored = changedFiles.allSatisfy { path in
-                trigger.pathsIgnore.contains(where: { matchesPattern($0, value: path) })
-            }
-            if allIgnored {
-                return false
-            }
-        }
-
-        return true
-    }
-
-    private static func matchesOrderedPatterns(
-        _ patterns: [String],
-        value: String
-    ) -> Bool {
-        var isIncluded = false
-        var sawPositive = false
-
-        for pattern in patterns {
-            let normalizedPattern = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalizedPattern.isEmpty else {
-                continue
-            }
-
-            if normalizedPattern.hasPrefix("!") {
-                let candidate = String(normalizedPattern.dropFirst())
-                if matchesPattern(candidate, value: value) {
-                    isIncluded = false
-                }
-                continue
-            }
-
-            sawPositive = true
-            if matchesPattern(normalizedPattern, value: value) {
-                isIncluded = true
-            }
-        }
-
-        return sawPositive ? isIncluded : false
-    }
-
-    private static func matchesPattern(
-        _ pattern: String,
-        value: String
-    ) -> Bool {
-        let regexPattern = regex(for: pattern)
-        return value.range(of: regexPattern, options: .regularExpression) != nil
-    }
-
-    private static func regex(for pattern: String) -> String {
-        let escaped = NSRegularExpression.escapedPattern(for: pattern)
-        let placeholder = "__DOUBLE_STAR__"
-        let withDoubleStars = escaped.replacingOccurrences(of: "\\*\\*", with: placeholder)
-        let withSingleStars = withDoubleStars.replacingOccurrences(of: "\\*", with: "[^/]*")
-        let withQuestionMarks = withSingleStars.replacingOccurrences(of: "\\?", with: "[^/]")
-        let restored = withQuestionMarks.replacingOccurrences(of: placeholder, with: ".*")
-        return "^\(restored)$"
     }
 }
