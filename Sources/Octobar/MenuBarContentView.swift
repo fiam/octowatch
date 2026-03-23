@@ -243,6 +243,10 @@ struct MenuBarContentView: View {
             return .cyan
         case .readyToMerge:
             return .green
+        case .pullRequestMergeConflicts:
+            return .orange
+        case .pullRequestFailedChecks:
+            return .red
         case .assignedIssue:
             return .orange
         case .authoredIssue:
@@ -294,6 +298,10 @@ struct MenuBarContentView: View {
             return .cyan.opacity(0.16)
         case .readyToMerge:
             return .green.opacity(0.16)
+        case .pullRequestMergeConflicts:
+            return .orange.opacity(0.16)
+        case .pullRequestFailedChecks:
+            return .red.opacity(0.14)
         case .assignedIssue:
             return .orange.opacity(0.16)
         case .authoredIssue:

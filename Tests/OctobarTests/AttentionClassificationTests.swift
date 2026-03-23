@@ -226,6 +226,14 @@ final class AttentionClassificationTests: XCTestCase {
             .workflowApprovalRequired
         )
         XCTAssertEqual(
+            AttentionItemType.workflowType(
+                status: "waiting",
+                conclusion: nil,
+                requiresApproval: true
+            ),
+            .workflowApprovalRequired
+        )
+        XCTAssertEqual(
             AttentionItemType.workflowType(status: "in_progress", conclusion: nil),
             .workflowRunning
         )
@@ -745,6 +753,35 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(PullRequestStateTransition.synchronized.title, "Updated")
     }
 
+    func testCombinedAttentionViewUsesSpecificMergedTitleInUpdateHistory() {
+        let url = URL(string: "https://github.com/example/repo/pull/42")!
+        let mergedNotification = AttentionItem(
+            id: "notif:merged:42",
+            subjectKey: url.absoluteString,
+            stream: .notifications,
+            type: .pullRequestStateChanged,
+            title: "PR 42",
+            subtitle: "example/repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 100),
+            url: url,
+            detail: AttentionDetail(
+                contextPillTitle: PullRequestStateTransition.merged.title,
+                why: AttentionWhy(
+                    summary: "Pull request merged.",
+                    detail: PullRequestStateTransition.merged.detailLabel
+                ),
+                evidence: [],
+                actions: []
+            )
+        )
+
+        let combined = AttentionSubjectViewPolicy.collapsingUpdates(in: [mergedNotification])
+
+        XCTAssertEqual(combined.count, 1)
+        XCTAssertEqual(combined.first?.detail.updates.first?.title, PullRequestStateTransition.merged.title)
+    }
+
     func testCombinedAttentionViewCollapsesNotificationAndDirectPullRequestIntoOneSubject() {
         let url = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/pull/638")!
         let directItem = AttentionItem(
@@ -866,6 +903,77 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertTrue(combined.first?.isPostMergeWatchEligible ?? false)
     }
 
+    func testAttentionSectionPolicyClassifiesWorkflowPrimaryItemsAsWorkflows() {
+        let item = AttentionItem(
+            id: "run:1",
+            subjectKey: "https://github.com/example/repo/pull/1",
+            updateKey: "run:1:workflowFailed",
+            latestSourceID: "run:1",
+            type: .workflowFailed,
+            title: "PR 1",
+            subtitle: "example/repo · Workflow failed",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 101),
+            url: URL(string: "https://github.com/example/repo/pull/1")!
+        )
+
+        XCTAssertEqual(AttentionSectionPolicy.section(for: item), .workflows)
+    }
+
+    func testAttentionSectionPolicyClassifiesGitHubNotificationPrimaryItemsAsNotifications() {
+        let item = AttentionItem(
+            id: "https://github.com/example/repo/pull/2",
+            subjectKey: "https://github.com/example/repo/pull/2",
+            updateKey: "notif:22:reviewRequested:100",
+            latestSourceID: "notif:22",
+            type: .reviewRequested,
+            title: "PR 2",
+            subtitle: "example/repo · Review requested",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 100),
+            url: URL(string: "https://github.com/example/repo/pull/2")!
+        )
+
+        XCTAssertEqual(AttentionSectionPolicy.section(for: item), .notifications)
+    }
+
+    func testAttentionSectionPolicyKeepsDirectPullRequestPrimaryItemsInPullRequests() {
+        let url = URL(string: "https://github.com/example/repo/pull/3")!
+        let notificationItem = AttentionItem(
+            id: "notif:3",
+            subjectKey: url.absoluteString,
+            updateKey: "notif:3:reviewRequested:100",
+            latestSourceID: "notif:3",
+            stream: .notifications,
+            type: .reviewRequested,
+            title: "PR 3",
+            subtitle: "example/repo · Review requested",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 100),
+            url: url
+        )
+        let directItem = AttentionItem(
+            id: "pr:3",
+            subjectKey: url.absoluteString,
+            updateKey: "authored-signal:ready-to-merge:3",
+            latestSourceID: "pr:3",
+            stream: .pullRequests,
+            type: .readyToMerge,
+            title: "PR 3",
+            subtitle: "example/repo · Ready to merge",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 101),
+            url: url
+        )
+
+        let combined = AttentionCombinedViewPolicy.collapsingDuplicates(
+            in: [notificationItem, directItem]
+        )
+
+        XCTAssertEqual(combined.count, 1)
+        XCTAssertEqual(AttentionSectionPolicy.section(for: combined[0]), .pullRequests)
+    }
+
     func testCombinedAttentionViewPreservesSelfTriggeredStateFromLatestUpdate() {
         let url = URL(string: "https://github.com/example/repo/pull/99")!
         let relationshipItem = AttentionItem(
@@ -966,7 +1074,7 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
-    func testWorkflowWatchPolicyKeepsOpenAndRecentMergedPullRequests() {
+    func testWorkflowWatchPolicyKeepsOpenAndWeekOldMergedPullRequests() {
         XCTAssertTrue(
             PullRequestAttentionPolicy.shouldWatchWorkflows(
                 state: "open",
@@ -979,7 +1087,7 @@ final class AttentionClassificationTests: XCTestCase {
             PullRequestAttentionPolicy.shouldWatchWorkflows(
                 state: "closed",
                 merged: true,
-                mergedAt: Date().addingTimeInterval(-3_600),
+                mergedAt: Date().addingTimeInterval(-172_800),
                 now: Date()
             )
         )
@@ -987,7 +1095,7 @@ final class AttentionClassificationTests: XCTestCase {
             PullRequestAttentionPolicy.shouldWatchWorkflows(
                 state: "closed",
                 merged: true,
-                mergedAt: Date().addingTimeInterval(-172_800),
+                mergedAt: Date().addingTimeInterval(-(8 * 86_400)),
                 now: Date()
             )
         )
@@ -1184,6 +1292,14 @@ final class AttentionClassificationTests: XCTestCase {
                 conclusion: nil
             ),
             .inProgress
+        )
+        XCTAssertEqual(
+            PullRequestPostMergeWorkflowStatus.observed(
+                status: "waiting",
+                conclusion: nil,
+                requiresApproval: true
+            ),
+            .actionRequired
         )
         XCTAssertEqual(
             PullRequestPostMergeWorkflowStatus.observed(
@@ -1487,6 +1603,13 @@ final class AttentionClassificationTests: XCTestCase {
     }
 
     func testReadyToMergePolicyRequiresCleanOpenApprovedPullRequest() {
+        let clearChecks = PullRequestCheckSummary(
+            passedCount: 2,
+            skippedCount: 0,
+            failedCount: 0,
+            pendingCount: 0
+        )
+
         XCTAssertTrue(
             AuthoredPullRequestAttentionPolicy.shouldSurfaceReadyToMerge(
                 state: "open",
@@ -1496,7 +1619,8 @@ final class AttentionClassificationTests: XCTestCase {
                 mergeableState: "clean",
                 pendingReviewRequests: 0,
                 approvalCount: 1,
-                hasChangesRequested: false
+                hasChangesRequested: false,
+                checkSummary: clearChecks
             )
         )
         XCTAssertFalse(
@@ -1508,7 +1632,8 @@ final class AttentionClassificationTests: XCTestCase {
                 mergeableState: "clean",
                 pendingReviewRequests: 0,
                 approvalCount: 1,
-                hasChangesRequested: false
+                hasChangesRequested: false,
+                checkSummary: clearChecks
             )
         )
         XCTAssertFalse(
@@ -1520,7 +1645,8 @@ final class AttentionClassificationTests: XCTestCase {
                 mergeableState: "blocked",
                 pendingReviewRequests: 0,
                 approvalCount: 1,
-                hasChangesRequested: false
+                hasChangesRequested: false,
+                checkSummary: clearChecks
             )
         )
         XCTAssertFalse(
@@ -1532,7 +1658,8 @@ final class AttentionClassificationTests: XCTestCase {
                 mergeableState: "dirty",
                 pendingReviewRequests: 0,
                 approvalCount: 1,
-                hasChangesRequested: false
+                hasChangesRequested: false,
+                checkSummary: clearChecks
             )
         )
         XCTAssertFalse(
@@ -1544,9 +1671,433 @@ final class AttentionClassificationTests: XCTestCase {
                 mergeableState: "clean",
                 pendingReviewRequests: 1,
                 approvalCount: 1,
-                hasChangesRequested: false
+                hasChangesRequested: false,
+                checkSummary: clearChecks
             )
         )
+        XCTAssertFalse(
+            AuthoredPullRequestAttentionPolicy.shouldSurfaceReadyToMerge(
+                state: "open",
+                merged: false,
+                isDraft: false,
+                mergeable: true,
+                mergeableState: "clean",
+                pendingReviewRequests: 0,
+                approvalCount: 1,
+                hasChangesRequested: false,
+                checkSummary: .empty
+            )
+        )
+        XCTAssertFalse(
+            AuthoredPullRequestAttentionPolicy.shouldSurfaceReadyToMerge(
+                state: "open",
+                merged: false,
+                isDraft: false,
+                mergeable: true,
+                mergeableState: "clean",
+                pendingReviewRequests: 0,
+                approvalCount: 1,
+                hasChangesRequested: false,
+                checkSummary: PullRequestCheckSummary(
+                    passedCount: 0,
+                    skippedCount: 0,
+                    failedCount: 1,
+                    pendingCount: 0
+                )
+            )
+        )
+    }
+
+    func testNeedsActionPolicyMatchesConfiguredAuthoredAndWorkflowSignals() {
+        let authoredFailedChecks = AttentionItem(
+            id: "authored-failed",
+            subjectKey: "https://github.com/example/repo/pull/1",
+            type: .pullRequestFailedChecks,
+            secondaryIndicatorType: .authoredPullRequest,
+            focusType: .authoredPullRequest,
+            title: "PR 1",
+            subtitle: "repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 10),
+            url: URL(string: "https://github.com/example/repo/pull/1")!
+        )
+        let assignedWithoutReview = AttentionItem(
+            id: "assigned-open",
+            subjectKey: "https://github.com/example/repo/pull/2",
+            type: .assignedPullRequest,
+            focusType: .assignedPullRequest,
+            title: "PR 2",
+            subtitle: "repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 20),
+            url: URL(string: "https://github.com/example/repo/pull/2")!
+        )
+        let workflowOnReviewedPR = AttentionItem(
+            id: "workflow-reviewed",
+            subjectKey: "https://github.com/example/repo/pull/3",
+            type: .workflowFailed,
+            secondaryIndicatorType: .reviewedPullRequest,
+            focusType: .reviewedPullRequest,
+            title: "PR 3",
+            subtitle: "repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 30),
+            url: URL(string: "https://github.com/example/repo/pull/3")!
+        )
+        let mergedOnlyWorkflow = AttentionItem(
+            id: "workflow-merged-only",
+            subjectKey: "https://github.com/example/repo/pull/4",
+            type: .workflowFailed,
+            title: "PR 4",
+            subtitle: "repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 40),
+            url: URL(string: "https://github.com/example/repo/pull/4")!
+        )
+
+        let matches = NeedsActionPolicy.matchingItems(
+            in: [
+                authoredFailedChecks,
+                assignedWithoutReview,
+                workflowOnReviewedPR,
+                mergedOnlyWorkflow
+            ],
+            configuration: .default
+        )
+
+        XCTAssertEqual(
+            Set(matches.map(\.id)),
+            Set(["authored-failed", "assigned-open", "workflow-reviewed", "workflow-merged-only"])
+        )
+    }
+
+    func testNeedsActionPolicyIncludesAssignedPullRequestsAfterYourReview() {
+        let reviewedAssigned = AttentionItem(
+            id: "assigned-reviewed",
+            subjectKey: "https://github.com/example/repo/pull/5",
+            type: .reviewApproved,
+            secondaryIndicatorType: .assignedPullRequest,
+            focusType: .assignedPullRequest,
+            title: "PR 5",
+            subtitle: "repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 50),
+            url: URL(string: "https://github.com/example/repo/pull/5")!,
+            actor: AttentionActor(
+                login: "alberto",
+                avatarURL: nil,
+                profileURL: URL(string: "https://github.com/alberto")!,
+                isBot: false
+            ),
+            isTriggeredByCurrentUser: true,
+            detail: AttentionDetail(
+                why: AttentionWhy(summary: "reviewed", detail: nil),
+                evidence: [],
+                actions: []
+            )
+        )
+
+        let matches = NeedsActionPolicy.matchingItems(
+            in: [reviewedAssigned],
+            configuration: .default
+        )
+
+        XCTAssertEqual(matches.map(\.id), ["assigned-reviewed"])
+    }
+
+    func testNeedsActionPolicyMatchesWorkflowRulesOnPullRequestRowsWithCurrentWorkflowUpdates() {
+        let pullRequestRow = AttentionItem(
+            id: "workflow-running-pr-row",
+            subjectKey: "https://github.com/example/repo/pull/5",
+            type: .reviewApproved,
+            secondaryIndicatorType: .authoredPullRequest,
+            focusType: .authoredPullRequest,
+            title: "PR 5",
+            subtitle: "example/repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 55),
+            url: URL(string: "https://github.com/example/repo/pull/5")!,
+            currentUpdateTypes: [.reviewApproved, .workflowRunning]
+        )
+
+        let configuration = NeedsActionConfiguration(
+            rules: [
+                NeedsActionRuleDefinition(
+                    id: UUID(uuidString: "DA89CBCC-8D4F-45A3-84F4-35EE5CCB65B0")!,
+                    name: "Queued workflow runs",
+                    itemKind: .workflow,
+                    matchMode: .all,
+                    conditions: [
+                        .signal([.workflowRunning])
+                    ],
+                    isEnabled: true
+                )
+            ]
+        )
+
+        let matches = NeedsActionPolicy.matchingItems(
+            in: [pullRequestRow],
+            configuration: configuration
+        )
+
+        XCTAssertEqual(matches.map(\.id), ["workflow-running-pr-row"])
+    }
+
+    func testNeedsActionPolicyIgnoresHistoricalSignalsOnMergedRows() {
+        let mergedRow = AttentionItem(
+            id: "merged-row",
+            subjectKey: "https://github.com/example/repo/pull/6",
+            type: .pullRequestStateChanged,
+            secondaryIndicatorType: .authoredPullRequest,
+            focusType: .authoredPullRequest,
+            title: "PR 6",
+            subtitle: "example/repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 60),
+            url: URL(string: "https://github.com/example/repo/pull/6")!,
+            detail: AttentionDetail(
+                contextPillTitle: PullRequestStateTransition.merged.title,
+                why: AttentionWhy(
+                    summary: "Pull request merged.",
+                    detail: PullRequestStateTransition.merged.detailLabel
+                ),
+                evidence: [],
+                updates: [
+                    AttentionUpdate(
+                        id: "historical-ready",
+                        type: .readyToMerge,
+                        title: "Ready to merge",
+                        detail: nil,
+                        timestamp: Date(timeIntervalSince1970: 30),
+                        actor: nil,
+                        url: nil
+                    )
+                ],
+                actions: []
+            )
+        )
+
+        let matches = NeedsActionPolicy.matchingItems(
+            in: [mergedRow],
+            configuration: .default
+        )
+
+        XCTAssertTrue(matches.isEmpty)
+    }
+
+    func testNeedsActionConfigurationMigratesLegacyEnabledRules() {
+        let migrated = NeedsActionConfiguration.migrated(
+            from: LegacyNeedsActionConfiguration(
+                enabledRules: [.authoredFailedChecks, .assignedIssues]
+            )
+        )
+
+        XCTAssertEqual(migrated.rules.count, NeedsActionRule.allCases.count)
+        XCTAssertEqual(
+            Set(migrated.rules.filter(\.isEnabled).map(\.name)),
+            Set([
+                NeedsActionRule.authoredFailedChecks.title,
+                NeedsActionRule.assignedIssues.title
+            ])
+        )
+        XCTAssertEqual(
+            Set(migrated.rules.filter { !$0.isEnabled }.map(\.name)),
+            Set(NeedsActionRule.allCases.map(\.title)).subtracting([
+                NeedsActionRule.authoredFailedChecks.title,
+                NeedsActionRule.assignedIssues.title
+            ])
+        )
+    }
+
+    func testNeedsActionPolicyNormalizesLegacyAnyModeRulesToAllMatch() {
+        let authoredFailedChecks = AttentionItem(
+            id: "custom-any",
+            subjectKey: "https://github.com/example/repo/pull/8",
+            type: .pullRequestFailedChecks,
+            secondaryIndicatorType: .authoredPullRequest,
+            focusType: .authoredPullRequest,
+            title: "PR 8",
+            subtitle: "repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 80),
+            url: URL(string: "https://github.com/example/repo/pull/8")!
+        )
+
+        let configuration = NeedsActionConfiguration(
+            rules: [
+                NeedsActionRuleDefinition(
+                    id: UUID(uuidString: "8E22174F-2A79-47C7-B319-4A1632B8D8E1")!,
+                    name: "Legacy any rule",
+                    itemKind: .pullRequest,
+                    matchMode: .any,
+                    conditions: [
+                        .relationship([.assigned]),
+                        .signal([.failedChecks])
+                    ],
+                    isEnabled: true
+                )
+            ]
+        )
+
+        let normalizedRule = configuration.normalized.rules.first
+        let matches = NeedsActionPolicy.matchingItems(
+            in: [authoredFailedChecks],
+            configuration: configuration
+        )
+
+        XCTAssertEqual(normalizedRule?.matchMode, .all)
+        XCTAssertTrue(matches.isEmpty)
+    }
+
+    func testNeedsActionPolicySupportsNegatedConditions() {
+        let assignedItem = AttentionItem(
+            id: "negated-condition",
+            subjectKey: "https://github.com/example/repo/pull/9",
+            type: .assignedPullRequest,
+            title: "PR 9",
+            subtitle: "example/repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 90),
+            url: URL(string: "https://github.com/example/repo/pull/9")!
+        )
+
+        let configuration = NeedsActionConfiguration(
+            rules: [
+                NeedsActionRuleDefinition(
+                    id: UUID(uuidString: "D3F96B5F-90DA-4EE6-8A12-62A5A8A9F4C1")!,
+                    name: "PRs not assigned to me",
+                    itemKind: .pullRequest,
+                    matchMode: .all,
+                    conditions: [
+                        .relationship([.assigned], isNegated: true)
+                    ],
+                    isEnabled: true
+                )
+            ]
+        )
+
+        let matches = NeedsActionPolicy.matchingItems(
+            in: [assignedItem],
+            configuration: configuration
+        )
+
+        XCTAssertTrue(matches.isEmpty)
+    }
+
+    func testNeedsActionPolicyIncludesOpenAssignedWorkflowRowsForDefaultAssignedRule() {
+        let workflowRow = AttentionItem(
+            id: "workflow-success",
+            subjectKey: "https://github.com/example/repo/pull/10",
+            type: .workflowSucceeded,
+            secondaryIndicatorType: .assignedPullRequest,
+            focusType: .assignedPullRequest,
+            title: "PR 10",
+            subtitle: "example/repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 100),
+            url: URL(string: "https://github.com/example/repo/pull/10")!,
+            subjectResolution: .open
+        )
+
+        let matches = NeedsActionPolicy.matchingItems(
+            in: [workflowRow],
+            configuration: .default
+        )
+
+        XCTAssertEqual(matches.map(\.id), ["workflow-success"])
+    }
+
+    func testNeedsActionPolicyKeepsAssignedRelationshipOnUnifiedWorkflowRows() {
+        let url = URL(string: "https://github.com/example/repo/pull/12")!
+        let assignedItem = AttentionItem(
+            id: "assigned-pr",
+            subjectKey: url.absoluteString,
+            type: .assignedPullRequest,
+            title: "PR 12",
+            subtitle: "example/repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 120),
+            url: url
+        )
+        let authoredItem = AttentionItem(
+            id: "authored-pr",
+            subjectKey: url.absoluteString,
+            type: .authoredPullRequest,
+            title: "PR 12",
+            subtitle: "example/repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 121),
+            url: url
+        )
+        let workflowItem = AttentionItem(
+            id: "workflow-pr",
+            subjectKey: url.absoluteString,
+            type: .workflowSucceeded,
+            title: "PR 12",
+            subtitle: "example/repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 122),
+            url: url,
+            subjectResolution: .open
+        )
+
+        let combined = AttentionCombinedViewPolicy.collapsingDuplicates(
+            in: [assignedItem, authoredItem, workflowItem]
+        )
+        let matches = NeedsActionPolicy.matchingItems(
+            in: combined,
+            configuration: .default
+        )
+
+        XCTAssertEqual(combined.count, 1)
+        XCTAssertEqual(
+            combined.first?.currentRelationshipTypes,
+            Set([.assignedPullRequest, .authoredPullRequest])
+        )
+        XCTAssertEqual(matches.map(\.id), [url.absoluteString])
+    }
+
+    func testNeedsActionPolicyExcludesMergedWorkflowRowsFromPullRequestRules() {
+        let workflowRow = AttentionItem(
+            id: "workflow-merged",
+            subjectKey: "https://github.com/example/repo/pull/11",
+            type: .workflowSucceeded,
+            secondaryIndicatorType: .assignedPullRequest,
+            focusType: .assignedPullRequest,
+            title: "PR 11",
+            subtitle: "example/repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 110),
+            url: URL(string: "https://github.com/example/repo/pull/11")!,
+            subjectResolution: .merged
+        )
+
+        let configuration = NeedsActionConfiguration(
+            rules: [
+                NeedsActionRuleDefinition(
+                    id: UUID(uuidString: "B60C7FD6-C385-49B6-A18F-69F9308604E2")!,
+                    name: "Assigned pull requests",
+                    itemKind: .pullRequest,
+                    matchMode: .all,
+                    conditions: [
+                        .relationship([.assigned])
+                    ],
+                    isEnabled: true
+                )
+            ]
+        )
+
+        let matches = NeedsActionPolicy.matchingItems(
+            in: [workflowRow],
+            configuration: configuration
+        )
+
+        XCTAssertTrue(matches.isEmpty)
+    }
+
+    func testWorkflowRulesOnlyOfferSignalConditions() {
+        XCTAssertEqual(NeedsActionItemKind.workflow.availableConditionKinds, [.signal])
+        XCTAssertTrue(NeedsActionItemKind.workflow.availableRelationships.isEmpty)
     }
 
     func testPullRequestContextBadgesStayEmptyWithoutWorkflowAttention() {
@@ -2555,6 +3106,7 @@ final class AttentionClassificationTests: XCTestCase {
             event: "push",
             status: "completed",
             conclusion: "success",
+            requiresApproval: false,
             createdAt: Date(timeIntervalSince1970: 180),
             actor: nil
         )
@@ -2601,6 +3153,7 @@ final class AttentionClassificationTests: XCTestCase {
             event: "push",
             status: "completed",
             conclusion: "failure",
+            requiresApproval: false,
             createdAt: Date(timeIntervalSince1970: 180),
             actor: nil
         )

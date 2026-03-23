@@ -34,12 +34,127 @@ enum AttentionCombinedViewPolicy {
     }
 }
 
+enum AttentionSection: String, CaseIterable, Hashable, Sendable {
+    case pullRequests
+    case issues
+    case workflows
+    case notifications
+
+    var title: String {
+        switch self {
+        case .pullRequests:
+            return "Pull Requests"
+        case .issues:
+            return "Issues"
+        case .workflows:
+            return "Workflows"
+        case .notifications:
+            return "Notifications"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .pullRequests:
+            return AttentionStream.pullRequests.iconName
+        case .issues:
+            return AttentionStream.issues.iconName
+        case .workflows:
+            return "bolt.horizontal.circle"
+        case .notifications:
+            return AttentionStream.notifications.iconName
+        }
+    }
+
+    var itemNoun: String {
+        switch self {
+        case .pullRequests:
+            return "pull request item"
+        case .issues:
+            return "issue item"
+        case .workflows:
+            return "workflow item"
+        case .notifications:
+            return "notification"
+        }
+    }
+
+    var emptyTitle: String {
+        switch self {
+        case .pullRequests:
+            return "No pull request items"
+        case .issues:
+            return "No issue items"
+        case .workflows:
+            return "No workflows"
+        case .notifications:
+            return "No notifications"
+        }
+    }
+
+    var emptyUnreadTitle: String {
+        switch self {
+        case .pullRequests:
+            return "No unread pull request items"
+        case .issues:
+            return "No unread issue items"
+        case .workflows:
+            return "No unread workflows"
+        case .notifications:
+            return "No unread notifications"
+        }
+    }
+
+    var focusedSectionTitle: String {
+        switch self {
+        case .pullRequests:
+            return "Pull Request Activity"
+        case .issues:
+            return "Issue Activity"
+        case .workflows:
+            return "Workflow Activity"
+        case .notifications:
+            return "GitHub Notifications"
+        }
+    }
+}
+
+enum AttentionSectionPolicy {
+    static func section(for item: AttentionItem) -> AttentionSection {
+        if item.type.isWorkflowActivityType {
+            return .workflows
+        }
+
+        if isGitHubNotificationPrimary(item) {
+            return .notifications
+        }
+
+        if item.pullRequestReference != nil ||
+            item.subjectReference?.kind == .pullRequest ||
+            item.stream == .pullRequests {
+            return .pullRequests
+        }
+
+        if item.subjectReference?.kind == .issue || item.stream == .issues {
+            return .issues
+        }
+
+        return .notifications
+    }
+
+    static func isGitHubNotificationPrimary(_ item: AttentionItem) -> Bool {
+        item.updateKey.hasPrefix("notif:") || item.latestSourceID.hasPrefix("notif:")
+    }
+}
+
 enum AttentionItemType: String, Hashable, Codable, Sendable {
     case assignedPullRequest
     case authoredPullRequest
     case reviewedPullRequest
     case commentedPullRequest
     case readyToMerge
+    case pullRequestMergeConflicts
+    case pullRequestFailedChecks
     case assignedIssue
     case authoredIssue
     case commentedIssue
@@ -72,6 +187,10 @@ enum AttentionItemType: String, Hashable, Codable, Sendable {
             return "arrow.triangle.pull"
         case .readyToMerge:
             return "checkmark.circle"
+        case .pullRequestMergeConflicts:
+            return "arrow.triangle.branch"
+        case .pullRequestFailedChecks:
+            return "xmark.octagon"
         case .assignedIssue:
             return "exclamationmark.circle"
         case .authoredIssue:
@@ -123,6 +242,10 @@ enum AttentionItemType: String, Hashable, Codable, Sendable {
             return "Commented pull request"
         case .readyToMerge:
             return "Ready to merge"
+        case .pullRequestMergeConflicts:
+            return "Merge conflicts"
+        case .pullRequestFailedChecks:
+            return "Failed checks"
         case .assignedIssue:
             return "Assigned issue"
         case .authoredIssue:
@@ -176,6 +299,10 @@ enum AttentionItemType: String, Hashable, Codable, Sendable {
             return "Commented pull request"
         case .readyToMerge:
             return "Ready to merge"
+        case .pullRequestMergeConflicts:
+            return "Merge conflicts"
+        case .pullRequestFailedChecks:
+            return "Failed checks"
         case .assignedIssue:
             return "Issue assigned"
         case .authoredIssue:
@@ -229,6 +356,10 @@ enum AttentionItemType: String, Hashable, Codable, Sendable {
             return "updated a pull request you commented on"
         case .readyToMerge:
             return "approved your pull request"
+        case .pullRequestMergeConflicts:
+            return "updated your pull request with merge conflicts"
+        case .pullRequestFailedChecks:
+            return "updated your pull request with failed checks"
         case .assignedIssue:
             return "assigned an issue"
         case .authoredIssue:
@@ -336,9 +467,17 @@ enum AttentionItemType: String, Hashable, Codable, Sendable {
         }
     }
 
-    static func workflowType(status: String?, conclusion: String?) -> AttentionItemType? {
+    static func workflowType(
+        status: String?,
+        conclusion: String?,
+        requiresApproval: Bool = false
+    ) -> AttentionItemType? {
         let normalizedStatus = (status ?? "").lowercased()
         let normalizedConclusion = (conclusion ?? "").lowercased()
+
+        if requiresApproval {
+            return .workflowApprovalRequired
+        }
 
         let runningStatuses: Set<String> = [
             "queued",
@@ -388,6 +527,8 @@ enum AttentionItemType: String, Hashable, Codable, Sendable {
                 .reviewedPullRequest,
                 .commentedPullRequest,
                 .readyToMerge,
+                .pullRequestMergeConflicts,
+                .pullRequestFailedChecks,
                 .ciActivity,
                 .workflowRunning,
                 .workflowSucceeded,
@@ -1004,6 +1145,7 @@ struct PostMergeObservedWorkflowRun: Hashable, Sendable {
     let event: String
     let status: String?
     let conclusion: String?
+    let requiresApproval: Bool
     let createdAt: Date
     let actor: AttentionActor?
 
@@ -1188,6 +1330,10 @@ enum PostMergeWatchPolicy {
     }
 
     private static func workflowRequiresApproval(_ run: PostMergeObservedWorkflowRun) -> Bool {
+        if run.requiresApproval {
+            return true
+        }
+
         let normalizedStatus = (run.status ?? "").lowercased()
         let normalizedConclusion = (run.conclusion ?? "").lowercased()
 
@@ -1386,9 +1532,17 @@ enum PullRequestPostMergeWorkflowStatus: Hashable, Sendable {
     case failed
     case completed(String)
 
-    static func observed(status: String?, conclusion: String?) -> PullRequestPostMergeWorkflowStatus {
+    static func observed(
+        status: String?,
+        conclusion: String?,
+        requiresApproval: Bool = false
+    ) -> PullRequestPostMergeWorkflowStatus {
         let normalizedStatus = (status ?? "").lowercased()
         let normalizedConclusion = (conclusion ?? "").lowercased()
+
+        if requiresApproval {
+            return .actionRequired
+        }
 
         if normalizedStatus == "action_required" || normalizedConclusion == "action_required" {
             return .actionRequired
@@ -2901,7 +3055,10 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     let url: URL
     let actor: AttentionActor?
     let isTriggeredByCurrentUser: Bool
+    let subjectResolution: GitHubSubjectResolution?
     let detail: AttentionDetail
+    let currentUpdateTypes: Set<AttentionItemType>
+    let currentRelationshipTypes: Set<AttentionItemType>
     let isHistoricalLogEntry: Bool
     let closureNotificationEligibleOverride: Bool?
     let postMergeWatchEligibleOverride: Bool?
@@ -2925,7 +3082,10 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         url: URL,
         actor: AttentionActor? = nil,
         isTriggeredByCurrentUser: Bool = false,
+        subjectResolution: GitHubSubjectResolution? = nil,
         detail: AttentionDetail? = nil,
+        currentUpdateTypes: Set<AttentionItemType>? = nil,
+        currentRelationshipTypes: Set<AttentionItemType>? = nil,
         isHistoricalLogEntry: Bool = false,
         closureNotificationEligibleOverride: Bool? = nil,
         postMergeWatchEligibleOverride: Bool? = nil,
@@ -2948,11 +3108,18 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         self.url = url
         self.actor = actor
         self.isTriggeredByCurrentUser = isTriggeredByCurrentUser
+        self.subjectResolution = subjectResolution
         self.detail = detail ?? Self.defaultDetail(
             type: type,
             subtitle: subtitle,
             url: url,
             actor: actor
+        )
+        self.currentUpdateTypes = currentUpdateTypes ?? (
+            type.isRelationshipType ? [] : [type]
+        )
+        self.currentRelationshipTypes = currentRelationshipTypes ?? (
+            type.isRelationshipType ? [type] : []
         )
         self.isHistoricalLogEntry = isHistoricalLogEntry
         self.closureNotificationEligibleOverride = closureNotificationEligibleOverride
@@ -2981,7 +3148,10 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             url: url,
             actor: actor,
             isTriggeredByCurrentUser: isTriggeredByCurrentUser,
+            subjectResolution: subjectResolution,
             detail: detail,
+            currentUpdateTypes: currentUpdateTypes,
+            currentRelationshipTypes: currentRelationshipTypes,
             isHistoricalLogEntry: isHistoricalLogEntry,
             closureNotificationEligibleOverride: closureNotificationEligibleOverride,
             postMergeWatchEligibleOverride: postMergeWatchEligibleOverride,
@@ -3008,7 +3178,10 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             url: url,
             actor: actor,
             isTriggeredByCurrentUser: isTriggeredByCurrentUser,
+            subjectResolution: subjectResolution,
             detail: detail,
+            currentUpdateTypes: currentUpdateTypes,
+            currentRelationshipTypes: currentRelationshipTypes,
             isHistoricalLogEntry: isHistoricalLogEntry,
             closureNotificationEligibleOverride: closureNotificationEligibleOverride,
             postMergeWatchEligibleOverride: postMergeWatchEligibleOverride,
@@ -3032,6 +3205,10 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             return "commented by"
         case .reviewChangesRequested:
             return "changes requested by"
+        case .pullRequestMergeConflicts:
+            return "conflicts reported by"
+        case .pullRequestFailedChecks:
+            return "checks reported by"
         default:
             if detail.contextPillTitle == PullRequestStateTransition.merged.title {
                 return "merged by"
@@ -3085,6 +3262,8 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
                 .reviewedPullRequest,
                 .commentedPullRequest,
                 .readyToMerge,
+                .pullRequestMergeConflicts,
+                .pullRequestFailedChecks,
                 .assignedIssue,
                 .authoredIssue,
                 .commentedIssue,
@@ -3127,6 +3306,8 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
                 .reviewedPullRequest,
                 .commentedPullRequest,
                 .readyToMerge,
+                .pullRequestMergeConflicts,
+                .pullRequestFailedChecks,
                 .comment,
                 .mention,
                 .teamMention,
@@ -3225,6 +3406,10 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             return "You commented on this pull request."
         case .readyToMerge:
             return "One of your pull requests is approved and ready to merge."
+        case .pullRequestMergeConflicts:
+            return "One of your pull requests now has merge conflicts."
+        case .pullRequestFailedChecks:
+            return "One of your pull requests has failing checks."
         case .assignedIssue:
             return "This issue is assigned to you."
         case .authoredIssue:
@@ -3318,6 +3503,18 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
 }
 
 extension AttentionItemType {
+    var isWorkflowActivityType: Bool {
+        switch self {
+        case .workflowRunning,
+                .workflowSucceeded,
+                .workflowFailed,
+                .workflowApprovalRequired:
+            return true
+        default:
+            return false
+        }
+    }
+
     var isRelationshipType: Bool {
         switch self {
         case .assignedPullRequest,
@@ -3329,6 +3526,8 @@ extension AttentionItemType {
                 .commentedIssue:
             return true
         case .readyToMerge,
+                .pullRequestMergeConflicts,
+                .pullRequestFailedChecks,
                 .comment,
                 .mention,
                 .teamMention,
@@ -3360,6 +3559,8 @@ extension AttentionItemType {
         case .assignedPullRequest,
                 .assignedIssue,
                 .readyToMerge,
+                .pullRequestMergeConflicts,
+                .pullRequestFailedChecks,
                 .comment,
                 .mention,
                 .teamMention,
@@ -3397,6 +3598,10 @@ extension AttentionItemType {
 
     var aggregateDisplayPriority: Int {
         switch self {
+        case .pullRequestMergeConflicts:
+            return 11
+        case .pullRequestFailedChecks:
+            return 10
         case .workflowApprovalRequired:
             return 9
         case .workflowFailed:
@@ -3428,6 +3633,10 @@ extension AttentionItemType {
 
     var aggregateUpdateTitle: String {
         switch self {
+        case .pullRequestMergeConflicts:
+            return "Merge conflicts"
+        case .pullRequestFailedChecks:
+            return "Checks failed"
         case .workflowRunning:
             return "Workflow running"
         case .workflowSucceeded:
@@ -3534,7 +3743,7 @@ enum AttentionSubjectViewPolicy {
                     AttentionUpdate(
                         id: item.updateKey,
                         type: item.type,
-                        title: item.type.aggregateUpdateTitle,
+                        title: aggregateUpdateTitle(for: item),
                         detail: updateDetail(for: item),
                         timestamp: item.timestamp,
                         actor: item.actor,
@@ -3575,7 +3784,10 @@ enum AttentionSubjectViewPolicy {
             url: primaryItem.url,
             actor: primaryItem.actor,
             isTriggeredByCurrentUser: primaryItem.isTriggeredByCurrentUser,
+            subjectResolution: primaryItem.subjectResolution ?? items.compactMap(\.subjectResolution).first,
             detail: detail,
+            currentUpdateTypes: Set(updateItems.map(\.type)),
+            currentRelationshipTypes: Set(items.filter { $0.type.isRelationshipType }.map(\.type)),
             isHistoricalLogEntry: items.allSatisfy(\.isHistoricalLogEntry),
             closureNotificationEligibleOverride: items.contains(where: \.isClosureNotificationEligible),
             postMergeWatchEligibleOverride: items.contains(where: \.isPostMergeWatchEligible),
@@ -3627,6 +3839,16 @@ enum AttentionSubjectViewPolicy {
         }
 
         return item.stream
+    }
+
+    private static func aggregateUpdateTitle(for item: AttentionItem) -> String {
+        if item.type == .pullRequestStateChanged,
+            let stateTransitionTitle = item.detail.contextPillTitle,
+            !stateTransitionTitle.isEmpty {
+            return stateTransitionTitle
+        }
+
+        return item.type.aggregateUpdateTitle
     }
 
     private static func updateDetail(for item: AttentionItem) -> String? {
@@ -3694,9 +3916,10 @@ struct TrackedSubjectSelfUpdateSummary: Hashable, Sendable {
     let actor: AttentionActor?
 }
 
-struct ReadyToMergeSummary: Identifiable, Hashable, Sendable {
+struct AuthoredPullRequestSignalSummary: Identifiable, Hashable, Sendable {
     let id: String
     let ignoreKey: String
+    let type: AttentionItemType
     let number: Int
     let title: String
     let subtitle: String
@@ -3705,7 +3928,8 @@ struct ReadyToMergeSummary: Identifiable, Hashable, Sendable {
     let url: URL
     let updatedAt: Date
     let actor: AttentionActor?
-    let approvalCount: Int
+    let approvalCount: Int?
+    let checkSummary: PullRequestCheckSummary
 }
 
 struct NotificationSummary: Identifiable, Hashable, Sendable {
@@ -3721,6 +3945,7 @@ struct NotificationSummary: Identifiable, Hashable, Sendable {
     let unread: Bool
     let actor: AttentionActor?
     let isTriggeredByCurrentUser: Bool
+    let resolution: GitHubSubjectResolution?
     let targetLabel: String?
     let stateTransition: PullRequestStateTransition?
     let detailEvidence: [AttentionEvidence]
@@ -3784,6 +4009,7 @@ struct ActionRunSummary: Identifiable, Hashable, Sendable {
     let url: URL
     let actor: AttentionActor?
     let isTriggeredByCurrentUser: Bool
+    let resolution: GitHubSubjectResolution
 }
 
 enum AutoMarkReadSetting: Int, CaseIterable, Hashable, Sendable {
@@ -4233,6 +4459,678 @@ struct IgnoreUndoState: Identifiable, Hashable, Sendable {
     }
 }
 
+enum NeedsActionItemKind: String, Codable, CaseIterable, Hashable, Sendable {
+    case pullRequest
+    case issue
+    case workflow
+
+    var title: String {
+        switch self {
+        case .pullRequest:
+            return "Pull Request"
+        case .issue:
+            return "Issue"
+        case .workflow:
+            return "Workflow"
+        }
+    }
+
+    var pluralTitle: String {
+        switch self {
+        case .pullRequest:
+            return "Pull requests"
+        case .issue:
+            return "Issues"
+        case .workflow:
+            return "Workflows"
+        }
+    }
+
+    var defaultRuleName: String {
+        "\(title) Rule"
+    }
+
+    var availableConditionKinds: [NeedsActionConditionKind] {
+        switch self {
+        case .pullRequest:
+            return [.relationship, .signal, .viewerReview]
+        case .issue:
+            return [.relationship]
+        case .workflow:
+            return [.signal]
+        }
+    }
+
+    var availableRelationships: [NeedsActionViewerRelationship] {
+        switch self {
+        case .pullRequest:
+            return [.authored, .assigned, .reviewed, .commented]
+        case .issue:
+            return [.authored, .assigned, .commented]
+        case .workflow:
+            return []
+        }
+    }
+
+    var availableSignals: [NeedsActionSignal] {
+        switch self {
+        case .pullRequest:
+            return [.readyToMerge, .mergeConflicts, .failedChecks]
+        case .issue:
+            return []
+        case .workflow:
+            return [.workflowFailed, .workflowApprovalRequired, .workflowRunning]
+        }
+    }
+}
+
+enum NeedsActionMatchMode: String, Codable, CaseIterable, Hashable, Sendable {
+    case all
+    case any
+
+    var title: String {
+        switch self {
+        case .all:
+            return "All Conditions"
+        case .any:
+            return "Any Condition"
+        }
+    }
+
+}
+
+enum NeedsActionConditionKind: String, Codable, CaseIterable, Hashable, Sendable {
+    case relationship
+    case signal
+    case viewerReview
+
+    var title: String {
+        switch self {
+        case .relationship:
+            return "Relationship"
+        case .signal:
+            return "Signal"
+        case .viewerReview:
+            return "Viewer Review"
+        }
+    }
+}
+
+enum NeedsActionViewerRelationship: String, Codable, CaseIterable, Hashable, Sendable {
+    case authored
+    case assigned
+    case reviewed
+    case commented
+
+    var title: String {
+        switch self {
+        case .authored:
+            return "Authored"
+        case .assigned:
+            return "Assigned"
+        case .reviewed:
+            return "Reviewed"
+        case .commented:
+            return "Commented"
+        }
+    }
+}
+
+enum NeedsActionSignal: String, Codable, CaseIterable, Hashable, Sendable {
+    case readyToMerge
+    case mergeConflicts
+    case failedChecks
+    case workflowFailed
+    case workflowApprovalRequired
+    case workflowRunning
+
+    var title: String {
+        switch self {
+        case .readyToMerge:
+            return "Ready to Merge"
+        case .mergeConflicts:
+            return "Merge Conflicts"
+        case .failedChecks:
+            return "Failed Checks"
+        case .workflowFailed:
+            return "Workflow Failed"
+        case .workflowApprovalRequired:
+            return "Workflow Awaiting Approval"
+        case .workflowRunning:
+            return "Workflow Queued or Running"
+        }
+    }
+}
+
+enum NeedsActionViewerReviewCondition: String, Codable, CaseIterable, Hashable, Sendable {
+    case missing
+    case present
+
+    var title: String {
+        switch self {
+        case .missing:
+            return "No Review from You"
+        case .present:
+            return "Has Review from You"
+        }
+    }
+}
+
+struct NeedsActionCondition: Identifiable, Codable, Hashable, Sendable {
+    var id: UUID
+    var kind: NeedsActionConditionKind
+    var isNegated: Bool
+    var relationshipValues: Set<NeedsActionViewerRelationship>
+    var signalValues: Set<NeedsActionSignal>
+    var viewerReviewValue: NeedsActionViewerReviewCondition
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case isNegated
+        case relationshipValues
+        case signalValues
+        case viewerReviewValue
+    }
+
+    init(
+        id: UUID,
+        kind: NeedsActionConditionKind,
+        isNegated: Bool,
+        relationshipValues: Set<NeedsActionViewerRelationship>,
+        signalValues: Set<NeedsActionSignal>,
+        viewerReviewValue: NeedsActionViewerReviewCondition
+    ) {
+        self.id = id
+        self.kind = kind
+        self.isNegated = isNegated
+        self.relationshipValues = relationshipValues
+        self.signalValues = signalValues
+        self.viewerReviewValue = viewerReviewValue
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        kind = try container.decode(NeedsActionConditionKind.self, forKey: .kind)
+        isNegated = try container.decodeIfPresent(Bool.self, forKey: .isNegated) ?? false
+        relationshipValues = try container.decodeIfPresent(
+            Set<NeedsActionViewerRelationship>.self,
+            forKey: .relationshipValues
+        ) ?? []
+        signalValues = try container.decodeIfPresent(
+            Set<NeedsActionSignal>.self,
+            forKey: .signalValues
+        ) ?? []
+        viewerReviewValue = try container.decodeIfPresent(
+            NeedsActionViewerReviewCondition.self,
+            forKey: .viewerReviewValue
+        ) ?? .missing
+    }
+
+    static func relationship(
+        _ values: Set<NeedsActionViewerRelationship>,
+        isNegated: Bool = false,
+        id: UUID = UUID()
+    ) -> NeedsActionCondition {
+        NeedsActionCondition(
+            id: id,
+            kind: .relationship,
+            isNegated: isNegated,
+            relationshipValues: values,
+            signalValues: [],
+            viewerReviewValue: .missing
+        )
+    }
+
+    static func signal(
+        _ values: Set<NeedsActionSignal>,
+        isNegated: Bool = false,
+        id: UUID = UUID()
+    ) -> NeedsActionCondition {
+        NeedsActionCondition(
+            id: id,
+            kind: .signal,
+            isNegated: isNegated,
+            relationshipValues: [],
+            signalValues: values,
+            viewerReviewValue: .missing
+        )
+    }
+
+    static func viewerReview(
+        _ value: NeedsActionViewerReviewCondition,
+        isNegated: Bool = false,
+        id: UUID = UUID()
+    ) -> NeedsActionCondition {
+        NeedsActionCondition(
+            id: id,
+            kind: .viewerReview,
+            isNegated: isNegated,
+            relationshipValues: [],
+            signalValues: [],
+            viewerReviewValue: value
+        )
+    }
+
+    static func `default`(
+        for kind: NeedsActionConditionKind,
+        itemKind: NeedsActionItemKind,
+        id: UUID = UUID()
+    ) -> NeedsActionCondition {
+        switch kind {
+        case .relationship:
+            let value = itemKind.availableRelationships.first ?? .authored
+            return .relationship([value], id: id)
+        case .signal:
+            let value = itemKind.availableSignals.first ?? .readyToMerge
+            return .signal([value], id: id)
+        case .viewerReview:
+            return .viewerReview(.missing, id: id)
+        }
+    }
+
+    func normalized(for itemKind: NeedsActionItemKind) -> NeedsActionCondition? {
+        switch kind {
+        case .relationship:
+            let filtered = relationshipValues.intersection(itemKind.availableRelationships)
+            guard !filtered.isEmpty else {
+                return nil
+            }
+
+            var copy = self
+            copy.relationshipValues = filtered
+            copy.signalValues = []
+            return copy
+        case .signal:
+            let filtered = signalValues.intersection(itemKind.availableSignals)
+            guard !filtered.isEmpty else {
+                return nil
+            }
+
+            var copy = self
+            copy.relationshipValues = []
+            copy.signalValues = filtered
+            return copy
+        case .viewerReview:
+            guard itemKind == .pullRequest else {
+                return nil
+            }
+
+            var copy = self
+            copy.relationshipValues = []
+            copy.signalValues = []
+            return copy
+        }
+    }
+
+    var summary: String {
+        summaryPhrase(for: nil)
+    }
+
+    func summaryPhrase(for itemKind: NeedsActionItemKind?) -> String {
+        switch kind {
+        case .relationship:
+            let phrases = relationshipValues
+                .sorted { $0.title < $1.title }
+                .map {
+                    relationshipPhrase(
+                        for: $0,
+                        itemKind: itemKind,
+                        isNegated: isNegated
+                    )
+                }
+            return Self.joinedPhrases(phrases, separator: " or ")
+        case .signal:
+            let phrases = signalValues
+                .sorted { $0.title < $1.title }
+                .map {
+                    signalPhrase(
+                        for: $0,
+                        itemKind: itemKind,
+                        isNegated: isNegated
+                    )
+                }
+            return Self.joinedPhrases(phrases, separator: " or ")
+        case .viewerReview:
+            switch (viewerReviewValue, isNegated) {
+            case (.missing, false), (.present, true):
+                return "without your review"
+            case (.present, false), (.missing, true):
+                return "with your review"
+            }
+        }
+    }
+
+    private func relationshipPhrase(
+        for relationship: NeedsActionViewerRelationship,
+        itemKind: NeedsActionItemKind?,
+        isNegated: Bool
+    ) -> String {
+        switch relationship {
+        case .authored:
+            switch itemKind {
+            case .issue:
+                return isNegated ? "not opened by you" : "opened by you"
+            case .pullRequest, .workflow, .none:
+                return isNegated ? "not authored by you" : "authored by you"
+            }
+        case .assigned:
+            return isNegated ? "not assigned to you" : "assigned to you"
+        case .reviewed:
+            return isNegated ? "not reviewed by you" : "reviewed by you"
+        case .commented:
+            switch itemKind {
+            case .issue:
+                return isNegated ? "without your comments" : "commented on by you"
+            case .pullRequest, .workflow, .none:
+                return isNegated ? "without your comments" : "commented on by you"
+            }
+        }
+    }
+
+    private func signalPhrase(
+        for signal: NeedsActionSignal,
+        itemKind: NeedsActionItemKind?,
+        isNegated: Bool
+    ) -> String {
+        switch signal {
+        case .readyToMerge:
+            return isNegated ? "not ready to merge" : "ready to merge"
+        case .mergeConflicts:
+            return isNegated ? "without merge conflicts" : "with merge conflicts"
+        case .failedChecks:
+            return isNegated ? "without failed checks" : "with failed checks"
+        case .workflowFailed:
+            return isNegated ? "without failed runs" : "with failed runs"
+        case .workflowApprovalRequired:
+            return isNegated ? "not awaiting approval" : "awaiting approval"
+        case .workflowRunning:
+            return isNegated ? "not queued or running" : "queued or running"
+        }
+    }
+
+    private static func joinedPhrases(
+        _ phrases: [String],
+        separator: String
+    ) -> String {
+        phrases.filter { !$0.isEmpty }.joined(separator: separator)
+    }
+}
+
+struct NeedsActionRuleDefinition: Identifiable, Codable, Hashable, Sendable {
+    var id: UUID
+    var name: String
+    var itemKind: NeedsActionItemKind
+    var matchMode: NeedsActionMatchMode
+    var conditions: [NeedsActionCondition]
+    var isEnabled: Bool
+
+    static func newCustom() -> NeedsActionRuleDefinition {
+        NeedsActionRuleDefinition(
+            id: UUID(),
+            name: "New Rule",
+            itemKind: .pullRequest,
+            matchMode: .all,
+            conditions: [
+                .default(for: .relationship, itemKind: .pullRequest)
+            ],
+            isEnabled: true
+        )
+    }
+
+    var normalized: NeedsActionRuleDefinition {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return NeedsActionRuleDefinition(
+            id: id,
+            name: trimmedName.isEmpty ? itemKind.defaultRuleName : trimmedName,
+            itemKind: itemKind,
+            matchMode: .all,
+            conditions: conditions.compactMap { $0.normalized(for: itemKind) },
+            isEnabled: isEnabled
+        )
+    }
+
+    var summary: String {
+        let normalizedRule = normalized
+        guard !normalizedRule.conditions.isEmpty else {
+            return "All \(normalizedRule.itemKind.pluralTitle.lowercased())"
+        }
+
+        let details = normalizedRule.conditions.map {
+            $0.summaryPhrase(for: normalizedRule.itemKind)
+        }.filter { !$0.isEmpty }
+
+        guard !details.isEmpty else {
+            return "All \(normalizedRule.itemKind.pluralTitle.lowercased())"
+        }
+
+        return "\(normalizedRule.itemKind.pluralTitle) \(Self.joinedSummaryDetails(details))"
+    }
+
+    private static func joinedSummaryDetails(_ details: [String]) -> String {
+        switch details.count {
+        case 0:
+            return ""
+        case 1:
+            return details[0]
+        case 2:
+            return "\(details[0]) and \(details[1])"
+        default:
+            let prefix = details.dropLast().joined(separator: ", ")
+            return "\(prefix), and \(details.last!)"
+        }
+    }
+}
+
+struct LegacyNeedsActionConfiguration: Codable, Hashable, Sendable {
+    var enabledRules: Set<NeedsActionRule>
+}
+
+struct NeedsActionFacts: Hashable, Sendable {
+    let itemKinds: Set<NeedsActionItemKind>
+    let relationships: Set<NeedsActionViewerRelationship>
+    let signals: Set<NeedsActionSignal>
+    let hasViewerReview: Bool
+}
+
+enum NeedsActionRule: String, Codable, CaseIterable, Hashable, Sendable {
+    case authoredReadyToMerge
+    case authoredMergeConflicts
+    case authoredFailedChecks
+    case assignedPullRequestsWithoutReview
+    case relatedWorkflowFailed
+    case relatedWorkflowApprovalRequired
+    case assignedIssues
+
+    var title: String {
+        switch self {
+        case .authoredReadyToMerge:
+            return "Your approved PRs ready to merge"
+        case .authoredMergeConflicts:
+            return "Your PRs with merge conflicts"
+        case .authoredFailedChecks:
+            return "Your PRs with failed checks"
+        case .assignedPullRequestsWithoutReview:
+            return "Open PRs assigned to you"
+        case .relatedWorkflowFailed:
+            return "Failed workflows on your PRs"
+        case .relatedWorkflowApprovalRequired:
+            return "Workflows awaiting approval on your PRs"
+        case .assignedIssues:
+            return "Open issues assigned to you"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .authoredReadyToMerge:
+            return "Open pull requests you authored that are approved, checks passed, and are ready to merge."
+        case .authoredMergeConflicts:
+            return "Open pull requests you authored that need conflict resolution."
+        case .authoredFailedChecks:
+            return "Open pull requests you authored that currently have failing checks."
+        case .assignedPullRequestsWithoutReview:
+            return "Open pull requests assigned to you."
+        case .relatedWorkflowFailed:
+            return "Failed workflows tied to pull requests you authored, reviewed, or are assigned to."
+        case .relatedWorkflowApprovalRequired:
+            return "Workflow runs waiting for approval on pull requests you authored, reviewed, or are assigned to."
+        case .assignedIssues:
+            return "Open issues that are assigned to you."
+        }
+    }
+
+    fileprivate var stableID: UUID {
+        switch self {
+        case .authoredReadyToMerge:
+            return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4501")!
+        case .authoredMergeConflicts:
+            return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4502")!
+        case .authoredFailedChecks:
+            return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4503")!
+        case .assignedPullRequestsWithoutReview:
+            return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4504")!
+        case .relatedWorkflowFailed:
+            return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4505")!
+        case .relatedWorkflowApprovalRequired:
+            return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4506")!
+        case .assignedIssues:
+            return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4507")!
+        }
+    }
+
+    fileprivate var defaultDefinition: NeedsActionRuleDefinition {
+        switch self {
+        case .authoredReadyToMerge:
+            return NeedsActionRuleDefinition(
+                id: stableID,
+                name: title,
+                itemKind: .pullRequest,
+                matchMode: .all,
+                conditions: [
+                    .relationship([.authored]),
+                    .signal([.readyToMerge])
+                ],
+                isEnabled: true
+            )
+        case .authoredMergeConflicts:
+            return NeedsActionRuleDefinition(
+                id: stableID,
+                name: title,
+                itemKind: .pullRequest,
+                matchMode: .all,
+                conditions: [
+                    .relationship([.authored]),
+                    .signal([.mergeConflicts])
+                ],
+                isEnabled: true
+            )
+        case .authoredFailedChecks:
+            return NeedsActionRuleDefinition(
+                id: stableID,
+                name: title,
+                itemKind: .pullRequest,
+                matchMode: .all,
+                conditions: [
+                    .relationship([.authored]),
+                    .signal([.failedChecks])
+                ],
+                isEnabled: true
+            )
+        case .assignedPullRequestsWithoutReview:
+            return NeedsActionRuleDefinition(
+                id: stableID,
+                name: title,
+                itemKind: .pullRequest,
+                matchMode: .all,
+                conditions: [
+                    .relationship([.assigned])
+                ],
+                isEnabled: true
+            )
+        case .relatedWorkflowFailed:
+            return NeedsActionRuleDefinition(
+                id: stableID,
+                name: title,
+                itemKind: .workflow,
+                matchMode: .all,
+                conditions: [
+                    .signal([.workflowFailed])
+                ],
+                isEnabled: true
+            )
+        case .relatedWorkflowApprovalRequired:
+            return NeedsActionRuleDefinition(
+                id: stableID,
+                name: title,
+                itemKind: .workflow,
+                matchMode: .all,
+                conditions: [
+                    .signal([.workflowApprovalRequired])
+                ],
+                isEnabled: true
+            )
+        case .assignedIssues:
+            return NeedsActionRuleDefinition(
+                id: stableID,
+                name: title,
+                itemKind: .issue,
+                matchMode: .all,
+                conditions: [
+                    .relationship([.assigned])
+                ],
+                isEnabled: true
+            )
+        }
+    }
+}
+
+struct NeedsActionConfiguration: Codable, Hashable, Sendable {
+    var rules: [NeedsActionRuleDefinition]
+
+    static let `default` = NeedsActionConfiguration(
+        rules: NeedsActionRule.allCases.map(\.defaultDefinition)
+    )
+
+    var normalized: NeedsActionConfiguration {
+        NeedsActionConfiguration(
+            rules: rules.map(\.normalized)
+        )
+    }
+
+    var enabledRules: [NeedsActionRuleDefinition] {
+        normalized.rules.filter(\.isEnabled)
+    }
+
+    static func migrated(from legacy: LegacyNeedsActionConfiguration) -> NeedsActionConfiguration {
+        NeedsActionConfiguration(
+            rules: NeedsActionRule.allCases.map { rule in
+                var definition = rule.defaultDefinition
+                definition.isEnabled = legacy.enabledRules.contains(rule)
+                return definition
+            }
+        ).normalized
+    }
+
+    func replacing(_ rule: NeedsActionRuleDefinition) -> NeedsActionConfiguration {
+        var updatedRules = rules
+        if let index = updatedRules.firstIndex(where: { $0.id == rule.id }) {
+            updatedRules[index] = rule
+        } else {
+            updatedRules.append(rule)
+        }
+
+        return NeedsActionConfiguration(rules: updatedRules).normalized
+    }
+
+    func removingRule(id: UUID) -> NeedsActionConfiguration {
+        NeedsActionConfiguration(
+            rules: rules.filter { $0.id != id }
+        ).normalized
+    }
+}
+
 enum AttentionItemVisibilityPolicy {
     static func excludingIgnoredSubjects(
         _ items: [AttentionItem],
@@ -4245,6 +5143,172 @@ enum AttentionItemVisibilityPolicy {
         _ items: [AttentionItem]
     ) -> [AttentionItem] {
         items.filter { !$0.isHistoricalLogEntry }
+    }
+}
+
+enum NeedsActionPolicy {
+    private static let selfReviewTypes: Set<AttentionItemType> = [
+        .reviewApproved,
+        .reviewChangesRequested,
+        .reviewComment
+    ]
+
+    static func matchingItems(
+        in items: [AttentionItem],
+        configuration: NeedsActionConfiguration
+    ) -> [AttentionItem] {
+        let enabledRules = configuration.enabledRules
+        return items.filter { item in
+            guard !item.isHistoricalLogEntry else {
+                return false
+            }
+
+            let derivedFacts = facts(for: item)
+            return enabledRules.contains(where: { matches(item, facts: derivedFacts, rule: $0) })
+        }
+    }
+
+    static func matchingRules(
+        for item: AttentionItem,
+        configuration: NeedsActionConfiguration
+    ) -> [NeedsActionRuleDefinition] {
+        let facts = facts(for: item)
+        return configuration.enabledRules.filter { rule in
+            matches(item, facts: facts, rule: rule)
+        }
+    }
+
+    private static func matches(
+        _ item: AttentionItem,
+        facts: NeedsActionFacts,
+        rule: NeedsActionRuleDefinition
+    ) -> Bool {
+        let normalizedRule = rule.normalized
+
+        guard normalizedRule.isEnabled else {
+            return false
+        }
+
+        guard facts.itemKinds.contains(normalizedRule.itemKind) else {
+            return false
+        }
+
+        guard !normalizedRule.conditions.isEmpty else {
+            return true
+        }
+
+        let evaluations = normalizedRule.conditions.map { condition in
+            matches(facts: facts, condition: condition)
+        }
+
+        return evaluations.allSatisfy { $0 }
+    }
+
+    private static func matches(
+        facts: NeedsActionFacts,
+        condition: NeedsActionCondition
+    ) -> Bool {
+        let baseMatch: Bool = switch condition.kind {
+        case .relationship:
+            !facts.relationships.intersection(condition.relationshipValues).isEmpty
+        case .signal:
+            !facts.signals.intersection(condition.signalValues).isEmpty
+        case .viewerReview:
+            switch condition.viewerReviewValue {
+            case .missing:
+                facts.hasViewerReview == false
+            case .present:
+                facts.hasViewerReview
+            }
+        }
+
+        return condition.isNegated ? !baseMatch : baseMatch
+    }
+
+    private static func hasViewerReviewUpdate(in item: AttentionItem) -> Bool {
+        if item.isTriggeredByCurrentUser && selfReviewTypes.contains(item.type) {
+            return true
+        }
+
+        return item.detail.updates.contains { update in
+            update.isTriggeredByCurrentUser && selfReviewTypes.contains(update.type)
+        }
+    }
+
+    private static func facts(for item: AttentionItem) -> NeedsActionFacts {
+        let signals = item.currentUpdateTypes.reduce(into: Set<NeedsActionSignal>()) { partialResult, type in
+            switch type {
+            case .readyToMerge:
+                partialResult.insert(.readyToMerge)
+            case .pullRequestMergeConflicts:
+                partialResult.insert(.mergeConflicts)
+            case .pullRequestFailedChecks:
+                partialResult.insert(.failedChecks)
+            case .workflowFailed:
+                partialResult.insert(.workflowFailed)
+            case .workflowApprovalRequired:
+                partialResult.insert(.workflowApprovalRequired)
+            case .workflowRunning:
+                partialResult.insert(.workflowRunning)
+            default:
+                break
+            }
+        }
+
+        let relationships = relationshipTypes(in: item).reduce(
+            into: Set<NeedsActionViewerRelationship>()
+        ) { partialResult, type in
+            switch type {
+            case .authoredPullRequest, .authoredIssue:
+                partialResult.insert(.authored)
+            case .assignedPullRequest, .assignedIssue:
+                partialResult.insert(.assigned)
+            case .reviewedPullRequest:
+                partialResult.insert(.reviewed)
+            case .commentedPullRequest, .commentedIssue:
+                partialResult.insert(.commented)
+            default:
+                break
+            }
+        }
+
+        var itemKinds = Set<NeedsActionItemKind>()
+        let isOpenSubject = item.subjectResolution == nil || item.subjectResolution == .open
+
+        if item.currentUpdateTypes.contains(where: \.isWorkflowActivityType) {
+            itemKinds.insert(.workflow)
+        }
+
+        if isOpenSubject, item.pullRequestReference != nil {
+            itemKinds.insert(.pullRequest)
+        }
+        if isOpenSubject, item.subjectReference?.kind == .issue {
+            itemKinds.insert(.issue)
+        }
+
+        return NeedsActionFacts(
+            itemKinds: itemKinds,
+            relationships: relationships,
+            signals: signals,
+            hasViewerReview: hasViewerReviewUpdate(in: item)
+        )
+    }
+
+    private static func relationshipTypes(in item: AttentionItem) -> Set<AttentionItemType> {
+        var result = item.currentRelationshipTypes
+        if item.type.isRelationshipType {
+            result.insert(item.type)
+        }
+
+        if let focusType = item.focusType, focusType.isRelationshipType {
+            result.insert(focusType)
+        }
+        if let secondaryIndicatorType = item.secondaryIndicatorType,
+            secondaryIndicatorType.isRelationshipType {
+            result.insert(secondaryIndicatorType)
+        }
+
+        return result
     }
 }
 
@@ -4304,7 +5368,8 @@ enum AuthoredPullRequestAttentionPolicy {
         mergeableState: String?,
         pendingReviewRequests: Int,
         approvalCount: Int,
-        hasChangesRequested: Bool
+        hasChangesRequested: Bool,
+        checkSummary: PullRequestCheckSummary
     ) -> Bool {
         guard state.lowercased() == "open", !merged, !isDraft else {
             return false
@@ -4318,11 +5383,39 @@ enum AuthoredPullRequestAttentionPolicy {
             return false
         }
 
-        return true
+        return checkSummary.totalCount > 0 && checkSummary.isClear
+    }
+
+    static func shouldSurfaceMergeConflicts(
+        state: String,
+        merged: Bool,
+        isDraft: Bool,
+        mergeableState: String?
+    ) -> Bool {
+        guard state.lowercased() == "open", !merged, !isDraft else {
+            return false
+        }
+
+        return mergeableState?.lowercased() == "dirty"
+    }
+
+    static func shouldSurfaceFailedChecks(
+        state: String,
+        merged: Bool,
+        isDraft: Bool,
+        checkSummary: PullRequestCheckSummary
+    ) -> Bool {
+        guard state.lowercased() == "open", !merged, !isDraft else {
+            return false
+        }
+
+        return checkSummary.hasFailures
     }
 }
 
 enum PullRequestAttentionPolicy {
+    private static let mergedWorkflowWatchWindow: TimeInterval = 7 * 86_400
+
     static func shouldIncludeActivity(
         state: String,
         merged: Bool,
@@ -4354,6 +5447,6 @@ enum PullRequestAttentionPolicy {
             return false
         }
 
-        return mergedAt >= now.addingTimeInterval(-86_400)
+        return mergedAt >= now.addingTimeInterval(-mergedWorkflowWatchWindow)
     }
 }

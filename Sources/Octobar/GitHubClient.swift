@@ -363,7 +363,7 @@ struct GitHubClient {
             openAuthoredIssues: openAuthoredPullRequests,
             observer: observer
         )
-        async let readyToMergeTask = fetchReadyToMergePullRequests(
+        async let authoredPullRequestSignalsTask = fetchAuthoredPullRequestSignals(
             token: token,
             login: login,
             openAuthoredIssues: openAuthoredPullRequests,
@@ -372,7 +372,7 @@ struct GitHubClient {
 
         let pullRequests = try await pullRequestsTask
         let trackedPullRequests = try await trackedPullRequestsTask
-        let readyToMerge = try await readyToMergeTask
+        let authoredPullRequestSignals = try await authoredPullRequestSignalsTask
         let notificationFetch = try await notificationsTask
         let workflowRuns = try await workflowRunsTask
         let trackedIssues = try await trackedIssuesTask
@@ -380,7 +380,7 @@ struct GitHubClient {
         let attentionItems = buildAttentionItems(
             pullRequests: pullRequests,
             trackedPullRequests: trackedPullRequests,
-            readyToMerge: readyToMerge,
+            authoredPullRequestSignals: authoredPullRequestSignals,
             notifications: notificationFetch.notifications,
             actionRuns: workflowRuns,
             trackedIssues: trackedIssues
@@ -398,7 +398,7 @@ struct GitHubClient {
     private func buildAttentionItems(
         pullRequests: [PullRequestSummary],
         trackedPullRequests: [TrackedSubjectSummary],
-        readyToMerge: [ReadyToMergeSummary],
+        authoredPullRequestSignals: [AuthoredPullRequestSignalSummary],
         notifications: [NotificationSummary],
         actionRuns: [ActionRunSummary],
         trackedIssues: [TrackedSubjectSummary]
@@ -421,19 +421,20 @@ struct GitHubClient {
                 timestamp: pullRequest.updatedAt,
                 url: pullRequest.url,
                 isTriggeredByCurrentUser: false,
+                subjectResolution: pullRequest.resolution,
                 detail: detail(for: pullRequest),
                 isHistoricalLogEntry: pullRequest.resolution == .merged,
                 isUnread: pullRequest.resolution != .merged
             )
         }
 
-        let readyToMergeItems = readyToMerge.map { pullRequest in
+        let authoredPullRequestSignalItems = authoredPullRequestSignals.map { pullRequest in
             AttentionItem(
-                id: "ready:\(pullRequest.id)",
+                id: "authored-signal:\(pullRequest.id)",
                 subjectKey: pullRequest.ignoreKey,
-                updateKey: "ready:\(pullRequest.id)",
+                updateKey: "authored-signal:\(pullRequest.id)",
                 stream: .pullRequests,
-                type: .readyToMerge,
+                type: pullRequest.type,
                 title: pullRequest.title,
                 subtitle: pullRequest.subtitle,
                 repository: pullRequest.repository,
@@ -442,6 +443,7 @@ struct GitHubClient {
                 url: pullRequest.url,
                 actor: pullRequest.actor,
                 isTriggeredByCurrentUser: false,
+                subjectResolution: .open,
                 detail: detail(for: pullRequest)
             )
         }
@@ -462,6 +464,7 @@ struct GitHubClient {
                 url: notification.url,
                 actor: notification.actor,
                 isTriggeredByCurrentUser: notification.isTriggeredByCurrentUser,
+                subjectResolution: notification.resolution,
                 detail: detail(for: notification),
                 isUnread: notification.unread
             )
@@ -481,11 +484,11 @@ struct GitHubClient {
                 url: run.url,
                 actor: run.actor,
                 isTriggeredByCurrentUser: run.isTriggeredByCurrentUser,
+                subjectResolution: run.resolution,
                 detail: detail(for: run)
             )
         }
 
-        let directPullRequestKeys = Set((pullRequestItems + readyToMergeItems).map(\.ignoreKey))
         let trackedPullRequestUpdateItems: [AttentionItem] = trackedPullRequests.compactMap { trackedSubject in
             guard let selfUpdate = trackedSubject.latestSelfUpdate else {
                 return nil
@@ -501,34 +504,34 @@ struct GitHubClient {
                 url: trackedSubject.url,
                 selfUpdate: selfUpdate,
                 detail: detail(for: trackedSubject, selfUpdate: selfUpdate),
+                resolution: trackedSubject.resolution,
                 isUnread: trackedSubject.resolution != .merged
             )
         }
-        let trackedPullRequestItems = trackedPullRequests
-            .filter { !directPullRequestKeys.contains($0.ignoreKey) }
-            .map { trackedSubject in
-                AttentionItem(
-                    id: pullRequestItemID(
-                        prefix: "tracked-pr",
-                        baseID: trackedSubject.id,
-                        resolution: trackedSubject.resolution
-                    ),
-                    subjectKey: trackedSubject.ignoreKey,
-                    updateKey: "relationship:\(trackedSubject.type.rawValue):\(trackedSubject.id)",
-                    stream: .pullRequests,
-                    type: trackedSubject.type,
-                    title: trackedSubject.title,
-                    subtitle: trackedSubject.subtitle,
-                    repository: trackedSubject.repository,
-                    labels: trackedSubject.labels,
-                    timestamp: trackedSubject.updatedAt,
-                    url: trackedSubject.url,
-                    isTriggeredByCurrentUser: trackedSubject.isTriggeredByCurrentUser,
-                    detail: detail(for: trackedSubject),
-                    isHistoricalLogEntry: trackedSubject.resolution == .merged,
-                    isUnread: trackedSubject.resolution != .merged
-                )
-            }
+        let trackedPullRequestItems = trackedPullRequests.map { trackedSubject in
+            AttentionItem(
+                id: pullRequestItemID(
+                    prefix: "tracked-pr",
+                    baseID: trackedSubject.id,
+                    resolution: trackedSubject.resolution
+                ),
+                subjectKey: trackedSubject.ignoreKey,
+                updateKey: "relationship:\(trackedSubject.type.rawValue):\(trackedSubject.id)",
+                stream: .pullRequests,
+                type: trackedSubject.type,
+                title: trackedSubject.title,
+                subtitle: trackedSubject.subtitle,
+                repository: trackedSubject.repository,
+                labels: trackedSubject.labels,
+                timestamp: trackedSubject.updatedAt,
+                url: trackedSubject.url,
+                isTriggeredByCurrentUser: trackedSubject.isTriggeredByCurrentUser,
+                subjectResolution: trackedSubject.resolution,
+                detail: detail(for: trackedSubject),
+                isHistoricalLogEntry: trackedSubject.resolution == .merged,
+                isUnread: trackedSubject.resolution != .merged
+            )
+        }
 
         let trackedIssueItems = trackedIssues.map { trackedSubject in
             AttentionItem(
@@ -544,6 +547,7 @@ struct GitHubClient {
                 timestamp: trackedSubject.updatedAt,
                 url: trackedSubject.url,
                 isTriggeredByCurrentUser: trackedSubject.isTriggeredByCurrentUser,
+                subjectResolution: trackedSubject.resolution,
                 detail: detail(for: trackedSubject)
             )
         }
@@ -552,7 +556,7 @@ struct GitHubClient {
             pullRequestItems +
                 trackedPullRequestItems +
                 trackedPullRequestUpdateItems +
-                readyToMergeItems +
+                authoredPullRequestSignalItems +
                 notificationItems +
                 actionRunItems +
                 trackedIssueItems
@@ -717,13 +721,13 @@ struct GitHubClient {
         )
     }
 
-    private func detail(for pullRequest: ReadyToMergeSummary) -> AttentionDetail {
+    private func detail(for pullRequest: AuthoredPullRequestSignalSummary) -> AttentionDetail {
         var evidence = [
             AttentionEvidence(
                 id: "subject",
                 title: "Pull request",
                 detail: "#\(pullRequest.number) · \(pullRequest.title)",
-                iconName: "checkmark.circle",
+                iconName: pullRequest.type.iconName,
                 url: pullRequest.url
             ),
             AttentionEvidence(
@@ -732,16 +736,44 @@ struct GitHubClient {
                 detail: pullRequest.repository,
                 iconName: "shippingbox",
                 url: repositoryWebURL(repository: pullRequest.repository)
-            ),
-            AttentionEvidence(
-                id: "approvals",
-                title: "Current approvals",
-                detail: "\(pullRequest.approvalCount) approval\(pullRequest.approvalCount == 1 ? "" : "s")",
-                iconName: "person.badge.shield.checkmark"
             )
         ]
 
-        if let actor = pullRequest.actor {
+        switch pullRequest.type {
+        case .readyToMerge:
+            if let approvalCount = pullRequest.approvalCount {
+                evidence.append(
+                    AttentionEvidence(
+                        id: "approvals",
+                        title: "Current approvals",
+                        detail: "\(approvalCount) approval\(approvalCount == 1 ? "" : "s")",
+                        iconName: "person.badge.shield.checkmark"
+                    )
+                )
+            }
+        case .pullRequestMergeConflicts:
+            evidence.append(
+                AttentionEvidence(
+                    id: "mergeability",
+                    title: "Merge state",
+                    detail: "Conflicts with the base branch",
+                    iconName: "arrow.triangle.branch"
+                )
+            )
+        case .pullRequestFailedChecks:
+            evidence.append(
+                AttentionEvidence(
+                    id: "checks",
+                    title: "Checks",
+                    detail: pullRequest.checkSummary.detail,
+                    iconName: "xmark.octagon"
+                )
+            )
+        default:
+            break
+        }
+
+        if let actor = pullRequest.actor, pullRequest.type == .readyToMerge {
             evidence.append(
                 AttentionEvidence(
                     id: "actor",
@@ -776,13 +808,26 @@ struct GitHubClient {
 
         return AttentionDetail(
             why: AttentionWhy(
-                summary: "This pull request is approved and looks ready to merge.",
-                detail: "There are no pending review requests and GitHub reports a clean merge state."
+                summary: whySummary(for: pullRequest.type, actor: pullRequest.actor),
+                detail: detailSummary(for: pullRequest)
             ),
             evidence: evidence,
             actions: actions,
             acknowledgement: "Use the toolbar to mark this read or ignore it."
         )
+    }
+
+    private func detailSummary(for pullRequest: AuthoredPullRequestSignalSummary) -> String {
+        switch pullRequest.type {
+        case .readyToMerge:
+            return "There are no pending review requests, the merge state is clean, and \(pullRequest.checkSummary.detail.lowercased())."
+        case .pullRequestMergeConflicts:
+            return "GitHub reports merge conflicts with the base branch."
+        case .pullRequestFailedChecks:
+            return pullRequest.checkSummary.detail
+        default:
+            return pullRequest.subtitle
+        }
     }
 
     private func detail(for notification: NotificationSummary) -> AttentionDetail {
@@ -1160,6 +1205,11 @@ struct GitHubClient {
                                 url: pullRequest.url,
                                 selfUpdate: $0,
                                 detail: nil,
+                                resolution: pullRequest.merged
+                                    ? .merged
+                                    : pullRequest.state.caseInsensitiveCompare("closed") == .orderedSame
+                                    ? .closed
+                                    : .open,
                                 isUnread: true
                             )
                         ]
@@ -2220,36 +2270,39 @@ struct GitHubClient {
         }
     }
 
-    private func fetchReadyToMergePullRequests(
+    private func fetchAuthoredPullRequestSignals(
         token: String,
         login: String,
         openAuthoredIssues: [IssueItem],
         observer: GitHubRateLimitObserver
-    ) async throws -> [ReadyToMergeSummary] {
-        return await withTaskGroup(of: ReadyToMergeSummary?.self) { group in
+    ) async throws -> [AuthoredPullRequestSignalSummary] {
+        return await withTaskGroup(of: [AuthoredPullRequestSignalSummary].self) { group in
             for issue in openAuthoredIssues.prefix(authoredPullRequestLimit) {
                 group.addTask {
                     do {
-                        return try await buildReadyToMergeSummary(
+                        return try await buildAuthoredPullRequestSignals(
                             token: token,
                             login: login,
                             issue: issue,
                             observer: observer
                         )
                     } catch {
-                        return nil
+                        return []
                     }
                 }
             }
 
-            var summaries = [ReadyToMergeSummary]()
-            for await summary in group {
-                if let summary {
-                    summaries.append(summary)
-                }
+            var summaries = [AuthoredPullRequestSignalSummary]()
+            for await groupSummaries in group {
+                summaries.append(contentsOf: groupSummaries)
             }
 
-            return summaries.sorted { $0.updatedAt > $1.updatedAt }
+            return summaries.sorted { lhs, rhs in
+                if lhs.updatedAt == rhs.updatedAt {
+                    return lhs.type.aggregateDisplayPriority > rhs.type.aggregateDisplayPriority
+                }
+                return lhs.updatedAt > rhs.updatedAt
+            }
         }
     }
 
@@ -2303,14 +2356,14 @@ struct GitHubClient {
         }
     }
 
-    private func buildReadyToMergeSummary(
+    private func buildAuthoredPullRequestSignals(
         token: String,
         login: String,
         issue: IssueItem,
         observer: GitHubRateLimitObserver
-    ) async throws -> ReadyToMergeSummary? {
+    ) async throws -> [AuthoredPullRequestSignalSummary] {
         guard let repository = repositoryFullName(from: issue.repositoryURL) else {
-            return nil
+            return []
         }
 
         let repositoryID = try parseRepositoryFullName(repository)
@@ -2320,6 +2373,12 @@ struct GitHubClient {
             observer: observer
         )
 
+        guard details.state.caseInsensitiveCompare("open") == .orderedSame,
+            !details.merged,
+            !details.isDraft else {
+            return []
+        }
+
         let reviews = try await fetchPullRequestReviews(
             token: token,
             repository: repository,
@@ -2327,9 +2386,34 @@ struct GitHubClient {
             observer: observer
         )
         let approvalSummary = latestApprovalSummary(reviews: reviews, excluding: login)
+        let checkInsights = try await fetchCheckInsights(
+            token: token,
+            reference: PullRequestReference(
+                owner: repositoryID.owner,
+                name: repositoryID.name,
+                number: issue.number
+            ),
+            headSHA: details.head.sha,
+            observer: observer
+        )
 
         let pendingReviewRequests = details.requestedReviewers.count + details.requestedTeams.count
-        guard AuthoredPullRequestAttentionPolicy.shouldSurfaceReadyToMerge(
+        let commonValues = (
+            idBase: "\(repository)#\(issue.number)",
+            ignoreKey: details.htmlURL.absoluteString,
+            number: issue.number,
+            title: issue.title,
+            repository: repository,
+            labels: issue.labels.map(\.gitHubLabel),
+            url: details.htmlURL,
+            updatedAt: issue.updatedAt,
+            actor: approvalSummary.latestApprover,
+            checkSummary: checkInsights.summary
+        )
+
+        var summaries = [AuthoredPullRequestSignalSummary]()
+
+        if AuthoredPullRequestAttentionPolicy.shouldSurfaceReadyToMerge(
             state: details.state,
             merged: details.merged,
             isDraft: details.isDraft,
@@ -2337,31 +2421,89 @@ struct GitHubClient {
             mergeableState: details.mergeableState,
             pendingReviewRequests: pendingReviewRequests,
             approvalCount: approvalSummary.approvalCount,
-            hasChangesRequested: approvalSummary.hasChangesRequested
-        ) else {
-            return nil
+            hasChangesRequested: approvalSummary.hasChangesRequested,
+            checkSummary: checkInsights.summary
+        ) {
+            let subtitle: String
+            if let actor = approvalSummary.latestApprover {
+                subtitle = "\(actor.login) · \(repository) · Ready to merge"
+            } else {
+                subtitle = "\(repository) · Ready to merge"
+            }
+
+            summaries.append(
+                AuthoredPullRequestSignalSummary(
+                    id: "\(commonValues.idBase):\(AttentionItemType.readyToMerge.rawValue)",
+                    ignoreKey: commonValues.ignoreKey,
+                    type: .readyToMerge,
+                    number: commonValues.number,
+                    title: commonValues.title,
+                    subtitle: subtitle,
+                    repository: commonValues.repository,
+                    labels: commonValues.labels,
+                    url: commonValues.url,
+                    updatedAt: commonValues.updatedAt,
+                    actor: commonValues.actor,
+                    approvalCount: approvalSummary.approvalCount,
+                    checkSummary: commonValues.checkSummary
+                )
+            )
         }
 
-        let subtitle: String
-        if let actor = approvalSummary.latestApprover {
-            subtitle = "\(actor.login) · \(repository) · Ready to merge"
-        } else {
-            subtitle = "\(repository) · Ready to merge"
+        if AuthoredPullRequestAttentionPolicy.shouldSurfaceMergeConflicts(
+            state: details.state,
+            merged: details.merged,
+            isDraft: details.isDraft,
+            mergeableState: details.mergeableState
+        ) {
+            summaries.append(
+                AuthoredPullRequestSignalSummary(
+                    id: "\(commonValues.idBase):\(AttentionItemType.pullRequestMergeConflicts.rawValue)",
+                    ignoreKey: commonValues.ignoreKey,
+                    type: .pullRequestMergeConflicts,
+                    number: commonValues.number,
+                    title: commonValues.title,
+                    subtitle: "\(repository) · Merge conflicts",
+                    repository: commonValues.repository,
+                    labels: commonValues.labels,
+                    url: commonValues.url,
+                    updatedAt: commonValues.updatedAt,
+                    actor: nil,
+                    approvalCount: nil,
+                    checkSummary: commonValues.checkSummary
+                )
+            )
         }
 
-        return ReadyToMergeSummary(
-            id: "\(repository)#\(issue.number)",
-            ignoreKey: details.htmlURL.absoluteString,
-            number: issue.number,
-            title: issue.title,
-            subtitle: subtitle,
-            repository: repository,
-            labels: issue.labels.map(\.gitHubLabel),
-            url: details.htmlURL,
-            updatedAt: issue.updatedAt,
-            actor: approvalSummary.latestApprover,
-            approvalCount: approvalSummary.approvalCount
-        )
+        if AuthoredPullRequestAttentionPolicy.shouldSurfaceFailedChecks(
+            state: details.state,
+            merged: details.merged,
+            isDraft: details.isDraft,
+            checkSummary: checkInsights.summary
+        ) {
+            let failureLabel = checkInsights.summary.failedCount == 1
+                ? "1 failed check"
+                : "\(checkInsights.summary.failedCount) failed checks"
+            summaries.append(
+                AuthoredPullRequestSignalSummary(
+                    id: "\(commonValues.idBase):\(AttentionItemType.pullRequestFailedChecks.rawValue)",
+                    ignoreKey: commonValues.ignoreKey,
+                    type: .pullRequestFailedChecks,
+                    number: commonValues.number,
+                    title: commonValues.title,
+                    subtitle: "\(repository) · \(failureLabel)",
+                    repository: commonValues.repository,
+                    labels: commonValues.labels,
+                    url: commonValues.url,
+                    updatedAt: commonValues.updatedAt,
+                    actor: nil,
+                    approvalCount: nil,
+                    checkSummary: commonValues.checkSummary
+                )
+            )
+        }
+
+        return summaries
     }
 
     private func fetchActionableNotifications(
@@ -2494,6 +2636,7 @@ struct GitHubClient {
         var actor: AttentionActor?
         var reviewTarget: ReviewRequestTarget?
         var timelineContext: TimelineContext?
+        var resolution: GitHubSubjectResolution?
         var type = AttentionItemType.notificationType(
             reason: thread.reason,
             timelineEvent: nil,
@@ -2511,6 +2654,11 @@ struct GitHubClient {
                     reference: reference,
                     observer: observer
                 )
+                resolution = state.merged
+                    ? .merged
+                    : state.state.caseInsensitiveCompare("closed") == .orderedSame
+                    ? .closed
+                    : .open
                 labels = state.labels.map(\.gitHubLabel)
                 guard PullRequestAttentionPolicy.shouldIncludeActivity(
                     state: state.state,
@@ -2535,6 +2683,9 @@ struct GitHubClient {
                     reference: reference,
                     observer: observer
                 )
+                resolution = state.state.caseInsensitiveCompare("closed") == .orderedSame
+                    ? .closed
+                    : .open
                 labels = state.labels.map(\.gitHubLabel)
             }
 
@@ -2593,6 +2744,7 @@ struct GitHubClient {
             unread: thread.unread,
             actor: actor,
             isTriggeredByCurrentUser: timelineContext?.isTriggeredByCurrentUser ?? false,
+            resolution: resolution,
             targetLabel: notificationTargetLabel(
                 reason: thread.reason,
                 type: type,
@@ -2623,6 +2775,16 @@ struct GitHubClient {
             repositoryWebURL: thread.repository.htmlURL,
             subjectType: thread.subject.type
         )
+        let resolution: GitHubSubjectResolution? = {
+            guard let reference else {
+                return nil
+            }
+
+            switch reference.kind {
+            case .pullRequest, .issue:
+                return .open
+            }
+        }()
 
         return NotificationSummary(
             id: thread.id,
@@ -2642,6 +2804,7 @@ struct GitHubClient {
             unread: thread.unread,
             actor: nil,
             isTriggeredByCurrentUser: false,
+            resolution: resolution,
             targetLabel: notificationTargetLabel(
                 reason: thread.reason,
                 type: type,
@@ -3261,10 +3424,16 @@ struct GitHubClient {
             relationship: .authored,
             observer: observer
         )
-        async let approvedTask = searchWorkflowWatchCandidates(
+        async let reviewedTask = searchWorkflowWatchCandidates(
             token: token,
             query: "is:pr reviewed-by:\(login) archived:false",
-            relationship: .approved,
+            relationship: .reviewed,
+            observer: observer
+        )
+        async let assignedTask = searchWorkflowWatchCandidates(
+            token: token,
+            query: "is:open is:pr assignee:\(login) archived:false",
+            relationship: .assigned,
             observer: observer
         )
         async let mergedTask = searchWorkflowWatchCandidates(
@@ -3275,27 +3444,14 @@ struct GitHubClient {
         )
 
         let authored = try await authoredTask
-        let approved = try await approvedTask
+        let reviewed = try await reviewedTask
+        let assigned = try await assignedTask
         let merged = try await mergedTask
 
-        var byKey = [String: WorkflowWatchCandidate]()
-        for candidate in authored + approved + merged {
-            let key = "\(candidate.repository)#\(candidate.number)"
-            if let existing = byKey[key], existing.relationship.priority >= candidate.relationship.priority {
-                continue
-            }
-            byKey[key] = candidate
-        }
-
-        return byKey.values
-            .sorted { lhs, rhs in
-                if lhs.relationship.priority == rhs.relationship.priority {
-                    return lhs.number > rhs.number
-                }
-                return lhs.relationship.priority > rhs.relationship.priority
-            }
-            .prefix(workflowCandidateLimit)
-            .map { $0 }
+        return WorkflowWatchCandidateSelectionPolicy.select(
+            authored + reviewed + assigned + merged,
+            limit: workflowCandidateLimit
+        )
     }
 
     private func searchWorkflowWatchCandidates(
@@ -3324,7 +3480,8 @@ struct GitHubClient {
             return WorkflowWatchCandidate(
                 repository: repository,
                 number: issue.number,
-                relationship: relationship
+                relationship: relationship,
+                updatedAt: issue.updatedAt
             )
         }
     }
@@ -3342,18 +3499,6 @@ struct GitHubClient {
             observer: observer
         )
 
-        if candidate.relationship == .approved {
-            guard try await didUserApprovePullRequest(
-                token: token,
-                repository: candidate.repository,
-                number: candidate.number,
-                login: login,
-                observer: observer
-            ) else {
-                return []
-            }
-        }
-
         guard PullRequestAttentionPolicy.shouldWatchWorkflows(
             state: pullRequest.state,
             merged: pullRequest.merged,
@@ -3361,6 +3506,7 @@ struct GitHubClient {
         ) else {
             return []
         }
+        let resolution = subjectResolution(for: pullRequest)
 
         let commitSHA: String
         if pullRequest.merged {
@@ -3392,7 +3538,8 @@ struct GitHubClient {
 
             guard let type = AttentionItemType.workflowType(
                 status: run.status,
-                conclusion: run.conclusion
+                conclusion: run.conclusion,
+                requiresApproval: run.requiresApproval
             ) else {
                 return nil
             }
@@ -3420,7 +3567,8 @@ struct GitHubClient {
                 updatedAt: run.updatedAt ?? run.createdAt,
                 url: run.htmlURL ?? runWebURL(repository: candidate.repository, runID: run.id),
                 actor: actor,
-                isTriggeredByCurrentUser: actor?.login.caseInsensitiveCompare(login) == .orderedSame
+                isTriggeredByCurrentUser: actor?.login.caseInsensitiveCompare(login) == .orderedSame,
+                resolution: resolution
             )
         }
     }
@@ -3521,6 +3669,7 @@ struct GitHubClient {
         url: URL,
         selfUpdate: TrackedSubjectSelfUpdateSummary,
         detail: AttentionDetail?,
+        resolution: GitHubSubjectResolution,
         isUnread: Bool
     ) -> AttentionItem {
         let stableID = "\(stableBaseID):\(selfUpdate.type.rawValue):\(Int(selfUpdate.timestamp.timeIntervalSince1970))"
@@ -3543,6 +3692,7 @@ struct GitHubClient {
             url: url,
             actor: selfUpdate.actor,
             isTriggeredByCurrentUser: true,
+            subjectResolution: resolution,
             detail: detail,
             isUnread: isUnread
         )
@@ -3638,7 +3788,21 @@ struct GitHubClient {
             observer: observer
         )
 
-        return response.workflowRuns
+        var enrichedRuns = [WorkflowRun]()
+        enrichedRuns.reserveCapacity(response.workflowRuns.count)
+
+        for run in response.workflowRuns {
+            var enrichedRun = run
+            enrichedRun.requiresApproval = try await workflowRunRequiresApproval(
+                token: token,
+                repository: repository,
+                run: run,
+                observer: observer
+            )
+            enrichedRuns.append(enrichedRun)
+        }
+
+        return enrichedRuns
     }
 
     private func fetchPostMergeWorkflowPreview(
@@ -3976,7 +4140,7 @@ struct GitHubClient {
         from runs: [WorkflowRun],
         repository: String
     ) -> [PostMergeObservedWorkflowRun] {
-        runs.compactMap { run in
+        runs.compactMap { run -> PostMergeObservedWorkflowRun? in
             guard run.event.caseInsensitiveCompare("push") == .orderedSame else {
                 return nil
             }
@@ -3990,6 +4154,7 @@ struct GitHubClient {
                 event: run.event,
                 status: run.status,
                 conclusion: run.conclusion,
+                requiresApproval: run.requiresApproval,
                 createdAt: run.createdAt,
                 actor: attentionActor(from: run.triggeringActor ?? run.actor)
             )
@@ -4029,7 +4194,8 @@ struct GitHubClient {
                     status: observedRun.map {
                         PullRequestPostMergeWorkflowStatus.observed(
                             status: $0.status,
-                            conclusion: $0.conclusion
+                            conclusion: $0.conclusion,
+                            requiresApproval: $0.requiresApproval
                         )
                     } ?? (isMerged ? .waiting : .expected),
                     timestamp: observedRun?.createdAt
@@ -4045,7 +4211,8 @@ struct GitHubClient {
                     url: run.url,
                     status: PullRequestPostMergeWorkflowStatus.observed(
                         status: run.status,
-                        conclusion: run.conclusion
+                        conclusion: run.conclusion,
+                        requiresApproval: run.requiresApproval
                     ),
                     timestamp: run.createdAt
                 )
@@ -4091,6 +4258,38 @@ struct GitHubClient {
         mergeCommitSHA: String?
     ) -> String {
         mergeCommitSHA ?? headRefOID
+    }
+
+    private func workflowRunRequiresApproval(
+        token: String,
+        repository: String,
+        run: WorkflowRun,
+        observer: GitHubRateLimitObserver
+    ) async throws -> Bool {
+        let normalizedStatus = (run.status ?? "").lowercased()
+        let normalizedConclusion = (run.conclusion ?? "").lowercased()
+
+        if normalizedStatus == "action_required" || normalizedConclusion == "action_required" {
+            return true
+        }
+
+        guard normalizedStatus == "waiting" else {
+            return false
+        }
+
+        let repositoryID = try parseRepositoryFullName(repository)
+
+        do {
+            let pendingDeployments: [WorkflowPendingDeployment] = try await request(
+                path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/actions/runs/\(run.id)/pending_deployments",
+                token: token,
+                observer: observer
+            )
+
+            return pendingDeployments.contains(where: \.currentUserCanApprove)
+        } catch {
+            return false
+        }
     }
 
     static func isRepositoryWorkflowPath(_ path: String) -> Bool {
@@ -4144,6 +4343,10 @@ struct GitHubClient {
             return "You commented on this pull request."
         case .readyToMerge:
             return "One of your pull requests is approved and ready to merge."
+        case .pullRequestMergeConflicts:
+            return "One of your pull requests has merge conflicts."
+        case .pullRequestFailedChecks:
+            return "One of your pull requests has failing checks."
         case .assignedIssue:
             return "This issue is assigned to you."
         case .authoredIssue:
@@ -5022,27 +5225,84 @@ private struct DiscussionReference: Hashable, Sendable {
     let kind: DiscussionKind
 }
 
-private enum WorkflowWatchRelationship: Hashable, Sendable {
+enum WorkflowWatchRelationship: Hashable, Sendable {
     case authored
-    case approved
+    case reviewed
+    case assigned
     case merged
 
     var priority: Int {
         switch self {
         case .authored:
             return 1
-        case .approved:
+        case .reviewed:
             return 2
-        case .merged:
+        case .assigned:
             return 3
+        case .merged:
+            return 4
         }
     }
 }
 
-private struct WorkflowWatchCandidate: Hashable, Sendable {
+struct WorkflowWatchCandidate: Hashable, Sendable {
     let repository: String
     let number: Int
     let relationship: WorkflowWatchRelationship
+    let updatedAt: Date
+
+    var key: String {
+        "\(repository)#\(number)"
+    }
+}
+
+enum WorkflowWatchCandidateSelectionPolicy {
+    static func select(_ candidates: [WorkflowWatchCandidate], limit: Int) -> [WorkflowWatchCandidate] {
+        var byKey = [String: WorkflowWatchCandidate]()
+
+        for candidate in candidates {
+            guard let existing = byKey[candidate.key] else {
+                byKey[candidate.key] = candidate
+                continue
+            }
+
+            if shouldReplace(existing: existing, with: candidate) {
+                byKey[candidate.key] = candidate
+            }
+        }
+
+        return byKey.values
+            .sorted(by: sort(lhs:rhs:))
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    private static func shouldReplace(
+        existing: WorkflowWatchCandidate,
+        with candidate: WorkflowWatchCandidate
+    ) -> Bool {
+        if existing.relationship.priority != candidate.relationship.priority {
+            return existing.relationship.priority < candidate.relationship.priority
+        }
+
+        if existing.updatedAt != candidate.updatedAt {
+            return existing.updatedAt < candidate.updatedAt
+        }
+
+        return existing.number < candidate.number
+    }
+
+    private static func sort(lhs: WorkflowWatchCandidate, rhs: WorkflowWatchCandidate) -> Bool {
+        if lhs.relationship.priority != rhs.relationship.priority {
+            return lhs.relationship.priority > rhs.relationship.priority
+        }
+
+        if lhs.updatedAt != rhs.updatedAt {
+            return lhs.updatedAt > rhs.updatedAt
+        }
+
+        return lhs.number > rhs.number
+    }
 }
 
 private struct TimelineContext: Hashable, Sendable {
@@ -5357,6 +5617,7 @@ private struct WorkflowRun: Decodable {
     let updatedAt: Date?
     let actor: GitHubUser?
     let triggeringActor: GitHubUser?
+    var requiresApproval: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -5371,6 +5632,14 @@ private struct WorkflowRun: Decodable {
         case updatedAt = "updated_at"
         case actor
         case triggeringActor = "triggering_actor"
+    }
+}
+
+private struct WorkflowPendingDeployment: Decodable {
+    let currentUserCanApprove: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case currentUserCanApprove = "current_user_can_approve"
     }
 }
 

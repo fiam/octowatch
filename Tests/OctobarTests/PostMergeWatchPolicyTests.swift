@@ -208,6 +208,7 @@ final class PostMergeWatchPolicyTests: XCTestCase {
             event: "push",
             status: status,
             conclusion: conclusion,
+            requiresApproval: false,
             createdAt: createdAt,
             actor: nil
         )

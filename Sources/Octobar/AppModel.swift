@@ -29,6 +29,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var notifyOnSelfTriggeredUpdates = false
     @Published private(set) var pullRequestWatchRevision = 0
     @Published private(set) var showsDebugRateLimitDetails = false
+    @Published private(set) var needsActionConfiguration: NeedsActionConfiguration = .default
+    @Published private(set) var needsActionItems: [AttentionItem] = []
 
     private let readStateStoreKey = "attention-subject-read-state-v2"
     private let ignoredSubjectStoreKey = "ignored-attention-subjects-v2"
@@ -37,6 +39,8 @@ final class AppModel: ObservableObject {
     private let autoMarkReadStoreKey = "auto-mark-read-setting-v1"
     private let notifyOnSelfTriggeredUpdatesStoreKey = "notify-on-self-triggered-updates-v1"
     private let debugRateLimitDetailsStoreKey = "debug-rate-limit-details-v1"
+    private let needsActionConfigurationStoreKey = "needs-action-configuration-v2"
+    private let legacyNeedsActionConfigurationStoreKey = "needs-action-configuration-v1"
     private let notificationScanStateStoreKey = "notification-scan-state-v1"
     private let teamMembershipStoreKey = "team-membership-cache-v1"
     private let postMergeWatchStoreKey = "post-merge-watches-v1"
@@ -95,6 +99,11 @@ final class AppModel: ObservableObject {
         showsDebugRateLimitDetails = Self.loadBooleanSetting(
             from: UserDefaults.standard,
             key: debugRateLimitDetailsStoreKey
+        )
+        needsActionConfiguration = Self.loadNeedsActionConfiguration(
+            from: UserDefaults.standard,
+            key: needsActionConfigurationStoreKey,
+            legacyKey: legacyNeedsActionConfigurationStoreKey
         )
         notificationScanState = Self.loadNotificationScanState(
             from: UserDefaults.standard,
@@ -227,6 +236,64 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(value, forKey: notifyOnSelfTriggeredUpdatesStoreKey)
     }
 
+    func setNeedsActionRuleEnabled(_ ruleID: UUID, isEnabled: Bool) {
+        guard let existingRule = needsActionConfiguration.rules.first(where: { $0.id == ruleID }) else {
+            return
+        }
+
+        var updatedRule = existingRule
+        updatedRule.isEnabled = isEnabled
+        let updatedConfiguration = needsActionConfiguration.replacing(updatedRule)
+        guard updatedConfiguration != needsActionConfiguration else {
+            return
+        }
+
+        needsActionConfiguration = updatedConfiguration
+        refreshNeedsActionItems()
+        persistNeedsActionConfiguration()
+    }
+
+    @discardableResult
+    func saveNeedsActionRule(_ rule: NeedsActionRuleDefinition) -> NeedsActionRuleDefinition {
+        let normalizedRule = rule.normalized
+        let updatedConfiguration = needsActionConfiguration.replacing(normalizedRule)
+        needsActionConfiguration = updatedConfiguration
+        refreshNeedsActionItems()
+        persistNeedsActionConfiguration()
+        return normalizedRule
+    }
+
+    func duplicateNeedsActionRule(_ ruleID: UUID) {
+        guard let existingRule = needsActionConfiguration.rules.first(where: { $0.id == ruleID }) else {
+            return
+        }
+
+        var duplicatedRule = existingRule
+        duplicatedRule.id = UUID()
+        _ = saveNeedsActionRule(duplicatedRule)
+    }
+
+    func deleteNeedsActionRule(_ ruleID: UUID) {
+        let updatedConfiguration = needsActionConfiguration.removingRule(id: ruleID)
+        guard updatedConfiguration != needsActionConfiguration else {
+            return
+        }
+
+        needsActionConfiguration = updatedConfiguration
+        refreshNeedsActionItems()
+        persistNeedsActionConfiguration()
+    }
+
+    func resetNeedsActionRules() {
+        guard needsActionConfiguration != .default else {
+            return
+        }
+
+        needsActionConfiguration = .default
+        refreshNeedsActionItems()
+        persistNeedsActionConfiguration()
+    }
+
     func rateLimitBucketSummary(
         for rateLimit: GitHubRateLimit,
         relativeTo referenceDate: Date
@@ -289,6 +356,7 @@ final class AppModel: ObservableObject {
         usingGitHubCLIToken = false
         latestSnapshotAttentionItems = []
         attentionItems = []
+        needsActionItems = []
         userLogin = nil
         lastUpdated = nil
         lastError = nil
@@ -298,6 +366,7 @@ final class AppModel: ObservableObject {
         teamMembershipCache = .default
         pullRequestFocusCache = [:]
         suppressedTransitionNotificationKeys = []
+        isResolvingInitialContent = false
         clearIgnoreUndoState()
         notifier.removeSubjectNotifications(subjectKeys: existingSubjectKeys)
         UserDefaults.standard.removeObject(forKey: notificationScanStateStoreKey)
@@ -742,6 +811,7 @@ final class AppModel: ObservableObject {
             clearRateLimitState()
             pullRequestFocusCache = [:]
             suppressedTransitionNotificationKeys = []
+            isResolvingInitialContent = false
 
             if previousLogin?.caseInsensitiveCompare(validatedLogin) != .orderedSame {
                 teamMembershipCache = .default
@@ -1030,6 +1100,16 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func persistNeedsActionConfiguration() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        if let data = try? encoder.encode(needsActionConfiguration.normalized) {
+            UserDefaults.standard.set(data, forKey: needsActionConfigurationStoreKey)
+            UserDefaults.standard.removeObject(forKey: legacyNeedsActionConfigurationStoreKey)
+        }
+    }
+
     private func persistNotificationScanState() {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -1109,6 +1189,7 @@ final class AppModel: ObservableObject {
             key: attentionUpdateHistoryStoreKey
         )
         attentionItems = projection.items.map(applyingLocalReadState)
+        refreshNeedsActionItems()
     }
 
     private func applyPullRequestFocusSubjectRefresh(_ refresh: AttentionSubjectRefresh) {
@@ -1178,6 +1259,13 @@ final class AppModel: ObservableObject {
         ignoreUndoDismissTask?.cancel()
         ignoreUndoDismissTask = nil
         ignoreUndoState = nil
+    }
+
+    private func refreshNeedsActionItems() {
+        needsActionItems = NeedsActionPolicy.matchingItems(
+            in: attentionItems,
+            configuration: needsActionConfiguration
+        )
     }
 
     private static func loadReadState(
@@ -1283,6 +1371,8 @@ final class AppModel: ObservableObject {
                 .reviewedPullRequest,
                 .commentedPullRequest,
                 .readyToMerge,
+                .pullRequestMergeConflicts,
+                .pullRequestFailedChecks,
                 .assignedIssue,
                 .authoredIssue,
                 .commentedIssue:
@@ -1356,6 +1446,27 @@ final class AppModel: ObservableObject {
         key: String
     ) -> AutoMarkReadSetting {
         AutoMarkReadSetting.normalized(rawValue: defaults.object(forKey: key) as? Int ?? 3)
+    }
+
+    private static func loadNeedsActionConfiguration(
+        from defaults: UserDefaults,
+        key: String,
+        legacyKey: String
+    ) -> NeedsActionConfiguration {
+        if let data = defaults.data(forKey: key),
+            let configuration = try? JSONDecoder().decode(NeedsActionConfiguration.self, from: data) {
+            return configuration.normalized
+        }
+
+        if let data = defaults.data(forKey: legacyKey),
+            let legacyConfiguration = try? JSONDecoder().decode(
+                LegacyNeedsActionConfiguration.self,
+                from: data
+            ) {
+            return NeedsActionConfiguration.migrated(from: legacyConfiguration)
+        }
+
+        return .default
     }
 
     private static func loadNotificationScanState(
@@ -1452,6 +1563,10 @@ final class AppModel: ObservableObject {
         userLogin = fixture.login
         latestSnapshotAttentionItems = fixture.attentionItems
         attentionItems = fixture.attentionItems
+        needsActionItems = NeedsActionPolicy.matchingItems(
+            in: fixture.attentionItems,
+            configuration: needsActionConfiguration
+        )
         lastUpdated = fixture.lastUpdated
         lastError = nil
         isResolvingInitialContent = false

@@ -2,68 +2,83 @@ import AppKit
 import SwiftUI
 
 struct AttentionWindowView: View {
-    private enum StreamFilter: String, CaseIterable, Identifiable {
+    private enum InboxScope: String, CaseIterable, Identifiable {
         case all
-        case notifications
         case pullRequests
         case issues
+        case workflows
+        case notifications
 
         var id: String { rawValue }
 
-        var title: String {
-            switch self {
-            case .all:
-                return "All"
-            case .notifications:
-                return AttentionStream.notifications.title
-            case .pullRequests:
-                return AttentionStream.pullRequests.title
-            case .issues:
-                return AttentionStream.issues.title
-            }
-        }
-
-        var iconName: String {
-            switch self {
-            case .all:
-                return "square.stack.3d.up"
-            case .notifications:
-                return AttentionStream.notifications.iconName
-            case .pullRequests:
-                return AttentionStream.pullRequests.iconName
-            case .issues:
-                return AttentionStream.issues.iconName
-            }
-        }
-
-        var stream: AttentionStream? {
+        var section: AttentionSection? {
             switch self {
             case .all:
                 return nil
-            case .notifications:
-                return .notifications
             case .pullRequests:
                 return .pullRequests
             case .issues:
                 return .issues
+            case .workflows:
+                return .workflows
+            case .notifications:
+                return .notifications
             }
+        }
+
+        var title: String {
+            if let section {
+                return section.title
+            }
+
+            return "All"
+        }
+
+        var iconName: String {
+            if let section {
+                return section.iconName
+            }
+
+            return "square.stack.3d.up"
+        }
+
+        var itemNoun: String {
+            if let section {
+                return section.itemNoun
+            }
+
+            return "item"
+        }
+
+        var emptyTitle: String {
+            if let section {
+                return section.emptyTitle
+            }
+
+            return "Inbox is clear"
+        }
+
+        var emptyUnreadTitle: String {
+            if let section {
+                return section.emptyUnreadTitle
+            }
+
+            return "No unread items"
+        }
+
+        var focusedSectionTitle: String {
+            if let section {
+                return section.focusedSectionTitle
+            }
+
+            return "All Items"
         }
     }
 
-    private enum ListFilter: String, CaseIterable, Identifiable {
-        case all
-        case unread
-
-        var id: String { rawValue }
-
-        var title: String {
-            switch self {
-            case .all:
-                return "All"
-            case .unread:
-                return "Unread"
-            }
-        }
+    private struct SidebarSectionDescriptor: Identifiable {
+        let id: String
+        let title: String
+        let items: [AttentionItem]
     }
 
     @ObservedObject var model: AppModel
@@ -71,9 +86,10 @@ struct AttentionWindowView: View {
     @Environment(\.openURL) private var openURL
 
     @State private var selectedItemIDs = Set<AttentionItem.ID>()
-    @State private var streamFilter: StreamFilter = .all
-    @State private var listFilter: ListFilter = .all
+    @State private var inboxScope: InboxScope = .all
+    @State private var showsUnreadOnly = false
     @State private var autoMarkReadTask: Task<Void, Never>?
+    @State private var autoSelectionTask: Task<Void, Never>?
     @State private var pullRequestFocusState: PullRequestFocusLoadState = .idle
     @State private var reviewMergeState: PullRequestReviewMergeState = .idle
 
@@ -84,7 +100,7 @@ struct AttentionWindowView: View {
     }()
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        TimelineView(.periodic(from: .now, by: 15)) { context in
             ZStack(alignment: .bottomTrailing) {
                 if showsInitialLoadingState {
                     loadingView
@@ -118,15 +134,16 @@ struct AttentionWindowView: View {
         }
         .onDisappear {
             cancelAutoMarkReadTask()
+            cancelAutoSelectionTask()
             model.setWatchedPullRequest(nil)
         }
         .onChange(of: model.attentionItems) { _, _ in
             syncSelection()
         }
-        .onChange(of: streamFilter) { _, _ in
+        .onChange(of: showsUnreadOnly) { _, _ in
             syncSelection()
         }
-        .onChange(of: listFilter) { _, _ in
+        .onChange(of: inboxScope) { _, _ in
             syncSelection()
         }
         .onChange(of: model.autoMarkReadSetting) { _, _ in
@@ -207,15 +224,26 @@ struct AttentionWindowView: View {
     }
 
     private var showsInitialLoadingState: Bool {
-        model.isResolvingInitialContent
+        (model.isResolvingInitialContent && !model.hasToken) ||
+            (
+                model.hasToken &&
+                    model.lastUpdated == nil &&
+                    model.isRefreshing &&
+                    displayedItems.isEmpty &&
+                    model.lastError == nil
+            )
     }
 
-    private var streamItems: [AttentionItem] {
-        guard let stream = streamFilter.stream else {
-            return model.combinedAttentionItems
+    private var scopedItems: [AttentionItem] {
+        model.combinedAttentionItems.filter(matchesScope)
+    }
+
+    private var visibleItems: [AttentionItem] {
+        guard showsUnreadOnly else {
+            return scopedItems
         }
 
-        return model.attentionItems.filter { $0.stream == stream }
+        return scopedItems.filter(\.isUnread)
     }
 
     private var loadingView: some View {
@@ -236,12 +264,76 @@ struct AttentionWindowView: View {
     }
 
     private var displayedItems: [AttentionItem] {
-        switch listFilter {
-        case .all:
-            return streamItems
-        case .unread:
-            return streamItems.filter(\.isUnread)
+        displayedSections.flatMap(\.items)
+    }
+
+    private var needsActionSubjectKeys: Set<String> {
+        Set(model.needsActionItems.map(\.subjectKey))
+    }
+
+    private var scopedNeedsActionItems: [AttentionItem] {
+        model.needsActionItems.filter(matchesScope)
+    }
+
+    private var needsActionItemsInCurrentStream: [AttentionItem] {
+        visibleItems.filter { needsActionSubjectKeys.contains($0.subjectKey) }
+    }
+
+    private var displayedNeedsActionItems: [AttentionItem] {
+        needsActionItemsInCurrentStream
+    }
+
+    private var displayedOtherItems: [AttentionItem] {
+        visibleItems.filter { !needsActionSubjectKeys.contains($0.subjectKey) }
+    }
+
+    private var displayedSections: [SidebarSectionDescriptor] {
+        var sections = [SidebarSectionDescriptor]()
+
+        if !displayedNeedsActionItems.isEmpty {
+            sections.append(
+                SidebarSectionDescriptor(
+                    id: "needs-action",
+                    title: "Needs Action",
+                    items: displayedNeedsActionItems
+                )
+            )
         }
+
+        switch inboxScope {
+        case .all:
+            let sectionOrder: [AttentionSection] = [.pullRequests, .issues, .workflows, .notifications]
+            for section in sectionOrder {
+                let items = displayedOtherItems.filter {
+                    AttentionSectionPolicy.section(for: $0) == section
+                }
+                guard !items.isEmpty else {
+                    continue
+                }
+
+                sections.append(
+                    SidebarSectionDescriptor(
+                        id: section.rawValue,
+                        title: section.title,
+                        items: items
+                    )
+                )
+            }
+        case .pullRequests, .issues, .workflows, .notifications:
+            guard !displayedOtherItems.isEmpty else {
+                return sections
+            }
+
+            sections.append(
+                SidebarSectionDescriptor(
+                    id: inboxScope.rawValue,
+                    title: inboxScope.focusedSectionTitle,
+                    items: displayedOtherItems
+                )
+            )
+        }
+
+        return sections
     }
 
     private var selectionActionItems: [AttentionItem] {
@@ -304,20 +396,17 @@ struct AttentionWindowView: View {
                 } else if displayedItems.isEmpty {
                     emptyStateView
                 } else {
-                    List(displayedItems, selection: selectionBinding) { item in
-                        AttentionSidebarRow(
-                            item: item,
-                            viewerLogin: model.viewerLogin,
-                            relativeTimestamp: relativeFormatter.localizedString(
-                                for: item.timestamp,
-                            relativeTo: referenceDate
-                            )
-                        )
-                        .contentShape(Rectangle())
-                        .contextMenu {
-                            selectionContextMenu(for: contextMenuItems(for: item))
+                    List(selection: selectionBinding) {
+                        ForEach(displayedSections) { section in
+                            Section {
+                                sidebarRows(section.items, relativeTo: referenceDate)
+                            } header: {
+                                sidebarSectionHeader(
+                                    title: section.title,
+                                    count: section.items.count
+                                )
+                            }
                         }
-                        .tag(item.id)
                     }
                     .accessibilityIdentifier("inbox-list")
                     .listStyle(.sidebar)
@@ -328,135 +417,116 @@ struct AttentionWindowView: View {
         .navigationSplitViewColumnWidth(min: 320, ideal: 360)
     }
 
-    private func sidebarHeader(relativeTo referenceDate: Date) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 12) {
-                Text("Inbox")
-                    .font(.title2.weight(.semibold))
+    private func sidebarHeader(relativeTo _: Date) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 12) {
+                    Text("Inbox")
+                        .font(.title2.weight(.semibold))
 
-                Spacer()
+                    Spacer()
 
-                unreadFilterButton
+                    Button(action: model.refreshNow) {
+                        ZStack {
+                            Image(systemName: "arrow.clockwise")
+                                .opacity(model.isRefreshing ? 0 : 1)
 
-                Button(action: model.refreshNow) {
-                    ZStack {
-                        Image(systemName: "arrow.clockwise")
-                            .opacity(model.isRefreshing ? 0 : 1)
+                            if model.isRefreshing && !showsInitialLoadingState {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                        }
+                        .frame(width: 18, height: 18)
+                    }
+                    .disabled(model.isRefreshing)
+                    .buttonStyle(.borderless)
+                    .appInteractiveHover(backgroundOpacity: 0.08, cornerRadius: 8)
+                    .help("Refresh")
+                }
 
-                        if model.isRefreshing && !showsInitialLoadingState {
-                            ProgressView()
-                                .controlSize(.small)
+                scopeControls
+
+                Text(summaryLine)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Text(model.relativeLastUpdated(relativeTo: context.date))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if model.showsDebugRateLimitDetails, !model.rateLimitBuckets.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Diagnostics")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+
+                        if let header = model.rateLimitDebugHeader(relativeTo: context.date) {
+                            Text(header)
+                                .font(.caption2)
+                                .foregroundStyle(model.isRateLimitWarning ? .orange : .secondary)
+                                .lineLimit(2)
+                        }
+
+                        ForEach(model.rateLimitBuckets, id: \.resourceKey) { bucket in
+                            Text(model.rateLimitBucketSummary(for: bucket, relativeTo: context.date))
+                                .font(.caption2)
+                                .monospacedDigit()
+                                .foregroundStyle(bucket.isLow || bucket.isExhausted ? .orange : .secondary)
+                                .lineLimit(2)
                         }
                     }
-                    .frame(width: 18, height: 18)
                 }
-                .disabled(model.isRefreshing)
-                .buttonStyle(.borderless)
-                .appInteractiveHover(backgroundOpacity: 0.08, cornerRadius: 8)
-                .help("Refresh")
-            }
 
-            streamFilterRow
-
-            Text("\(displayedItems.count) items · \(streamItems.filter(\.isUnread).count) unread")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            Text(model.relativeLastUpdated(relativeTo: referenceDate))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if model.showsDebugRateLimitDetails, !model.rateLimitBuckets.isEmpty {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Diagnostics")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    if let header = model.rateLimitDebugHeader(relativeTo: referenceDate) {
-                        Text(header)
-                            .font(.caption2)
-                            .foregroundStyle(model.isRateLimitWarning ? .orange : .secondary)
-                            .lineLimit(2)
-                    }
-
-                    ForEach(model.rateLimitBuckets, id: \.resourceKey) { bucket in
-                        Text(model.rateLimitBucketSummary(for: bucket, relativeTo: referenceDate))
-                            .font(.caption2)
-                            .monospacedDigit()
-                            .foregroundStyle(bucket.isLow || bucket.isExhausted ? .orange : .secondary)
-                            .lineLimit(2)
-                    }
+                if let lastError = model.lastError {
+                    Text(lastError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
                 }
             }
-
-            if let lastError = model.lastError {
-                Text(lastError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .lineLimit(2)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+            .background(.bar)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
-        .background(.bar)
     }
 
-    private var unreadFilterButton: some View {
-        Button {
-            listFilter = listFilter == .unread ? .all : .unread
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: listFilter == .unread ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-                    .imageScale(.medium)
-                Text("Unread")
-                    .font(.subheadline.weight(.medium))
+    private var scopeControls: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 10) {
+                scopeFilterRow
+                unreadFilterButton
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .foregroundStyle(listFilter == .unread ? .white : .primary)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(listFilter == .unread ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
-            )
-            .overlay(
-                Capsule(style: .continuous)
-                    .stroke(
-                        listFilter == .unread
-                            ? Color.accentColor.opacity(0.85)
-                            : Color(nsColor: .separatorColor).opacity(0.45),
-                        lineWidth: 1
-                    )
-            )
+
+            VStack(alignment: .leading, spacing: 10) {
+                scopeFilterRow
+                unreadFilterButton
+            }
         }
-        .buttonStyle(.plain)
-        .appInteractiveHover(backgroundOpacity: listFilter == .unread ? 0 : 0.08, cornerRadius: 999)
-        .help(listFilter == .unread ? "Show all items" : "Show unread items")
-        .accessibilityLabel(listFilter == .unread ? "Showing unread items" : "Showing all items")
     }
 
-    private var streamFilterRow: some View {
+    private var scopeFilterRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(StreamFilter.allCases) { filter in
+                ForEach(InboxScope.allCases) { scope in
                     Button {
-                        streamFilter = filter
+                        inboxScope = scope
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: filter.iconName)
+                            Image(systemName: scope.iconName)
                                 .imageScale(.small)
 
-                            Text(filter.title)
+                            Text(scope.title)
                                 .font(.subheadline.weight(.medium))
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
-                        .foregroundStyle(streamFilter == filter ? .white : .primary)
+                        .foregroundStyle(inboxScope == scope ? .white : .primary)
                         .background(
                             Capsule(style: .continuous)
                                 .fill(
-                                    streamFilter == filter
+                                    inboxScope == scope
                                         ? Color.accentColor
                                         : Color(nsColor: .controlBackgroundColor)
                                 )
@@ -464,7 +534,7 @@ struct AttentionWindowView: View {
                         .overlay(
                             Capsule(style: .continuous)
                                 .stroke(
-                                    streamFilter == filter
+                                    inboxScope == scope
                                         ? Color.accentColor.opacity(0.85)
                                         : Color(nsColor: .separatorColor).opacity(0.45),
                                     lineWidth: 1
@@ -473,14 +543,48 @@ struct AttentionWindowView: View {
                     }
                     .buttonStyle(.plain)
                     .appInteractiveHover(
-                        backgroundOpacity: streamFilter == filter ? 0 : 0.08,
+                        backgroundOpacity: inboxScope == scope ? 0 : 0.08,
                         cornerRadius: 999
                     )
-                    .accessibilityLabel("Show \(filter.title)")
+                    .accessibilityLabel("Show \(scope.title)")
                 }
             }
             .padding(.vertical, 1)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var unreadFilterButton: some View {
+        Button {
+            showsUnreadOnly.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: showsUnreadOnly ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                    .imageScale(.medium)
+                Text("Unread")
+                    .font(.subheadline.weight(.medium))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .foregroundStyle(showsUnreadOnly ? .white : .primary)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(showsUnreadOnly ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(
+                        showsUnreadOnly
+                            ? Color.accentColor.opacity(0.85)
+                            : Color(nsColor: .separatorColor).opacity(0.45),
+                        lineWidth: 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .appInteractiveHover(backgroundOpacity: showsUnreadOnly ? 0 : 0.08, cornerRadius: 999)
+        .help(showsUnreadOnly ? "Show all items" : "Show unread items")
+        .accessibilityLabel(showsUnreadOnly ? "Showing unread items" : "Showing all items")
     }
 
     private func detailPane(relativeTo referenceDate: Date) -> some View {
@@ -540,20 +644,105 @@ struct AttentionWindowView: View {
     }
 
     private var emptyStateView: some View {
-        let scopeName = streamFilter == .all ? "items" : streamFilter.title.lowercased()
-        let title = listFilter == .unread
-            ? "No unread \(scopeName)"
-            : streamFilter == .all ? "Inbox is clear" : "No \(scopeName)"
-        let description = listFilter == .unread
-            ? "Everything in \(streamFilter == .all ? "the inbox" : "this stream") has been marked read."
-            : streamFilter == .all
-                ? "Octowatch is watching GitHub, but there is nothing actionable right now."
-                : "Octowatch is watching GitHub, but there is nothing actionable in this stream right now."
+        let title = showsUnreadOnly ? inboxScope.emptyUnreadTitle : inboxScope.emptyTitle
+        let description: String
+
+        if showsUnreadOnly {
+            description = switch inboxScope {
+            case .all:
+                "Everything currently in the inbox has been marked read."
+            case .pullRequests:
+                "Everything in the pull request view has been marked read."
+            case .issues:
+                "Everything in the issue view has been marked read."
+            case .workflows:
+                "Everything in the workflow view has been marked read."
+            case .notifications:
+                "Everything in the notifications view has been marked read."
+            }
+        } else {
+            description = switch inboxScope {
+            case .all:
+                "Octowatch is watching GitHub, but there is nothing actionable right now."
+            case .pullRequests:
+                "There are no pull request items matching the current inbox view."
+            case .issues:
+                "There are no issue items matching the current inbox view."
+            case .workflows:
+                "There are no workflow items matching the current inbox view."
+            case .notifications:
+                "There are no GitHub notifications matching the current inbox view."
+            }
+        }
 
         return ContentUnavailableView {
             Label(title, systemImage: "checkmark.circle")
         } description: {
             Text(description)
+        }
+    }
+
+    private var summaryLine: String {
+        let totalItemCount = scopedItems.count
+        let unreadCount = scopedItems.filter(\.isUnread).count
+        let needsActionCount = scopedNeedsActionItems.count
+        let displayedCount = displayedItems.count
+        let displayedNeedsActionCount = displayedNeedsActionItems.count
+        let itemLabel = itemCountLabel(for: totalItemCount)
+        let unreadLabel = unreadCount == 1
+            ? "1 unread"
+            : "\(unreadCount) unread"
+
+        if showsUnreadOnly {
+            let unreadSummary = unreadCountLabel(for: displayedCount)
+
+            guard displayedNeedsActionCount > 0 else {
+                return unreadSummary
+            }
+
+            let actionSummary = displayedNeedsActionCount == 1
+                ? "1 action item"
+                : "\(displayedNeedsActionCount) action items"
+            return "\(unreadSummary) · \(actionSummary)"
+        }
+
+        guard needsActionCount > 0 else {
+            return "\(itemLabel) · \(unreadLabel)"
+        }
+
+        let actionSummary = needsActionCount == 1 ? "1 action item" : "\(needsActionCount) action items"
+        return "\(actionSummary) · \(itemLabel) · \(unreadLabel)"
+    }
+
+    private func sidebarSectionHeader(title: String, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+
+            Text("\(count)")
+                .foregroundStyle(.tertiary)
+        }
+        .font(.caption.weight(.semibold))
+    }
+
+    @ViewBuilder
+    private func sidebarRows(
+        _ items: [AttentionItem],
+        relativeTo referenceDate: Date
+    ) -> some View {
+        ForEach(items) { item in
+            AttentionSidebarRow(
+                item: item,
+                viewerLogin: model.viewerLogin,
+                relativeTimestamp: relativeFormatter.localizedString(
+                    for: item.timestamp,
+                    relativeTo: referenceDate
+                )
+            )
+            .contentShape(Rectangle())
+            .contextMenu {
+                selectionContextMenu(for: contextMenuItems(for: item))
+            }
+            .tag(item.id)
         }
     }
 
@@ -566,6 +755,8 @@ struct AttentionWindowView: View {
     }
 
     private func syncSelection() {
+        cancelAutoSelectionTask()
+
         let normalizedSelection = normalizeSelection(selectedItemIDs)
         let selectionChanged = selectedItemIDs != normalizedSelection
         selectedItemIDs = normalizedSelection
@@ -578,6 +769,10 @@ struct AttentionWindowView: View {
         }
 
         updateWatchedPullRequestSelection()
+
+        if selectedItemIDs.isEmpty, let firstItemID = displayedItems.first?.id {
+            scheduleAutoSelection(firstItemID)
+        }
     }
 
     private func updateWatchedPullRequestSelection() {
@@ -586,17 +781,44 @@ struct AttentionWindowView: View {
 
     private func normalizeSelection(_ selection: Set<AttentionItem.ID>) -> Set<AttentionItem.ID> {
         let displayedItemIDs = Set(displayedItems.map(\.id))
-        let normalizedSelection = selection.intersection(displayedItemIDs)
+        return selection.intersection(displayedItemIDs)
+    }
 
-        if !normalizedSelection.isEmpty || displayedItems.isEmpty {
-            return normalizedSelection
+    private func matchesScope(_ item: AttentionItem) -> Bool {
+        guard let section = inboxScope.section else {
+            return true
         }
 
-        guard let firstItemID = displayedItems.first?.id else {
-            return []
-        }
+        return AttentionSectionPolicy.section(for: item) == section
+    }
 
-        return [firstItemID]
+    private func itemCountLabel(for count: Int) -> String {
+        let noun = count == 1 ? inboxScope.itemNoun : "\(inboxScope.itemNoun)s"
+        return "\(count) \(noun)"
+    }
+
+    private func unreadCountLabel(for count: Int) -> String {
+        let noun = count == 1 ? inboxScope.itemNoun : "\(inboxScope.itemNoun)s"
+        return "Showing \(count) unread \(noun)"
+    }
+
+    private func scheduleAutoSelection(_ itemID: AttentionItem.ID) {
+        autoSelectionTask = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled else {
+                return
+            }
+
+            guard selectedItemIDs.isEmpty, displayedItems.contains(where: { $0.id == itemID }) else {
+                return
+            }
+
+            selectedItemIDs = [itemID]
+            pullRequestFocusState = .idle
+            reviewMergeState = .idle
+            armAutoMarkReadForCurrentSelection()
+            updateWatchedPullRequestSelection()
+        }
     }
 
     private func openRelatedURL(_ url: URL, for item: AttentionItem) {
@@ -738,6 +960,11 @@ struct AttentionWindowView: View {
     private func cancelAutoMarkReadTask() {
         autoMarkReadTask?.cancel()
         autoMarkReadTask = nil
+    }
+
+    private func cancelAutoSelectionTask() {
+        autoSelectionTask?.cancel()
+        autoSelectionTask = nil
     }
 
     private func loadPullRequestFocusForSelection(force: Bool = false) async {
@@ -982,6 +1209,10 @@ private struct AttentionDetailView: View {
             return "Commented on by you"
         case .readyToMerge:
             return "Your PR was approved"
+        case .pullRequestMergeConflicts:
+            return "Your PR has conflicts"
+        case .pullRequestFailedChecks:
+            return "Your PR has failed checks"
         case .assignedIssue:
             return "Assigned to you"
         default:
@@ -2746,6 +2977,10 @@ private extension AttentionItemType {
             return .cyan
         case .readyToMerge:
             return .green
+        case .pullRequestMergeConflicts:
+            return .orange
+        case .pullRequestFailedChecks:
+            return .red
         case .assignedIssue:
             return .orange
         case .authoredIssue:
@@ -2797,6 +3032,10 @@ private extension AttentionItemType {
             return .cyan.opacity(0.16)
         case .readyToMerge:
             return .green.opacity(0.16)
+        case .pullRequestMergeConflicts:
+            return .orange.opacity(0.16)
+        case .pullRequestFailedChecks:
+            return .red.opacity(0.14)
         case .assignedIssue:
             return .orange.opacity(0.16)
         case .authoredIssue:

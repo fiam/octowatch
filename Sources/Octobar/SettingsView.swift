@@ -10,6 +10,8 @@ struct SettingsView: View {
     @Environment(\.openWindow) private var openWindow
     @FocusState private var tokenFieldFocused: Bool
     @State private var selectedTokenSource: TokenSource = .personalAccessToken
+    @State private var editingNeedsActionRule: NeedsActionRuleDefinition?
+    @State private var showsResetNeedsActionRulesConfirmation = false
 
     var body: some View {
         ZStack {
@@ -38,6 +40,31 @@ struct SettingsView: View {
             if usingCLI {
                 selectedTokenSource = .githubCLI
             }
+        }
+        .sheet(item: $editingNeedsActionRule) { rule in
+            NeedsActionRuleEditorSheet(
+                initialRule: rule,
+                onSave: { updatedRule in
+                    editingNeedsActionRule = nil
+                    model.saveNeedsActionRule(updatedRule)
+                },
+                onCancel: {
+                    editingNeedsActionRule = nil
+                }
+            )
+        }
+        .confirmationDialog(
+            "Reset Needs Action Rules?",
+            isPresented: $showsResetNeedsActionRulesConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Reset Defaults", role: .destructive) {
+                model.resetNeedsActionRules()
+            }
+
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This restores the default rule list and removes your custom edits.")
         }
     }
 
@@ -221,7 +248,7 @@ struct SettingsView: View {
         settingsCard {
             cardIntro(
                 title: "Inbox",
-                message: "Choose how the inbox handles read state and self-triggered notifications."
+                message: "Choose how the inbox handles read state, self-triggered notifications, and the Needs Action section."
             ) {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(.blue.gradient)
@@ -272,6 +299,36 @@ struct SettingsView: View {
                 )
                 .labelsHidden()
                 .toggleStyle(.switch)
+            }
+
+            Divider()
+                .padding(.leading, 20)
+
+            settingsRow(
+                title: "Needs Action Rules",
+                subtitle: "Build the rules that decide what appears in the Needs Action section."
+            ) {
+                HStack(spacing: 10) {
+                    Button("Reset Defaults") {
+                        showsResetNeedsActionRulesConfirmation = true
+                    }
+                    .appInteractiveHover()
+
+                    Button("Add Rule") {
+                        editingNeedsActionRule = NeedsActionRuleDefinition.newCustom()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .appInteractiveHover()
+                }
+            }
+
+            ForEach(Array(model.needsActionConfiguration.rules.enumerated()), id: \.element.id) { index, rule in
+                if index > 0 {
+                    Divider()
+                        .padding(.leading, 20)
+                }
+
+                needsActionRuleRow(rule)
             }
         }
     }
@@ -355,6 +412,49 @@ struct SettingsView: View {
         }
 
         return "Open a separate window to restore hidden pull requests and issues without crowding settings."
+    }
+
+    private func needsActionRuleRow(_ rule: NeedsActionRuleDefinition) -> some View {
+        settingsRow(
+            title: rule.summary,
+            subtitle: ""
+        ) {
+            HStack(spacing: 10) {
+                Toggle(
+                    rule.summary,
+                    isOn: Binding(
+                        get: {
+                            model.needsActionConfiguration.rules
+                                .first(where: { $0.id == rule.id })?
+                                .isEnabled ?? rule.isEnabled
+                        },
+                        set: { model.setNeedsActionRuleEnabled(rule.id, isEnabled: $0) }
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
+
+                Button("Edit") {
+                    editingNeedsActionRule = rule
+                }
+                .appInteractiveHover()
+
+                Menu {
+                    Button("Duplicate") {
+                        model.duplicateNeedsActionRule(rule.id)
+                    }
+
+                    Button("Delete", role: .destructive) {
+                        model.deleteNeedsActionRule(rule.id)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 16, weight: .medium))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+        }
     }
 
     private var tokenSourceSelection: Binding<TokenSource> {
@@ -458,10 +558,12 @@ struct SettingsView: View {
                 Text(title)
                     .font(.headline)
 
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer(minLength: 24)
@@ -470,6 +572,331 @@ struct SettingsView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
+    }
+}
+
+private struct NeedsActionRuleEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var draft: NeedsActionRuleDefinition
+
+    let onSave: (NeedsActionRuleDefinition) -> Void
+    let onCancel: () -> Void
+
+    init(
+        initialRule: NeedsActionRuleDefinition,
+        onSave: @escaping (NeedsActionRuleDefinition) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        _draft = State(initialValue: initialRule.normalized)
+        self.onSave = onSave
+        self.onCancel = onCancel
+    }
+
+    private func addCondition(
+        _ kind: NeedsActionConditionKind,
+        after index: Int? = nil
+    ) {
+        let newCondition = NeedsActionCondition.default(
+            for: kind,
+            itemKind: draft.itemKind
+        )
+
+        if let index {
+            draft.conditions.insert(newCondition, at: index + 1)
+        } else {
+            draft.conditions.append(newCondition)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Needs Action Rule")
+                            .font(.title2.weight(.semibold))
+
+                        Text("Build a rule for the work that should rise to the top when it needs something from you.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("Show")
+
+                            Picker("Item Type", selection: $draft.itemKind) {
+                                ForEach(NeedsActionItemKind.allCases, id: \.self) { itemKind in
+                                    Text(itemKind.pluralTitle).tag(itemKind)
+                                }
+                            }
+                            .labelsHidden()
+                            .fixedSize()
+
+                            Text("in Needs Action if all of the following conditions are met:")
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        VStack(alignment: .leading, spacing: 0) {
+                            if draft.conditions.isEmpty {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text("No conditions yet.")
+                                        .font(.body.weight(.medium))
+
+                                    Text("This rule will match every \(draft.itemKind.pluralTitle.lowercased()) item until you add a condition.")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+
+                                    Menu {
+                                        ForEach(draft.itemKind.availableConditionKinds, id: \.self) { kind in
+                                            Button(kind.title) {
+                                                addCondition(kind)
+                                            }
+                                        }
+                                    } label: {
+                                        Label("Add Condition", systemImage: "plus")
+                                    }
+                                    .fixedSize()
+                                }
+                                .padding(16)
+                            } else {
+                                ForEach(Array(draft.conditions.enumerated()), id: \.element.id) { index, _ in
+                                    NeedsActionConditionEditor(
+                                        condition: $draft.conditions[index],
+                                        itemKind: draft.itemKind,
+                                        onAddCondition: { kind in
+                                            addCondition(kind, after: index)
+                                        },
+                                        onRemove: {
+                                            draft.conditions.remove(at: index)
+                                        }
+                                    )
+
+                                    if index < draft.conditions.count - 1 {
+                                        Divider()
+                                    }
+                                }
+                            }
+                        }
+                        .background(Color(nsColor: .controlBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Shows in Needs Action:")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+
+                            Text(draft.summary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Text("Use multiple rules when you want separate scenarios to appear independently.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .padding(20)
+            }
+
+            Divider()
+
+            HStack {
+                Spacer()
+
+                Button("Cancel") {
+                    onCancel()
+                    dismiss()
+                }
+
+                Button("Save Rule") {
+                    onSave(draft.normalized)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(width: 620, height: 480)
+        .onChange(of: draft.itemKind) { _, newItemKind in
+            var updatedDraft = draft.normalized
+            updatedDraft.itemKind = newItemKind
+            updatedDraft.conditions = updatedDraft.conditions.compactMap {
+                $0.normalized(for: newItemKind)
+            }
+
+            if updatedDraft.conditions.isEmpty,
+                let defaultKind = newItemKind.availableConditionKinds.first {
+                updatedDraft.conditions = [
+                    .default(for: defaultKind, itemKind: newItemKind)
+                ]
+            }
+
+            draft = updatedDraft.normalized
+        }
+    }
+}
+
+private struct NeedsActionConditionEditor: View {
+    @Binding var condition: NeedsActionCondition
+
+    let itemKind: NeedsActionItemKind
+    let onAddCondition: (NeedsActionConditionKind) -> Void
+    let onRemove: () -> Void
+
+    private var title: String {
+        switch condition.kind {
+        case .relationship:
+            return "Relationship"
+        case .signal:
+            return "Signal"
+        case .viewerReview:
+            return "Your Review"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
+                Text(title)
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 8)
+
+                invertButton
+
+                Menu {
+                    ForEach(itemKind.availableConditionKinds, id: \.self) { kind in
+                        Button(kind.title) {
+                            onAddCondition(kind)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Add condition")
+
+                Button(role: .destructive, action: onRemove) {
+                    Image(systemName: "minus")
+                }
+                .buttonStyle(.borderless)
+                .help("Remove condition")
+            }
+
+            switch condition.kind {
+            case .relationship:
+                conditionCheckboxGrid {
+                    ForEach(itemKind.availableRelationships, id: \.self) { relationship in
+                        Toggle(
+                            relationship.title,
+                            isOn: relationshipBinding(for: relationship)
+                        )
+                        .toggleStyle(.checkbox)
+                    }
+                }
+            case .signal:
+                conditionCheckboxGrid {
+                    ForEach(itemKind.availableSignals, id: \.self) { signal in
+                        Toggle(
+                            signal.title,
+                            isOn: signalBinding(for: signal)
+                        )
+                        .toggleStyle(.checkbox)
+                    }
+                }
+            case .viewerReview:
+                Picker("Your Review", selection: $condition.viewerReviewValue) {
+                    ForEach(NeedsActionViewerReviewCondition.allCases, id: \.self) { reviewCondition in
+                        Text(reviewCondition.title).tag(reviewCondition)
+                    }
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+            }
+        }
+        .padding(16)
+    }
+
+    private var invertButton: some View {
+        Button {
+            condition.isNegated.toggle()
+        } label: {
+            Text("Invert")
+                .font(.subheadline.weight(.medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .foregroundStyle(condition.isNegated ? .white : .primary)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(
+                            condition.isNegated
+                                ? Color.accentColor
+                                : Color(nsColor: .controlBackgroundColor)
+                        )
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(
+                            condition.isNegated
+                                ? Color.accentColor.opacity(0.85)
+                                : Color(nsColor: .separatorColor).opacity(0.45),
+                            lineWidth: 1
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+        .appInteractiveHover(
+            backgroundOpacity: condition.isNegated ? 0 : 0.08,
+            cornerRadius: 999
+        )
+        .help(condition.isNegated ? "This condition is inverted" : "Invert this condition")
+    }
+
+    @ViewBuilder
+    private func conditionCheckboxGrid<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            content()
+        }
+    }
+
+    private func relationshipBinding(
+        for relationship: NeedsActionViewerRelationship
+    ) -> Binding<Bool> {
+        Binding(
+            get: { condition.relationshipValues.contains(relationship) },
+            set: { isEnabled in
+                if isEnabled {
+                    condition.relationshipValues.insert(relationship)
+                } else {
+                    condition.relationshipValues.remove(relationship)
+                }
+            }
+        )
+    }
+
+    private func signalBinding(for signal: NeedsActionSignal) -> Binding<Bool> {
+        Binding(
+            get: { condition.signalValues.contains(signal) },
+            set: { isEnabled in
+                if isEnabled {
+                    condition.signalValues.insert(signal)
+                } else {
+                    condition.signalValues.remove(signal)
+                }
+            }
+        )
     }
 }
 

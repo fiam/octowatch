@@ -7,9 +7,10 @@ likely needs your attention.
 ## What it tracks
 
 - Open pull requests assigned to you
+- Open pull requests you authored when they are ready to merge, have merge conflicts, or have failed checks
 - Recently merged pull requests you authored, reviewed, commented on, or were still assigned when they merged, kept in the pull request stream as a log
 - Actionable GitHub notifications (`review_requested`, `assign`, `mention`, `team_mention`, `ci_activity`, and similar reasons)
-- GitHub Actions workflow runs with `status=action_required` where you are the actor
+- GitHub Actions workflow runs attached to pull requests you authored, reviewed, were assigned, or merged, including waiting-for-approval and failed runs
 
 The app polls every 60 seconds and shows local macOS notifications when new actionable items appear.
 The menu bar icon uses an unread-dot indicator instead of a numeric badge.
@@ -32,6 +33,7 @@ When the same account both creates and assigns a pull request, the detail header
 Approved pull requests also show both the creator and approver in the detail header, and collapse that to "created and approved by" when the same account did both.
 For PRs you already reviewed, new commits since your review are called out near the top of the detail pane and the commit action is labeled accordingly.
 Settings also include an optional diagnostics toggle that adds per-bucket GitHub API budget details to the inbox sidebar for debugging rate-limit behavior.
+The inbox keeps a `Needs Action` section at the top, lets you scope the list to `All`, `Pull Requests`, `Issues`, `Workflows`, or `Notifications`, and keeps `Unread` as a separate filter so you can narrow the list without losing the action-first triage flow. `Notifications` now means rows whose current primary attention came from GitHub notifications, while `Workflows` groups workflow-run attention separately from direct PR and issue work. The `Needs Action` section is driven by editable rules in Settings: you can add, duplicate, remove, enable, and disable rules, choose whether each rule targets pull requests, issues, or workflows, and build each rule from inline conditions for relationships, status signals, and your review state. All conditions in a rule must match, and each condition can be excluded when you want to express the opposite case. Workflow rules are signal-based, including failed runs, approval-waiting runs, and queued or running runs. Approval-waiting workflows include GitHub runs that report `waiting` when the viewer can approve their pending deployment. Workflow watch selection now prefers the most recently updated related pull requests within each relationship bucket so recent approval-gated post-merge runs do not get crowded out by older high-numbered PRs, and merged pull requests remain eligible for workflow watching for a week so long-running post-merge approvals can still surface in `Needs Action`. Issue rules currently focus on responsibility relationships, and workflow rules can still match pull-request rows when those rows carry current workflow activity.
 
 ## Requirements
 
@@ -80,7 +82,7 @@ personal access tokens.
 ## Notes
 
 - This scaffold uses polling. GitHub push-style event delivery generally requires a GitHub App/webhook setup, which this project intentionally avoids.
-- Workflow watching covers PRs you authored, approved, or merged, and
+- Workflow watching covers PRs you authored, reviewed, were assigned, or merged, and
   it sends local notifications when queued pull requests actually merge
   and when post-merge workflows start waiting for approval or, once the
   observed post-merge push runs settle, finish with success or failure.
