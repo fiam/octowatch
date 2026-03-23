@@ -855,6 +855,108 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testAttentionItemWorkflowApprovalURLUsesCurrentWorkflowUpdate() {
+        let pullRequestURL = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/pull/638")!
+        let workflowURL = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/actions/runs/123")!
+        let item = AttentionItem(
+            id: "pr:638",
+            subjectKey: pullRequestURL.absoluteString,
+            stream: .pullRequests,
+            type: .assignedPullRequest,
+            title: "Review me",
+            subtitle: "ExampleOrg/cloud-uc-manifests · Assigned pull request",
+            repository: "ExampleOrg/cloud-uc-manifests",
+            timestamp: Date(timeIntervalSince1970: 101),
+            url: pullRequestURL,
+            detail: AttentionDetail(
+                why: AttentionWhy(summary: "Workflow waiting", detail: nil),
+                evidence: [],
+                updates: [
+                    AttentionUpdate(
+                        id: "run:123",
+                        type: .workflowApprovalRequired,
+                        title: "Workflow waiting for approval",
+                        detail: nil,
+                        timestamp: Date(timeIntervalSince1970: 101),
+                        actor: nil,
+                        url: workflowURL
+                    )
+                ],
+                actions: []
+            ),
+            currentUpdateTypes: [.workflowApprovalRequired],
+            currentRelationshipTypes: [.assignedPullRequest]
+        )
+
+        XCTAssertEqual(item.workflowApprovalURL, workflowURL)
+    }
+
+    func testAttentionItemWorkflowApprovalURLIgnoresHistoricalApprovalOnly() {
+        let pullRequestURL = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/pull/638")!
+        let workflowURL = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/actions/runs/123")!
+        let item = AttentionItem(
+            id: "pr:638",
+            subjectKey: pullRequestURL.absoluteString,
+            stream: .pullRequests,
+            type: .assignedPullRequest,
+            title: "Review me",
+            subtitle: "ExampleOrg/cloud-uc-manifests · Assigned pull request",
+            repository: "ExampleOrg/cloud-uc-manifests",
+            timestamp: Date(timeIntervalSince1970: 101),
+            url: pullRequestURL,
+            detail: AttentionDetail(
+                why: AttentionWhy(summary: "Review requested", detail: nil),
+                evidence: [],
+                updates: [
+                    AttentionUpdate(
+                        id: "run:123",
+                        type: .workflowApprovalRequired,
+                        title: "Workflow waiting for approval",
+                        detail: nil,
+                        timestamp: Date(timeIntervalSince1970: 100),
+                        actor: nil,
+                        url: workflowURL
+                    )
+                ],
+                actions: []
+            ),
+            currentUpdateTypes: [.reviewRequested],
+            currentRelationshipTypes: [.assignedPullRequest]
+        )
+
+        XCTAssertNil(item.workflowApprovalURL)
+    }
+
+    func testWorkflowApprovalTargetParsesGitHubRunURL() {
+        let url = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/actions/runs/123456789")!
+        let target = WorkflowApprovalTarget(url: url)
+
+        XCTAssertEqual(target?.repository, "ExampleOrg/cloud-uc-manifests")
+        XCTAssertEqual(target?.runID, 123456789)
+        XCTAssertEqual(target?.url, url)
+    }
+
+    func testPullRequestPostMergeWorkflowApprovalTargetOnlyExistsForApprovalState() {
+        let url = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/actions/runs/123456789")!
+        let approvalWorkflow = PullRequestPostMergeWorkflow(
+            id: "workflow:123456789",
+            title: "Promote main",
+            url: url,
+            status: .actionRequired,
+            timestamp: Date(timeIntervalSince1970: 100)
+        )
+        let successfulWorkflow = PullRequestPostMergeWorkflow(
+            id: "workflow:123456789",
+            title: "Promote main",
+            url: url,
+            status: .succeeded,
+            timestamp: Date(timeIntervalSince1970: 100)
+        )
+
+        XCTAssertEqual(approvalWorkflow.workflowApprovalTarget?.runID, 123456789)
+        XCTAssertNil(successfulWorkflow.workflowApprovalTarget)
+    }
+
     func testCombinedAttentionViewUsesRelationshipAsSecondaryIndicatorForLatestUpdate() {
         let url = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/pull/638")!
         let authoredItem = AttentionItem(
@@ -1343,6 +1445,67 @@ final class AttentionClassificationTests: XCTestCase {
             preview.footnoteHelpText,
             ".github/workflows/deploy.yml: Expected <block end>, but found '-' (line 6, column 2)"
         )
+    }
+
+    func testPullRequestFocusRestoresPreviousWorkflowPreviewWhenRefreshDropsIt() {
+        let reference = PullRequestReference(owner: "acme", name: "example", number: 42)
+        let previousPreview = PullRequestPostMergeWorkflowPreview(
+            mode: .observed(branch: "main"),
+            workflows: [
+                PullRequestPostMergeWorkflow(
+                    id: "workflow:1",
+                    title: "Deploy",
+                    url: URL(string: "https://github.com/acme/example/actions/runs/1")!,
+                    status: .actionRequired,
+                    timestamp: Date(timeIntervalSince1970: 300)
+                )
+            ],
+            evaluationIssues: []
+        )
+        let previousFocus = PullRequestFocus(
+            reference: reference,
+            baseBranch: "main",
+            sourceType: .workflowApprovalRequired,
+            mode: .generic,
+            resolution: .merged,
+            mergedAt: Date(timeIntervalSince1970: 301),
+            author: nil,
+            labels: [],
+            headerFacts: [],
+            contextBadges: [],
+            descriptionHTML: nil,
+            statusSummary: nil,
+            postMergeWorkflowPreview: previousPreview,
+            sections: [],
+            actions: [],
+            reviewMergeAction: nil,
+            emptyStateTitle: "Done",
+            emptyStateDetail: "No details"
+        )
+        let refreshedFocus = PullRequestFocus(
+            reference: reference,
+            baseBranch: "main",
+            sourceType: .workflowApprovalRequired,
+            mode: .generic,
+            resolution: .merged,
+            mergedAt: Date(timeIntervalSince1970: 302),
+            author: nil,
+            labels: [],
+            headerFacts: [],
+            contextBadges: [],
+            descriptionHTML: nil,
+            statusSummary: nil,
+            postMergeWorkflowPreview: nil,
+            sections: [],
+            actions: [],
+            reviewMergeAction: nil,
+            emptyStateTitle: "Done",
+            emptyStateDetail: "No details"
+        )
+
+        let restoredFocus = refreshedFocus.restoringPostMergeWorkflowPreview(from: previousFocus)
+
+        XCTAssertEqual(restoredFocus.postMergeWorkflowPreview, previousPreview)
     }
 
     func testIgnoringSubjectRemovesAllMatchingAttentionItems() {
@@ -2111,6 +2274,15 @@ final class AttentionClassificationTests: XCTestCase {
 
         XCTAssertEqual(badges.count, 1)
         XCTAssertEqual(badges.first?.title, AttentionItemType.workflowApprovalRequired.accessibilityLabel)
+    }
+
+    func testPullRequestContextBadgesSkipDuplicateWorkflowAttention() {
+        let badges = PullRequestContextBadge.badges(
+            workflowAttentionType: .workflowApprovalRequired,
+            excluding: .workflowApprovalRequired
+        )
+
+        XCTAssertTrue(badges.isEmpty)
     }
 
     func testReadyToMergeHeaderFactsUseApprovalLanguage() {
@@ -2983,6 +3155,33 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertFalse(update.shouldContinueWatching)
     }
 
+    func testPullRequestLiveWatchPolicyRefreshesSnapshotWhenQueueStateChanges() {
+        let previous = PullRequestLiveWatchState(
+            reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 646),
+            resolution: .open,
+            isInMergeQueue: false,
+            headSHA: "abc123",
+            latestTimelineMarker: "1",
+            detailsETag: "\"details-1\"",
+            timelineETag: "\"timeline-1\""
+        )
+        let current = PullRequestLiveWatchState(
+            reference: previous.reference,
+            resolution: .open,
+            isInMergeQueue: true,
+            headSHA: "abc123",
+            latestTimelineMarker: "1",
+            detailsETag: "\"details-2\"",
+            timelineETag: "\"timeline-1\""
+        )
+
+        let update = PullRequestLiveWatchPolicy.apply(previous: previous, current: current)
+
+        XCTAssertTrue(update.shouldReloadFocus)
+        XCTAssertTrue(update.shouldRefreshSnapshot)
+        XCTAssertTrue(update.shouldContinueWatching)
+    }
+
     func testMergeQueuePolicyRecognizesQueueRequiredErrors() {
         XCTAssertTrue(
             GitHubMergeQueuePolicy.shouldFallback(
@@ -3080,6 +3279,64 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(update.notifications.first?.title, "Pull request merged")
         XCTAssertEqual(update.updatedWatch?.mergeCommitSHA, "abc123")
         XCTAssertEqual(update.updatedWatch?.mergedAt, Date(timeIntervalSince1970: 200))
+    }
+
+    func testPostMergeWatchRefreshPolicyRefreshesSnapshotWhenQueuedWatchResolves() {
+        let watch = PostMergeWatch(
+            reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 639),
+            title: "Refresh module lockfiles",
+            repository: "acme/cloud-infra-terraform",
+            url: URL(string: "https://github.com/acme/cloud-infra-terraform/pull/639")!,
+            createdAt: Date(timeIntervalSince1970: 100),
+            queuedAt: Date(timeIntervalSince1970: 100),
+            mergedAt: nil,
+            mergeCommitSHA: nil,
+            lastObservedWorkflowRunAt: nil,
+            notifiedWorkflowRunIDs: [],
+            notifiedApprovalRequiredWorkflowRunIDs: nil,
+            suppressedWorkflowItemIDs: []
+        )
+
+        XCTAssertTrue(
+            PostMergeWatchRefreshPolicy.shouldRefreshSnapshot(
+                watch: watch,
+                observation: PostMergeWatchObservation(
+                    resolution: .merged,
+                    mergedAt: Date(timeIntervalSince1970: 200),
+                    mergeCommitSHA: "abc123",
+                    workflowRuns: []
+                )
+            )
+        )
+    }
+
+    func testPostMergeWatchRefreshPolicySkipsOpenQueuedWatch() {
+        let watch = PostMergeWatch(
+            reference: PullRequestReference(owner: "acme", name: "cloud-infra-terraform", number: 639),
+            title: "Refresh module lockfiles",
+            repository: "acme/cloud-infra-terraform",
+            url: URL(string: "https://github.com/acme/cloud-infra-terraform/pull/639")!,
+            createdAt: Date(timeIntervalSince1970: 100),
+            queuedAt: Date(timeIntervalSince1970: 100),
+            mergedAt: nil,
+            mergeCommitSHA: nil,
+            lastObservedWorkflowRunAt: nil,
+            notifiedWorkflowRunIDs: [],
+            notifiedApprovalRequiredWorkflowRunIDs: nil,
+            suppressedWorkflowItemIDs: []
+        )
+
+        XCTAssertFalse(
+            PostMergeWatchRefreshPolicy.shouldRefreshSnapshot(
+                watch: watch,
+                observation: PostMergeWatchObservation(
+                    resolution: .open,
+                    mergedAt: nil,
+                    mergeCommitSHA: nil,
+                    workflowRuns: []
+                )
+            )
+        )
     }
 
     func testPostMergeWatchPolicyNotifiesSuccessfulWorkflowCompletion() {

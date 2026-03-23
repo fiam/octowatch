@@ -689,6 +689,14 @@ struct AttentionUpdate: Identifiable, Hashable, Codable, Sendable {
         self.url = url
         self.isTriggeredByCurrentUser = isTriggeredByCurrentUser
     }
+
+    var workflowApprovalTarget: WorkflowApprovalTarget? {
+        guard type == .workflowApprovalRequired, let url else {
+            return nil
+        }
+
+        return WorkflowApprovalTarget(url: url)
+    }
 }
 
 struct AttentionDetail: Hashable, Sendable {
@@ -890,6 +898,41 @@ struct PullRequestReference: Hashable, Codable, Sendable {
 
     var checksURL: URL {
         pullRequestURL.appending(path: "checks")
+    }
+}
+
+struct WorkflowApprovalTarget: Identifiable, Hashable, Codable, Sendable {
+    let repository: String
+    let runID: Int
+    let url: URL
+
+    var id: String {
+        "\(repository)#\(runID)"
+    }
+
+    init(repository: String, runID: Int, url: URL) {
+        self.repository = repository
+        self.runID = runID
+        self.url = url
+    }
+
+    init?(url: URL) {
+        let components = url.pathComponents
+        guard
+            let actionsIndex = components.firstIndex(of: "actions"),
+            actionsIndex >= 2,
+            actionsIndex + 2 < components.count,
+            components[actionsIndex + 1] == "runs",
+            let runID = Int(components[actionsIndex + 2])
+        else {
+            return nil
+        }
+
+        self.init(
+            repository: "\(components[actionsIndex - 2])/\(components[actionsIndex - 1])",
+            runID: runID,
+            url: url
+        )
     }
 }
 
@@ -1169,6 +1212,19 @@ struct PostMergeWatchObservationResult: Hashable, Sendable {
 struct PostMergeWatchUpdate: Hashable, Sendable {
     let updatedWatch: PostMergeWatch?
     let notifications: [AttentionTransitionNotification]
+}
+
+enum PostMergeWatchRefreshPolicy {
+    static func shouldRefreshSnapshot(
+        watch: PostMergeWatch,
+        observation: PostMergeWatchObservation
+    ) -> Bool {
+        guard watch.queuedAt != nil, watch.mergedAt == nil else {
+            return false
+        }
+
+        return observation.resolution != .open
+    }
 }
 
 enum PostMergeWatchPolicy {
@@ -1705,6 +1761,44 @@ struct PullRequestPostMergeWorkflow: Identifiable, Hashable, Sendable {
     let url: URL
     let status: PullRequestPostMergeWorkflowStatus
     let timestamp: Date?
+
+    var workflowApprovalTarget: WorkflowApprovalTarget? {
+        guard status == .actionRequired else {
+            return nil
+        }
+
+        return WorkflowApprovalTarget(url: url)
+    }
+}
+
+struct WorkflowPendingEnvironment: Identifiable, Hashable, Sendable {
+    let id: Int
+    let name: String
+    let reviewerSummary: String?
+    let canApprove: Bool
+}
+
+struct WorkflowPendingDeploymentReview: Hashable, Sendable {
+    let target: WorkflowApprovalTarget
+    let environments: [WorkflowPendingEnvironment]
+
+    var approvableEnvironmentIDs: [Int] {
+        environments.filter(\.canApprove).map(\.id)
+    }
+}
+
+enum WorkflowPendingDeploymentDecision: String, Sendable {
+    case approved
+    case rejected
+}
+
+struct WorkflowPendingDeploymentReviewResult: Hashable, Sendable {
+    let review: WorkflowPendingDeploymentReview
+    let rateLimits: GitHubRateLimitSnapshot?
+}
+
+struct WorkflowPendingDeploymentMutationResult: Hashable, Sendable {
+    let rateLimits: GitHubRateLimitSnapshot?
 }
 
 struct PullRequestPostMergeWorkflowEvaluationIssue: Identifiable, Hashable, Sendable {
@@ -2314,6 +2408,43 @@ extension PullRequestFocus {
             emptyStateDetail: emptyStateDetail
         )
     }
+
+    func replacing(postMergeWorkflowPreview: PullRequestPostMergeWorkflowPreview?) -> PullRequestFocus {
+        PullRequestFocus(
+            reference: reference,
+            baseBranch: baseBranch,
+            sourceType: sourceType,
+            mode: mode,
+            resolution: resolution,
+            mergedAt: mergedAt,
+            author: author,
+            labels: labels,
+            headerFacts: headerFacts,
+            contextBadges: contextBadges,
+            descriptionHTML: descriptionHTML,
+            statusSummary: statusSummary,
+            postMergeWorkflowPreview: postMergeWorkflowPreview,
+            sections: sections,
+            actions: actions,
+            reviewMergeAction: reviewMergeAction,
+            emptyStateTitle: emptyStateTitle,
+            emptyStateDetail: emptyStateDetail
+        )
+    }
+
+    func restoringPostMergeWorkflowPreview(
+        from previous: PullRequestFocus?
+    ) -> PullRequestFocus {
+        guard postMergeWorkflowPreview == nil else {
+            return self
+        }
+
+        guard let previous, previous.reference == reference else {
+            return self
+        }
+
+        return replacing(postMergeWorkflowPreview: previous.postMergeWorkflowPreview)
+    }
 }
 
 enum PullRequestRepositoryPermissionPolicy {
@@ -2406,8 +2537,11 @@ struct PullRequestCheckSummary: Hashable, Sendable {
 }
 
 extension PullRequestContextBadge {
-    static func badges(workflowAttentionType: AttentionItemType?) -> [PullRequestContextBadge] {
-        guard let workflowAttentionType else {
+    static func badges(
+        workflowAttentionType: AttentionItemType?,
+        excluding sourceType: AttentionItemType? = nil
+    ) -> [PullRequestContextBadge] {
+        guard let workflowAttentionType, workflowAttentionType != sourceType else {
             return []
         }
 
@@ -3228,6 +3362,22 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         }
 
         return "Ignore Item"
+    }
+
+    var workflowApprovalURL: URL? {
+        guard type == .workflowApprovalRequired || currentUpdateTypes.contains(.workflowApprovalRequired) else {
+            return nil
+        }
+
+        if type == .workflowApprovalRequired {
+            return url
+        }
+
+        return detail.updates.first(where: { $0.type == .workflowApprovalRequired })?.url
+    }
+
+    var workflowApprovalTarget: WorkflowApprovalTarget? {
+        workflowApprovalURL.flatMap(WorkflowApprovalTarget.init(url:))
     }
 
     var repositoryURL: URL? {

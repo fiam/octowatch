@@ -49,7 +49,8 @@ final class AppModel: ObservableObject {
     private let client = GitHubClient()
     private let notifier = UserNotifier()
     private let pullRequestFocusCacheTTL: TimeInterval = 300
-    private let pullRequestWatchIntervalSeconds = 20
+    private let focusedPullRequestWatchIntervalSeconds = 5
+    private let queuedPostMergeWatchIntervalSeconds = 20
 
     private struct PullRequestFocusCacheEntry {
         let focus: PullRequestFocus
@@ -62,6 +63,7 @@ final class AppModel: ObservableObject {
     private var userLogin: String?
     private var pollingTask: Task<Void, Never>?
     private var watchedPullRequestTask: Task<Void, Never>?
+    private var queuedPostMergeWatchTask: Task<Void, Never>?
     private var latestSnapshotAttentionItems: [AttentionItem] = []
     private var knownLatestUpdateKeyBySubjectKey = [String: String]()
     private var notificationScanState = NotificationScanState.default
@@ -76,6 +78,7 @@ final class AppModel: ObservableObject {
     private var readStateBySubjectKey: [String: Date] = [:]
     private var updateHistoryBySubjectKey = [String: [AttentionUpdate]]()
     private var suppressedTransitionNotificationKeys = Set<String>()
+    private var pendingForcedRefresh = false
     private let relativeDateFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
@@ -155,6 +158,7 @@ final class AppModel: ObservableObject {
     deinit {
         pollingTask?.cancel()
         watchedPullRequestTask?.cancel()
+        queuedPostMergeWatchTask?.cancel()
         ignoreUndoDismissTask?.cancel()
     }
 
@@ -379,6 +383,7 @@ final class AppModel: ObservableObject {
         pollingTask?.cancel()
         pollingTask = nil
         clearWatchedPullRequest()
+        clearQueuedPostMergeWatchLoop()
     }
 
     func reloadTokenFromGitHubCLI() async -> Bool {
@@ -482,7 +487,10 @@ final class AppModel: ObservableObject {
             allowedMethods: result.focus.reviewMergeAction?.allowedMergeMethods ?? [],
             fallback: result.focus.reviewMergeAction?.preferredMergeMethod
         )
-        let focus = result.focus.applyingPreferredMergeMethod(preferredMergeMethod)
+        let previousFocus = pullRequestFocusCache[cacheKey]?.focus
+        let focus = result.focus
+            .applyingPreferredMergeMethod(preferredMergeMethod)
+            .restoringPostMergeWorkflowPreview(from: previousFocus)
 
         mergeRateLimitState(with: result.rateLimits)
         applyPullRequestFocusSubjectRefresh(result.subjectRefresh)
@@ -549,6 +557,53 @@ final class AppModel: ObservableObject {
         registerPostMergeWatch(for: item, outcome: mutationResult.outcome)
         pullRequestFocusCache[item.ignoreKey] = nil
         return mutationResult.outcome
+    }
+
+    func fetchPendingDeploymentReview(
+        for target: WorkflowApprovalTarget
+    ) async throws -> WorkflowPendingDeploymentReview {
+        guard let token else {
+            throw GitHubClientError.invalidResponse
+        }
+
+        let result = try await client.fetchPendingDeploymentReview(
+            token: token,
+            target: target
+        )
+        mergeRateLimitState(with: result.rateLimits)
+        return result.review
+    }
+
+    func reviewPendingDeployments(
+        for target: WorkflowApprovalTarget,
+        environmentIDs: [Int],
+        decision: WorkflowPendingDeploymentDecision,
+        comment: String,
+        sourceItem: AttentionItem?
+    ) async throws {
+        guard let token else {
+            throw GitHubClientError.invalidResponse
+        }
+
+        let result = try await client.reviewPendingDeployments(
+            token: token,
+            target: target,
+            environmentIDs: environmentIDs,
+            decision: decision,
+            comment: comment
+        )
+        mergeRateLimitState(with: result.rateLimits)
+
+        if let sourceItem {
+            markItemAsRead(sourceItem)
+
+            if sourceItem.pullRequestReference != nil {
+                pullRequestFocusCache[sourceItem.ignoreKey] = nil
+                pullRequestWatchRevision &+= 1
+            }
+        }
+
+        await refresh(force: true)
     }
 
     func markItemAsRead(_ item: AttentionItem) {
@@ -645,6 +700,26 @@ final class AppModel: ObservableObject {
         watchedPullRequestState = nil
     }
 
+    private func clearQueuedPostMergeWatchLoop() {
+        queuedPostMergeWatchTask?.cancel()
+        queuedPostMergeWatchTask = nil
+    }
+
+    private func syncQueuedPostMergeWatchLoop() {
+        guard hasToken, hasQueuedPostMergeWatches else {
+            clearQueuedPostMergeWatchLoop()
+            return
+        }
+
+        guard queuedPostMergeWatchTask == nil else {
+            return
+        }
+
+        queuedPostMergeWatchTask = Task { [weak self] in
+            await self?.runQueuedPostMergeWatchLoop()
+        }
+    }
+
     private func runWatchedPullRequestLoop(
         reference: PullRequestReference,
         cacheKey: String
@@ -665,10 +740,24 @@ final class AppModel: ObservableObject {
                 return
             }
 
-            let interval = max(
-                pullRequestWatchIntervalSeconds,
-                effectiveAutomaticPollInterval(relativeTo: .now)
-            )
+            let interval = effectiveFocusedPullRequestWatchInterval(relativeTo: .now)
+            try? await Task.sleep(for: .seconds(Double(interval)))
+        }
+    }
+
+    private func runQueuedPostMergeWatchLoop() async {
+        defer {
+            queuedPostMergeWatchTask = nil
+        }
+
+        while !Task.isCancelled {
+            let shouldContinue = await pollQueuedPostMergeWatches()
+
+            guard shouldContinue, !Task.isCancelled else {
+                return
+            }
+
+            let interval = effectiveQueuedPostMergeWatchInterval(relativeTo: .now)
             try? await Task.sleep(for: .seconds(Double(interval)))
         }
     }
@@ -707,8 +796,48 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func pollQueuedPostMergeWatches() async -> Bool {
+        guard hasQueuedPostMergeWatches, let token else {
+            return false
+        }
+
+        let shouldRefreshSnapshot = await processPostMergeWatches(
+            token: token,
+            onlyQueued: true
+        )
+        if shouldRefreshSnapshot {
+            requestForcedRefresh()
+        }
+
+        return hasQueuedPostMergeWatches
+    }
+
+    private var hasQueuedPostMergeWatches: Bool {
+        postMergeWatchesByKey.values.contains { watch in
+            watch.queuedAt != nil && watch.mergedAt == nil
+        }
+    }
+
+    private func requestForcedRefresh() {
+        if isRefreshing {
+            pendingForcedRefresh = true
+            return
+        }
+
+        Task { [weak self] in
+            await self?.refresh(force: true)
+        }
+    }
+
     private func refresh(force: Bool) async {
-        guard hasToken, !isRefreshing else {
+        guard hasToken else {
+            return
+        }
+
+        guard !isRefreshing else {
+            if force {
+                pendingForcedRefresh = true
+            }
             return
         }
 
@@ -717,7 +846,16 @@ final class AppModel: ObservableObject {
         }
 
         isRefreshing = true
-        defer { isRefreshing = false }
+        defer {
+            isRefreshing = false
+
+            if pendingForcedRefresh {
+                pendingForcedRefresh = false
+                Task { [weak self] in
+                    await self?.refresh(force: true)
+                }
+            }
+        }
 
         if !force, shouldDelayAutomaticRefresh(relativeTo: .now) {
             return
@@ -743,7 +881,10 @@ final class AppModel: ObservableObject {
             lastUpdated = Date()
             lastError = nil
 
-            await processPostMergeWatches(token: token)
+            let shouldRefreshSnapshot = await processPostMergeWatches(token: token)
+            if shouldRefreshSnapshot {
+                pendingForcedRefresh = true
+            }
             await notifyIfNeeded(previousItems: previousItems, token: token)
         } catch {
             if let clientError = error as? GitHubClientError,
@@ -821,9 +962,11 @@ final class AppModel: ObservableObject {
                 UserDefaults.standard.removeObject(forKey: postMergeWatchStoreKey)
                 UserDefaults.standard.removeObject(forKey: attentionUpdateHistoryStoreKey)
                 clearWatchedPullRequest()
+                clearQueuedPostMergeWatchLoop()
             }
 
             startPollingIfNeeded()
+            syncQueuedPostMergeWatchLoop()
             refreshNow()
             return true
         } catch {
@@ -967,6 +1110,7 @@ final class AppModel: ObservableObject {
 
         postMergeWatchesByKey[watch.id] = watch
         persistPostMergeWatches()
+        syncQueuedPostMergeWatchLoop()
     }
 
     private func registerResolvedPostMergeWatchIfNeeded(
@@ -992,21 +1136,42 @@ final class AppModel: ObservableObject {
 
             postMergeWatchesByKey[watch.id] = updatedWatch
             persistPostMergeWatches()
+            syncQueuedPostMergeWatchLoop()
             return true
         }
 
         postMergeWatchesByKey[watch.id] = watch
         persistPostMergeWatches()
+        syncQueuedPostMergeWatchLoop()
         return true
     }
 
-    private func processPostMergeWatches(token: String) async {
+    @discardableResult
+    private func processPostMergeWatches(
+        token: String,
+        onlyQueued: Bool = false
+    ) async -> Bool {
         guard !postMergeWatchesByKey.isEmpty else {
-            return
+            syncQueuedPostMergeWatchLoop()
+            return false
         }
 
         var updatedWatches = postMergeWatchesByKey
-        let watchKeys = updatedWatches.keys.sorted()
+        let watchKeys = updatedWatches.keys.sorted().filter { watchKey in
+            guard
+                onlyQueued,
+                let watch = updatedWatches[watchKey]
+            else {
+                return true
+            }
+
+            return watch.queuedAt != nil && watch.mergedAt == nil
+        }
+        guard !watchKeys.isEmpty else {
+            syncQueuedPostMergeWatchLoop()
+            return false
+        }
+        var shouldRefreshSnapshot = false
 
         for watchKey in watchKeys {
             guard let watch = updatedWatches[watchKey] else {
@@ -1025,6 +1190,13 @@ final class AppModel: ObservableObject {
                     watch: watch,
                     observation: result.observation
                 )
+
+                if PostMergeWatchRefreshPolicy.shouldRefreshSnapshot(
+                    watch: watch,
+                    observation: result.observation
+                ) {
+                    shouldRefreshSnapshot = true
+                }
 
                 if result.observation.resolution != .open || !result.observation.workflowRuns.isEmpty {
                     pullRequestFocusCache[watch.reference.pullRequestURL.absoluteString] = nil
@@ -1046,6 +1218,8 @@ final class AppModel: ObservableObject {
 
         postMergeWatchesByKey = updatedWatches
         persistPostMergeWatches()
+        syncQueuedPostMergeWatchLoop()
+        return shouldRefreshSnapshot
     }
 
     private func applyingLocalReadState(to item: AttentionItem) -> AttentionItem {
@@ -1537,6 +1711,20 @@ final class AppModel: ObservableObject {
             userConfiguredSeconds: pollIntervalSeconds,
             now: referenceDate
         ) ?? pollIntervalSeconds
+    }
+
+    private func effectiveFocusedPullRequestWatchInterval(relativeTo referenceDate: Date) -> Int {
+        rateLimit?.minimumAutomaticRefreshInterval(
+            userConfiguredSeconds: focusedPullRequestWatchIntervalSeconds,
+            now: referenceDate
+        ) ?? focusedPullRequestWatchIntervalSeconds
+    }
+
+    private func effectiveQueuedPostMergeWatchInterval(relativeTo referenceDate: Date) -> Int {
+        rateLimit?.minimumAutomaticRefreshInterval(
+            userConfiguredSeconds: queuedPostMergeWatchIntervalSeconds,
+            now: referenceDate
+        ) ?? queuedPostMergeWatchIntervalSeconds
     }
 
     private func shouldDelayAutomaticRefresh(relativeTo referenceDate: Date) -> Bool {

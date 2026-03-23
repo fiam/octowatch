@@ -92,6 +92,7 @@ struct AttentionWindowView: View {
     @State private var autoSelectionTask: Task<Void, Never>?
     @State private var pullRequestFocusState: PullRequestFocusLoadState = .idle
     @State private var reviewMergeState: PullRequestReviewMergeState = .idle
+    @State private var workflowApprovalSheetRequest: WorkflowApprovalSheetRequest?
 
     private let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -101,30 +102,7 @@ struct AttentionWindowView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 15)) { context in
-            ZStack(alignment: .bottomTrailing) {
-                if showsInitialLoadingState {
-                    loadingView
-                        .transition(.opacity.combined(with: .scale(scale: 0.985)))
-                } else {
-                    NavigationSplitView {
-                        sidebar(relativeTo: context.date)
-                    } detail: {
-                        detailPane(relativeTo: context.date)
-                    }
-                    .transition(.opacity)
-                }
-
-                if let ignoreUndoState = model.ignoreUndoState {
-                    IgnoreUndoBanner(
-                        state: ignoreUndoState,
-                        onUndo: model.undoRecentIgnore,
-                        onDismiss: model.dismissIgnoreUndo
-                    )
-                    .padding(.trailing, 20)
-                    .padding(.bottom, 20)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-                }
-            }
+            windowContent(relativeTo: context.date)
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 940, minHeight: 620)
@@ -155,6 +133,15 @@ struct AttentionWindowView: View {
         .animation(.easeInOut(duration: 0.18), value: model.ignoreUndoState?.id)
         .task(id: pullRequestFocusTaskID) {
             await loadPullRequestFocusForSelection()
+        }
+        .sheet(item: $workflowApprovalSheetRequest) { request in
+            WorkflowPendingDeploymentReviewSheet(
+                model: model,
+                request: request,
+                onOpenGitHub: { url in
+                    openURL(url)
+                }
+            )
         }
         .toolbar {
             if !selectionActionItems.isEmpty, model.hasToken {
@@ -219,6 +206,34 @@ struct AttentionWindowView: View {
                 }
                 .appInteractiveHover()
                 .help("Settings")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func windowContent(relativeTo referenceDate: Date) -> some View {
+        ZStack(alignment: .bottomTrailing) {
+            if showsInitialLoadingState {
+                loadingView
+                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
+            } else {
+                NavigationSplitView {
+                    sidebar(relativeTo: referenceDate)
+                } detail: {
+                    detailPane(relativeTo: referenceDate)
+                }
+                .transition(.opacity)
+            }
+
+            if let ignoreUndoState = model.ignoreUndoState {
+                IgnoreUndoBanner(
+                    state: ignoreUndoState,
+                    onUndo: model.undoRecentIgnore,
+                    onDismiss: model.dismissIgnoreUndo
+                )
+                .padding(.trailing, 20)
+                .padding(.bottom, 20)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
     }
@@ -604,6 +619,9 @@ struct AttentionWindowView: View {
                     onOpenURL: { url in
                         openRelatedURL(url, for: item)
                     },
+                    onPresentWorkflowApproval: { request in
+                        presentWorkflowApprovalSheet(request)
+                    },
                     onPerformReviewMerge: { mergeMethod in
                         Task {
                             await performReviewMergeForSelection(mergeMethod: mergeMethod)
@@ -736,7 +754,10 @@ struct AttentionWindowView: View {
                 relativeTimestamp: relativeFormatter.localizedString(
                     for: item.timestamp,
                     relativeTo: referenceDate
-                )
+                ),
+                onOpenWorkflowApproval: {
+                    presentWorkflowApprovalSheet($0)
+                }
             )
             .contentShape(Rectangle())
             .contextMenu {
@@ -859,6 +880,53 @@ struct AttentionWindowView: View {
         model.ignore(items)
     }
 
+    private func presentWorkflowApprovalSheet(
+        _ request: WorkflowApprovalSheetRequest
+    ) {
+        cancelAutoMarkReadTask()
+        if let sourceItem = request.sourceItem {
+            model.markItemAsRead(sourceItem)
+        }
+        workflowApprovalSheetRequest = request
+    }
+
+    private func workflowApprovalRequests(for items: [AttentionItem]) -> [WorkflowApprovalSheetRequest] {
+        var requests = [WorkflowApprovalSheetRequest]()
+        var seen = Set<String>()
+
+        for item in items {
+            guard let request = WorkflowApprovalSheetRequest(item: item) else {
+                continue
+            }
+
+            guard seen.insert(request.id).inserted else {
+                continue
+            }
+
+            requests.append(request)
+        }
+
+        return requests
+    }
+
+    private func workflowApprovalURLs(for items: [AttentionItem]) -> [URL] {
+        workflowApprovalRequests(for: items).map(\.target.url)
+    }
+
+    private func openWorkflowApprovalsOnGitHub(for items: [AttentionItem]) {
+        let approvalURLs = workflowApprovalURLs(for: items)
+        guard !approvalURLs.isEmpty else {
+            return
+        }
+
+        cancelAutoMarkReadTask()
+        model.markItemsAsRead(items.filter { $0.workflowApprovalURL != nil })
+
+        for approvalURL in approvalURLs {
+            openURL(approvalURL)
+        }
+    }
+
     private func contextMenuItems(for item: AttentionItem) -> [AttentionItem] {
         if selectedItemIDs.contains(item.id) {
             return selectionActionItems
@@ -869,6 +937,36 @@ struct AttentionWindowView: View {
 
     @ViewBuilder
     private func selectionContextMenu(for items: [AttentionItem]) -> some View {
+        let approvalRequests = workflowApprovalRequests(for: items)
+        let approvalURLs = workflowApprovalURLs(for: items)
+
+        if approvalRequests.count == 1, let approvalRequest = approvalRequests.first {
+            Button {
+                presentWorkflowApprovalSheet(approvalRequest)
+            } label: {
+                Label(
+                    "Review Deployment",
+                    systemImage: "hand.raised"
+                )
+            }
+
+            Button {
+                openWorkflowApprovalsOnGitHub(for: items)
+            } label: {
+                Label("Open Approval on GitHub", systemImage: "arrow.up.right.square")
+            }
+
+            Divider()
+        } else if approvalURLs.count > 1 {
+            Button {
+                openWorkflowApprovalsOnGitHub(for: items)
+            } label: {
+                Label("Open Approvals on GitHub", systemImage: "arrow.up.right.square")
+            }
+
+            Divider()
+        }
+
         Button {
             openSelection(items)
         } label: {
@@ -1023,6 +1121,7 @@ private struct AttentionSidebarRow: View {
     let item: AttentionItem
     let viewerLogin: String?
     let relativeTimestamp: String
+    let onOpenWorkflowApproval: (WorkflowApprovalSheetRequest) -> Void
 
     private let maximumDisplayedLabels = 2
 
@@ -1042,6 +1141,10 @@ private struct AttentionSidebarRow: View {
             viewerLogin: viewerLogin,
             hidesRepository: true
         )
+    }
+
+    private var workflowApprovalRequest: WorkflowApprovalSheetRequest? {
+        WorkflowApprovalSheetRequest(item: item)
     }
 
     var body: some View {
@@ -1103,6 +1206,24 @@ private struct AttentionSidebarRow: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            Spacer(minLength: 8)
+
+            if let workflowApprovalRequest {
+                Button {
+                    onOpenWorkflowApproval(workflowApprovalRequest)
+                } label: {
+                    Image(systemName: "hand.raised")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .appInteractiveHover(backgroundOpacity: 0.08, cornerRadius: 8)
+                .help("Review pending deployments")
+                .padding(.top, 2)
+            }
         }
         .padding(.vertical, 4)
     }
@@ -1116,6 +1237,7 @@ private struct AttentionDetailView: View {
     let pullRequestFocusState: PullRequestFocusLoadState
     let reviewMergeState: PullRequestReviewMergeState
     let onOpenURL: (URL) -> Void
+    let onPresentWorkflowApproval: (WorkflowApprovalSheetRequest) -> Void
     let onPerformReviewMerge: (PullRequestMergeMethod?) -> Void
     let onSelectMergeMethod: (PullRequestMergeMethod) -> Void
     let onRetryPullRequestFocus: () -> Void
@@ -1358,9 +1480,11 @@ private struct AttentionDetailView: View {
                             ForEach(visibleUpdates) { update in
                                 AttentionUpdateRow(
                                     update: update,
+                                    sourceItem: item,
                                     viewerLogin: viewerLogin,
                                     referenceDate: referenceDate,
-                                    onOpenURL: onOpenURL
+                                    onOpenURL: onOpenURL,
+                                    onPresentWorkflowApproval: onPresentWorkflowApproval
                                 )
                             }
                         }
@@ -1412,9 +1536,11 @@ private struct AttentionDetailView: View {
         case let .loaded(focus):
             PullRequestFocusView(
                 focus: focus,
+                sourceItem: item,
                 referenceDate: referenceDate,
                 reviewMergeState: reviewMergeState,
                 onOpenURL: onOpenURL,
+                onPresentWorkflowApproval: onPresentWorkflowApproval,
                 onPerformReviewMerge: onPerformReviewMerge,
                 onSelectMergeMethod: onSelectMergeMethod
             )
@@ -1613,9 +1739,11 @@ private struct DetailCard<Content: View>: View {
 
 private struct AttentionUpdateRow: View {
     let update: AttentionUpdate
+    let sourceItem: AttentionItem
     let viewerLogin: String?
     let referenceDate: Date
     let onOpenURL: (URL) -> Void
+    let onPresentWorkflowApproval: (WorkflowApprovalSheetRequest) -> Void
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -1673,7 +1801,16 @@ private struct AttentionUpdateRow: View {
 
             Spacer(minLength: 12)
 
-            if let url = update.url {
+            if let workflowApprovalRequest = WorkflowApprovalSheetRequest(
+                update: update,
+                sourceItem: sourceItem
+            ) {
+                Button("Review") {
+                    onPresentWorkflowApproval(workflowApprovalRequest)
+                }
+                .buttonStyle(.link)
+                .appInteractiveHover(scale: 0.992, opacity: 0.99)
+            } else if let url = update.url {
                 Button("Open") {
                     onOpenURL(url)
                 }
@@ -1694,9 +1831,11 @@ private struct AttentionUpdateRow: View {
 
 private struct PullRequestFocusView: View {
     let focus: PullRequestFocus
+    let sourceItem: AttentionItem
     let referenceDate: Date
     let reviewMergeState: PullRequestReviewMergeState
     let onOpenURL: (URL) -> Void
+    let onPresentWorkflowApproval: (WorkflowApprovalSheetRequest) -> Void
     let onPerformReviewMerge: (PullRequestMergeMethod?) -> Void
     let onSelectMergeMethod: (PullRequestMergeMethod) -> Void
 
@@ -1704,16 +1843,20 @@ private struct PullRequestFocusView: View {
 
     init(
         focus: PullRequestFocus,
+        sourceItem: AttentionItem,
         referenceDate: Date,
         reviewMergeState: PullRequestReviewMergeState,
         onOpenURL: @escaping (URL) -> Void,
+        onPresentWorkflowApproval: @escaping (WorkflowApprovalSheetRequest) -> Void,
         onPerformReviewMerge: @escaping (PullRequestMergeMethod?) -> Void,
         onSelectMergeMethod: @escaping (PullRequestMergeMethod) -> Void
     ) {
         self.focus = focus
+        self.sourceItem = sourceItem
         self.referenceDate = referenceDate
         self.reviewMergeState = reviewMergeState
         self.onOpenURL = onOpenURL
+        self.onPresentWorkflowApproval = onPresentWorkflowApproval
         self.onPerformReviewMerge = onPerformReviewMerge
         self.onSelectMergeMethod = onSelectMergeMethod
         _selectedMergeMethod = State(initialValue: focus.reviewMergeAction?.preferredMergeMethod)
@@ -1916,8 +2059,10 @@ private struct PullRequestFocusView: View {
                             ForEach(postMergeWorkflowPreview.workflows) { workflow in
                                 PullRequestPostMergeWorkflowRow(
                                     workflow: workflow,
+                                    sourceItem: sourceItem,
                                     referenceDate: referenceDate,
-                                    onOpenURL: onOpenURL
+                                    onOpenURL: onOpenURL,
+                                    onPresentWorkflowApproval: onPresentWorkflowApproval
                                 )
                             }
                         }
@@ -2350,6 +2495,333 @@ private final class SelfSizingTextView: NSTextView {
     }
 }
 
+struct WorkflowApprovalSheetRequest: Identifiable, Hashable {
+    let target: WorkflowApprovalTarget
+    let sourceItem: AttentionItem?
+    let title: String
+    let subtitle: String?
+
+    var id: String {
+        target.id
+    }
+
+    init?(
+        item: AttentionItem
+    ) {
+        guard let target = item.workflowApprovalTarget else {
+            return nil
+        }
+
+        self.target = target
+        sourceItem = item
+        title = item.title
+        subtitle = item.repository
+    }
+
+    init?(
+        update: AttentionUpdate,
+        sourceItem: AttentionItem
+    ) {
+        guard let target = update.workflowApprovalTarget else {
+            return nil
+        }
+
+        self.target = target
+        self.sourceItem = sourceItem
+        title = update.title
+        subtitle = sourceItem.title
+    }
+
+    init?(
+        workflow: PullRequestPostMergeWorkflow,
+        sourceItem: AttentionItem
+    ) {
+        guard let target = workflow.workflowApprovalTarget else {
+            return nil
+        }
+
+        self.target = target
+        self.sourceItem = sourceItem
+        title = workflow.title
+        subtitle = sourceItem.title
+    }
+}
+
+struct WorkflowPendingDeploymentReviewSheet: View {
+    let model: AppModel
+    let request: WorkflowApprovalSheetRequest
+    let onOpenGitHub: (URL) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var review: WorkflowPendingDeploymentReview?
+    @State private var isLoading = true
+    @State private var loadErrorMessage: String?
+    @State private var submissionErrorMessage: String?
+    @State private var isSubmitting = false
+    @State private var selectedEnvironmentIDs = Set<Int>()
+    @State private var comment = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Review Pending Deployments")
+                    .font(.title3.weight(.semibold))
+
+                Text(request.title)
+                    .font(.headline)
+
+                if let subtitle = request.subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Group {
+                if isLoading {
+                    DetailCard {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                                .controlSize(.small)
+
+                            Text("Loading pending environments...")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else if let loadErrorMessage {
+                    DetailCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(loadErrorMessage)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+
+                            HStack(spacing: 10) {
+                                Button("Retry") {
+                                    Task {
+                                        await loadReview()
+                                    }
+                                }
+                                .appInteractiveHover()
+
+                                Button("Open on GitHub") {
+                                    onOpenGitHub(request.target.url)
+                                }
+                                .appLinkHover()
+                            }
+                        }
+                    }
+                } else if let review {
+                    content(for: review)
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 560)
+        .task(id: request.id) {
+            await loadReview()
+        }
+    }
+
+    @ViewBuilder
+    private func content(for review: WorkflowPendingDeploymentReview) -> some View {
+        if review.environments.isEmpty {
+            DetailCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("This workflow run no longer has pending deployments.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Button("Open on GitHub") {
+                        onOpenGitHub(request.target.url)
+                    }
+                    .appLinkHover()
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 16) {
+                DetailCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(review.environments) { environment in
+                            Toggle(isOn: selectionBinding(for: environment)) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(environment.name)
+                                        .font(.subheadline.weight(.semibold))
+
+                                    if let reviewerSummary = environment.reviewerSummary {
+                                        Text(reviewerSummary)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+
+                                    if !environment.canApprove {
+                                        Text("You can no longer approve this environment.")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .toggleStyle(.checkbox)
+                            .disabled(!environment.canApprove || isSubmitting)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Comment")
+                        .font(.subheadline.weight(.semibold))
+
+                    ZStack(alignment: .topLeading) {
+                        if comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text("Optional comment")
+                                .font(.subheadline)
+                                .foregroundStyle(.tertiary)
+                                .padding(.top, 8)
+                                .padding(.leading, 6)
+                        }
+
+                        TextEditor(text: $comment)
+                            .font(.body)
+                            .frame(minHeight: 96)
+                    }
+                    .padding(4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(nsColor: .textBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+                    )
+                }
+
+                if let submissionErrorMessage {
+                    Text(submissionErrorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                HStack(spacing: 10) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isSubmitting)
+
+                    Button("Open on GitHub") {
+                        onOpenGitHub(request.target.url)
+                    }
+                    .appLinkHover()
+                    .disabled(isSubmitting)
+
+                    Spacer()
+
+                    Button("Reject") {
+                        submit(.rejected)
+                    }
+                    .disabled(!isSubmissionEnabled)
+                    .appInteractiveHover()
+
+                    Button {
+                        submit(.approved)
+                    } label: {
+                        if isSubmitting {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Submitting...")
+                            }
+                        } else {
+                            Text("Approve and Deploy")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+                    .disabled(!isSubmissionEnabled)
+                    .appInteractiveHover()
+                }
+            }
+        }
+    }
+
+    private var isSubmissionEnabled: Bool {
+        !selectedEnvironmentIDs.isEmpty && !isSubmitting
+    }
+
+    private func selectionBinding(
+        for environment: WorkflowPendingEnvironment
+    ) -> Binding<Bool> {
+        Binding(
+            get: {
+                selectedEnvironmentIDs.contains(environment.id)
+            },
+            set: { isSelected in
+                if isSelected {
+                    selectedEnvironmentIDs.insert(environment.id)
+                } else {
+                    selectedEnvironmentIDs.remove(environment.id)
+                }
+            }
+        )
+    }
+
+    private func loadReview() async {
+        isLoading = true
+        loadErrorMessage = nil
+
+        do {
+            let review = try await model.fetchPendingDeploymentReview(for: request.target)
+            self.review = review
+            selectedEnvironmentIDs = []
+        } catch {
+            loadErrorMessage = userFacingErrorMessage(for: error)
+        }
+
+        isLoading = false
+    }
+
+    private func submit(_ decision: WorkflowPendingDeploymentDecision) {
+        guard !selectedEnvironmentIDs.isEmpty else {
+            return
+        }
+
+        isSubmitting = true
+        submissionErrorMessage = nil
+
+        Task {
+            do {
+                try await model.reviewPendingDeployments(
+                    for: request.target,
+                    environmentIDs: selectedEnvironmentIDs.sorted(),
+                    decision: decision,
+                    comment: comment.trimmingCharacters(in: .whitespacesAndNewlines),
+                    sourceItem: request.sourceItem
+                )
+                dismiss()
+            } catch {
+                submissionErrorMessage = userFacingErrorMessage(for: error)
+            }
+
+            isSubmitting = false
+        }
+    }
+
+    private func userFacingErrorMessage(
+        for error: Error
+    ) -> String {
+        if let clientError = error as? GitHubClientError {
+            switch clientError {
+            case let .api(statusCode, message):
+                return "GitHub API error \(statusCode): \(message)"
+            default:
+                return clientError.localizedDescription
+            }
+        }
+
+        return error.localizedDescription
+    }
+}
+
 private func color(for accent: PullRequestFocusEntryAccent) -> Color {
     switch accent {
     case .neutral:
@@ -2445,14 +2917,23 @@ private struct PullRequestFocusEntryRow: View {
 
 private struct PullRequestPostMergeWorkflowRow: View {
     let workflow: PullRequestPostMergeWorkflow
+    let sourceItem: AttentionItem
     let referenceDate: Date
     let onOpenURL: (URL) -> Void
+    let onPresentWorkflowApproval: (WorkflowApprovalSheetRequest) -> Void
 
     private static let relativeFormatter = RelativeDateTimeFormatter()
 
     var body: some View {
         Button {
-            onOpenURL(workflow.url)
+            if let workflowApprovalRequest = WorkflowApprovalSheetRequest(
+                workflow: workflow,
+                sourceItem: sourceItem
+            ) {
+                onPresentWorkflowApproval(workflowApprovalRequest)
+            } else {
+                onOpenURL(workflow.url)
+            }
         } label: {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: workflow.status.iconName)
@@ -2476,15 +2957,19 @@ private struct PullRequestPostMergeWorkflowRow: View {
 
                 Spacer(minLength: 8)
 
-                Image(systemName: "arrow.up.right.square")
+                Image(systemName: workflow.workflowApprovalTarget == nil ? "arrow.up.right.square" : "hand.raised")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .appLinkHover()
-        .help("Open workflow run on GitHub")
+        .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 10)
+        .help(
+            workflow.workflowApprovalTarget == nil
+                ? "Open workflow run on GitHub"
+                : "Review pending deployments"
+        )
     }
 
     private var statusLine: String {

@@ -1077,7 +1077,7 @@ struct GitHubClient {
             headSHA: pullRequest.headRefOID,
             observer: observer
         )
-        let postMergeWorkflowPreview = try? await fetchPostMergeWorkflowPreview(
+        let postMergeWorkflowPreview = await fetchPostMergeWorkflowPreview(
             token: token,
             reference: reference,
             branch: pullRequest.baseRefName,
@@ -1102,7 +1102,8 @@ struct GitHubClient {
             requiresLinearHistory: pullRequest.baseRef?.refUpdateRule?.requiresLinearHistory ?? false
         )
         let contextBadges = PullRequestContextBadge.badges(
-            workflowAttentionType: postMergeWorkflowPreview?.attentionType
+            workflowAttentionType: postMergeWorkflowPreview?.attentionType,
+            excluding: sourceType
         )
         let commitsSinceReview: [PullRequestFocusEntry]
         if let latestViewerReview {
@@ -1314,6 +1315,71 @@ struct GitHubClient {
         )
     }
 
+    func fetchPendingDeploymentReview(
+        token: String,
+        target: WorkflowApprovalTarget
+    ) async throws -> WorkflowPendingDeploymentReviewResult {
+        let observer = GitHubRateLimitObserver()
+        let pendingDeployments = try await fetchWorkflowPendingDeployments(
+            token: token,
+            repository: target.repository,
+            runID: target.runID,
+            observer: observer
+        )
+        let review = WorkflowPendingDeploymentReview(
+            target: target,
+            environments: pendingDeployments
+                .map { deployment in
+                    WorkflowPendingEnvironment(
+                        id: deployment.environment.id,
+                        name: deployment.environment.name,
+                        reviewerSummary: pendingDeploymentReviewerSummary(
+                            for: deployment.reviewers
+                        ),
+                        canApprove: deployment.currentUserCanApprove
+                    )
+                }
+                .sorted { lhs, rhs in
+                    if lhs.canApprove != rhs.canApprove {
+                        return lhs.canApprove && !rhs.canApprove
+                    }
+
+                    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                }
+        )
+
+        return WorkflowPendingDeploymentReviewResult(
+            review: review,
+            rateLimits: await observer.snapshot()
+        )
+    }
+
+    func reviewPendingDeployments(
+        token: String,
+        target: WorkflowApprovalTarget,
+        environmentIDs: [Int],
+        decision: WorkflowPendingDeploymentDecision,
+        comment: String
+    ) async throws -> WorkflowPendingDeploymentMutationResult {
+        let observer = GitHubRateLimitObserver()
+        let repositoryID = try parseRepositoryFullName(target.repository)
+        let _: [ReviewedWorkflowDeployment] = try await request(
+            method: "POST",
+            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/actions/runs/\(target.runID)/pending_deployments",
+            body: ReviewPendingDeploymentsRequest(
+                environmentIDs: environmentIDs,
+                state: decision.rawValue,
+                comment: comment
+            ),
+            token: token,
+            observer: observer
+        )
+
+        return WorkflowPendingDeploymentMutationResult(
+            rateLimits: await observer.snapshot()
+        )
+    }
+
     func fetchSubjectResolutionState(
         token: String,
         reference: GitHubSubjectReference,
@@ -1452,7 +1518,7 @@ struct GitHubClient {
         switch detailsResponse {
         case let .modified(value, etag):
             resolution = subjectResolution(for: value)
-            isInMergeQueue = false
+            isInMergeQueue = value.mergeableState?.caseInsensitiveCompare("queued") == .orderedSame
             headSHA = value.head.sha
             detailsETag = etag
         case let .notModified(etag):
@@ -3812,29 +3878,23 @@ struct GitHubClient {
         workflowRef: String,
         mergeCommitSHA: String?,
         observer: GitHubRateLimitObserver
-    ) async throws -> PullRequestPostMergeWorkflowPreview? {
-        let predicted = try await fetchPredictedPostMergeWorkflows(
+    ) async -> PullRequestPostMergeWorkflowPreview? {
+        async let predictedSet = bestEffortPredictedPostMergeWorkflows(
             token: token,
             reference: reference,
             branch: branch,
             workflowRef: workflowRef,
             observer: observer
         )
-        let observed: [PostMergeObservedWorkflowRun]
-        if let mergeCommitSHA {
-            let runs = try await fetchWorkflowRunsForCommit(
-                token: token,
-                repository: reference.repository,
-                commitSHA: mergeCommitSHA,
-                observer: observer
-            )
-            observed = postMergeObservedWorkflowRuns(
-                from: runs,
-                repository: reference.repository
-            )
-        } else {
-            observed = []
-        }
+        async let observedRuns = bestEffortObservedPostMergeWorkflowRuns(
+            token: token,
+            reference: reference,
+            mergeCommitSHA: mergeCommitSHA,
+            observer: observer
+        )
+
+        let predicted = await predictedSet
+        let observed = await observedRuns
 
         guard !predicted.workflows.isEmpty || !observed.isEmpty || !predicted.issues.isEmpty else {
             return nil
@@ -3847,6 +3907,60 @@ struct GitHubClient {
             isMerged: mergeCommitSHA != nil,
             evaluationIssues: predicted.issues
         )
+    }
+
+    private func bestEffortPredictedPostMergeWorkflows(
+        token: String,
+        reference: PullRequestReference,
+        branch: String,
+        workflowRef: String,
+        observer: GitHubRateLimitObserver
+    ) async -> PredictedPostMergeWorkflowSet {
+        do {
+            return try await fetchPredictedPostMergeWorkflows(
+                token: token,
+                reference: reference,
+                branch: branch,
+                workflowRef: workflowRef,
+                observer: observer
+            )
+        } catch {
+            return PredictedPostMergeWorkflowSet(
+                workflows: [],
+                issues: [
+                    PullRequestPostMergeWorkflowEvaluationIssue(
+                        path: ".github/workflows",
+                        message: "Octowatch could not refresh workflow predictions from GitHub."
+                    )
+                ]
+            )
+        }
+    }
+
+    private func bestEffortObservedPostMergeWorkflowRuns(
+        token: String,
+        reference: PullRequestReference,
+        mergeCommitSHA: String?,
+        observer: GitHubRateLimitObserver
+    ) async -> [PostMergeObservedWorkflowRun] {
+        guard let mergeCommitSHA else {
+            return []
+        }
+
+        do {
+            let runs = try await fetchWorkflowRunsForCommit(
+                token: token,
+                repository: reference.repository,
+                commitSHA: mergeCommitSHA,
+                observer: observer
+            )
+            return postMergeObservedWorkflowRuns(
+                from: runs,
+                repository: reference.repository
+            )
+        } catch {
+            return []
+        }
     }
 
     private func repositoryActionsURL(repository: String) -> URL {
@@ -4277,12 +4391,11 @@ struct GitHubClient {
             return false
         }
 
-        let repositoryID = try parseRepositoryFullName(repository)
-
         do {
-            let pendingDeployments: [WorkflowPendingDeployment] = try await request(
-                path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/actions/runs/\(run.id)/pending_deployments",
+            let pendingDeployments = try await fetchWorkflowPendingDeployments(
                 token: token,
+                repository: repository,
+                runID: run.id,
                 observer: observer
             )
 
@@ -4290,6 +4403,37 @@ struct GitHubClient {
         } catch {
             return false
         }
+    }
+
+    private func fetchWorkflowPendingDeployments(
+        token: String,
+        repository: String,
+        runID: Int,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [WorkflowPendingDeploymentResponse] {
+        let repositoryID = try parseRepositoryFullName(repository)
+        return try await request(
+            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/actions/runs/\(runID)/pending_deployments",
+            token: token,
+            observer: observer
+        )
+    }
+
+    private func pendingDeploymentReviewerSummary(
+        for reviewers: [WorkflowPendingDeploymentReviewerResponse]
+    ) -> String? {
+        let names = reviewers.compactMap { reviewer in
+            reviewer.reviewer.name ??
+                reviewer.reviewer.login ??
+                reviewer.reviewer.slug
+        }
+
+        guard !names.isEmpty else {
+            return nil
+        }
+
+        let list = ListFormatter.localizedString(byJoining: names)
+        return "Review needed from \(list)"
     }
 
     static func isRepositoryWorkflowPath(_ path: String) -> Bool {
@@ -5635,12 +5779,48 @@ private struct WorkflowRun: Decodable {
     }
 }
 
-private struct WorkflowPendingDeployment: Decodable {
+private struct WorkflowPendingDeploymentResponse: Decodable {
+    let environment: WorkflowPendingDeploymentEnvironmentResponse
     let currentUserCanApprove: Bool
+    let reviewers: [WorkflowPendingDeploymentReviewerResponse]
 
     enum CodingKeys: String, CodingKey {
+        case environment
         case currentUserCanApprove = "current_user_can_approve"
+        case reviewers
     }
+}
+
+private struct WorkflowPendingDeploymentEnvironmentResponse: Decodable {
+    let id: Int
+    let name: String
+}
+
+private struct WorkflowPendingDeploymentReviewerResponse: Decodable {
+    let type: String
+    let reviewer: WorkflowPendingDeploymentReviewerIdentity
+}
+
+private struct WorkflowPendingDeploymentReviewerIdentity: Decodable {
+    let login: String?
+    let slug: String?
+    let name: String?
+}
+
+private struct ReviewPendingDeploymentsRequest: Encodable {
+    let environmentIDs: [Int]
+    let state: String
+    let comment: String
+
+    enum CodingKeys: String, CodingKey {
+        case environmentIDs = "environment_ids"
+        case state
+        case comment
+    }
+}
+
+private struct ReviewedWorkflowDeployment: Decodable {
+    let id: Int
 }
 
 private struct RepositoryWorkflowsResponse: Decodable {

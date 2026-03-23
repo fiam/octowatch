@@ -5,6 +5,7 @@ struct MenuBarContentView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
+    @State private var workflowApprovalSheetRequest: WorkflowApprovalSheetRequest?
 
     private let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -35,6 +36,15 @@ struct MenuBarContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .performSettingsOpen)) { _ in
             openSettings()
+        }
+        .sheet(item: $workflowApprovalSheetRequest) { request in
+            WorkflowPendingDeploymentReviewSheet(
+                model: model,
+                request: request,
+                onOpenGitHub: { url in
+                    openURL(url)
+                }
+            )
         }
     }
 
@@ -148,6 +158,21 @@ struct MenuBarContentView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 10)
+
+                                if let workflowApprovalRequest = WorkflowApprovalSheetRequest(item: item) {
+                                    Button {
+                                        model.markItemAsRead(item)
+                                        workflowApprovalSheetRequest = workflowApprovalRequest
+                                    } label: {
+                                        Image(systemName: "hand.raised")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundStyle(.secondary)
+                                            .padding(6)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 8)
+                                    .help("Review pending deployments")
+                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
