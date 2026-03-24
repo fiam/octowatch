@@ -957,6 +957,64 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertNil(successfulWorkflow.workflowApprovalTarget)
     }
 
+    func testPullRequestCheckRunRollupKeepsLatestSuccessfulRerun() {
+        let olderFailure = PullRequestCheckRun(
+            id: 10,
+            name: "JIRA task in title",
+            status: "completed",
+            conclusion: "failure",
+            htmlURL: nil,
+            detailsURL: nil,
+            startedAt: Date(timeIntervalSince1970: 100),
+            completedAt: Date(timeIntervalSince1970: 110),
+            appSlug: "github-actions"
+        )
+        let newerSuccess = PullRequestCheckRun(
+            id: 11,
+            name: "JIRA task in title",
+            status: "completed",
+            conclusion: "success",
+            htmlURL: nil,
+            detailsURL: nil,
+            startedAt: Date(timeIntervalSince1970: 120),
+            completedAt: Date(timeIntervalSince1970: 130),
+            appSlug: "github-actions"
+        )
+
+        let runs = PullRequestCheckRunRollupPolicy.latestRuns(from: [olderFailure, newerSuccess])
+
+        XCTAssertEqual(runs, [newerSuccess])
+    }
+
+    func testPullRequestCheckRunRollupPrefersLatestPendingRerunOverFailure() {
+        let olderFailure = PullRequestCheckRun(
+            id: 10,
+            name: "JIRA task in title",
+            status: "completed",
+            conclusion: "failure",
+            htmlURL: nil,
+            detailsURL: nil,
+            startedAt: Date(timeIntervalSince1970: 100),
+            completedAt: Date(timeIntervalSince1970: 110),
+            appSlug: "github-actions"
+        )
+        let newerPending = PullRequestCheckRun(
+            id: 11,
+            name: "JIRA task in title",
+            status: "in_progress",
+            conclusion: nil,
+            htmlURL: nil,
+            detailsURL: nil,
+            startedAt: Date(timeIntervalSince1970: 120),
+            completedAt: nil,
+            appSlug: "github-actions"
+        )
+
+        let runs = PullRequestCheckRunRollupPolicy.latestRuns(from: [olderFailure, newerPending])
+
+        XCTAssertEqual(runs, [newerPending])
+    }
+
     func testCombinedAttentionViewUsesRelationshipAsSecondaryIndicatorForLatestUpdate() {
         let url = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/pull/638")!
         let authoredItem = AttentionItem(

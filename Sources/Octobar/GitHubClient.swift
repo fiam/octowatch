@@ -1880,6 +1880,9 @@ struct GitHubClient {
             token: token,
             observer: observer
         )
+        let checkRuns = PullRequestCheckRunRollupPolicy.latestRuns(
+            from: response.checkRuns.map(PullRequestCheckRun.init)
+        )
 
         let failingConclusions: Set<String> = [
             "action_required",
@@ -1901,7 +1904,7 @@ struct GitHubClient {
         var failedCount = 0
         var pendingCount = 0
 
-        let failingEntries = response.checkRuns
+        let failingEntries = checkRuns
             .filter { run in
                 let normalizedStatus = run.status.lowercased()
                 let normalizedConclusion = run.conclusion?.lowercased()
@@ -1928,10 +1931,7 @@ struct GitHubClient {
                     return false
                 }
             }
-            .sorted {
-                ($0.completedAt ?? $0.startedAt ?? .distantPast) >
-                    ($1.completedAt ?? $1.startedAt ?? .distantPast)
-            }
+            .sorted(by: PullRequestCheckRunRollupPolicy.isMoreRecent)
             .map { run in
                 PullRequestFocusEntry(
                     id: "check-\(run.id)",
@@ -1939,7 +1939,7 @@ struct GitHubClient {
                     detail: run.conclusion?
                         .replacingOccurrences(of: "_", with: " ")
                         .capitalized,
-                    metadata: run.app?.slug,
+                    metadata: run.appSlug,
                     timestamp: run.completedAt ?? run.startedAt,
                     iconName: "xmark.octagon",
                     accent: .failure,
@@ -5279,6 +5279,90 @@ private struct PullRequestFocusThread {
 private struct PullRequestCheckInsights {
     let summary: PullRequestCheckSummary
     let failingEntries: [PullRequestFocusEntry]
+}
+
+struct PullRequestCheckRun: Hashable, Sendable {
+    let id: Int
+    let name: String
+    let status: String
+    let conclusion: String?
+    let htmlURL: URL?
+    let detailsURL: URL?
+    let startedAt: Date?
+    let completedAt: Date?
+    let appSlug: String?
+
+    init(
+        id: Int,
+        name: String,
+        status: String,
+        conclusion: String?,
+        htmlURL: URL?,
+        detailsURL: URL?,
+        startedAt: Date?,
+        completedAt: Date?,
+        appSlug: String?
+    ) {
+        self.id = id
+        self.name = name
+        self.status = status
+        self.conclusion = conclusion
+        self.htmlURL = htmlURL
+        self.detailsURL = detailsURL
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+        self.appSlug = appSlug
+    }
+
+    fileprivate init(_ run: CheckRun) {
+        id = run.id
+        name = run.name
+        status = run.status
+        conclusion = run.conclusion
+        htmlURL = run.htmlURL
+        detailsURL = run.detailsURL
+        startedAt = run.startedAt
+        completedAt = run.completedAt
+        appSlug = run.app?.slug
+    }
+
+    fileprivate var logicalIdentifier: String {
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedApp = appSlug?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return "\(normalizedApp)::\(normalizedName)"
+    }
+
+    fileprivate var recency: (Date, Date, Int) {
+        (
+            completedAt ?? startedAt ?? .distantPast,
+            startedAt ?? .distantPast,
+            id
+        )
+    }
+}
+
+enum PullRequestCheckRunRollupPolicy {
+    static func latestRuns(from runs: [PullRequestCheckRun]) -> [PullRequestCheckRun] {
+        var latestByIdentifier = [String: PullRequestCheckRun]()
+
+        for run in runs {
+            let key = run.logicalIdentifier
+            guard let existing = latestByIdentifier[key] else {
+                latestByIdentifier[key] = run
+                continue
+            }
+
+            if isMoreRecent(run, than: existing) {
+                latestByIdentifier[key] = run
+            }
+        }
+
+        return latestByIdentifier.values.sorted(by: isMoreRecent)
+    }
+
+    static func isMoreRecent(_ lhs: PullRequestCheckRun, than rhs: PullRequestCheckRun) -> Bool {
+        lhs.recency > rhs.recency
+    }
 }
 
 private struct PullRequestMergeMethodAvailability {
