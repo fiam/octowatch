@@ -11,6 +11,14 @@ final class AppModel: ObservableObject {
     static let shared = AppModel()
 
     @Published private(set) var attentionItems: [AttentionItem] = []
+    @Published private(set) var pullRequestDashboard = PullRequestDashboard.empty
+    @Published private(set) var issueDashboard = IssueDashboard.empty
+    @Published private(set) var isPullRequestDashboardRefreshing = false
+    @Published private(set) var isIssueDashboardRefreshing = false
+    @Published private(set) var pullRequestDashboardLastUpdated: Date?
+    @Published private(set) var issueDashboardLastUpdated: Date?
+    @Published private(set) var pullRequestDashboardLastError: String?
+    @Published private(set) var issueDashboardLastError: String?
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var lastError: String?
     @Published private(set) var isRefreshing = false
@@ -65,6 +73,8 @@ final class AppModel: ObservableObject {
     private var watchedPullRequestTask: Task<Void, Never>?
     private var queuedPostMergeWatchTask: Task<Void, Never>?
     private var latestSnapshotAttentionItems: [AttentionItem] = []
+    private var latestSnapshotPullRequestDashboard = PullRequestDashboard.empty
+    private var latestSnapshotIssueDashboard = IssueDashboard.empty
     private var knownLatestUpdateKeyBySubjectKey = [String: String]()
     private var notificationScanState = NotificationScanState.default
     private var teamMembershipCache = TeamMembershipCache.default
@@ -182,6 +192,14 @@ final class AppModel: ObservableObject {
         attentionItems
     }
 
+    func pullRequestDashboardItems(for filter: PullRequestDashboardFilter) -> [AttentionItem] {
+        pullRequestDashboard[filter]
+    }
+
+    func issueDashboardItems(for filter: IssueDashboardFilter) -> [AttentionItem] {
+        issueDashboard[filter]
+    }
+
     var actionableAttentionItems: [AttentionItem] {
         AttentionItemVisibilityPolicy.excludingHistoricalLogEntries(combinedAttentionItems)
     }
@@ -191,19 +209,15 @@ final class AppModel: ObservableObject {
     }
 
     func relativeLastUpdated(relativeTo referenceDate: Date) -> String {
-        guard let lastUpdated else {
-            return "Not refreshed yet"
-        }
+        relativeUpdateLabel(for: lastUpdated, relativeTo: referenceDate)
+    }
 
-        if abs(lastUpdated.timeIntervalSince(referenceDate)) < 1 {
-            return "Updated now"
-        }
+    func relativePullRequestDashboardLastUpdated(relativeTo referenceDate: Date) -> String {
+        relativeUpdateLabel(for: pullRequestDashboardLastUpdated, relativeTo: referenceDate)
+    }
 
-        let relative = relativeDateFormatter.localizedString(
-            for: lastUpdated,
-            relativeTo: referenceDate
-        )
-        return "Updated \(relative)"
+    func relativeIssueDashboardLastUpdated(relativeTo referenceDate: Date) -> String {
+        relativeUpdateLabel(for: issueDashboardLastUpdated, relativeTo: referenceDate)
     }
 
     var pollIntervalOptions: [Int] {
@@ -220,6 +234,22 @@ final class AppModel: ObservableObject {
 
     var isRateLimitWarning: Bool {
         rateLimitBuckets.contains { $0.isLow || $0.isExhausted }
+    }
+
+    private func relativeUpdateLabel(for updatedAt: Date?, relativeTo referenceDate: Date) -> String {
+        guard let updatedAt else {
+            return "Not refreshed yet"
+        }
+
+        if abs(updatedAt.timeIntervalSince(referenceDate)) < 1 {
+            return "Updated now"
+        }
+
+        let relative = relativeDateFormatter.localizedString(
+            for: updatedAt,
+            relativeTo: referenceDate
+        )
+        return "Updated \(relative)"
     }
 
     func setShowsDebugRateLimitDetails(_ value: Bool) {
@@ -359,7 +389,17 @@ final class AppModel: ObservableObject {
         tokenInput = ""
         usingGitHubCLIToken = false
         latestSnapshotAttentionItems = []
+        latestSnapshotPullRequestDashboard = .empty
+        latestSnapshotIssueDashboard = .empty
         attentionItems = []
+        pullRequestDashboard = .empty
+        issueDashboard = .empty
+        isPullRequestDashboardRefreshing = false
+        isIssueDashboardRefreshing = false
+        pullRequestDashboardLastUpdated = nil
+        issueDashboardLastUpdated = nil
+        pullRequestDashboardLastError = nil
+        issueDashboardLastError = nil
         needsActionItems = []
         userLogin = nil
         lastUpdated = nil
@@ -419,6 +459,105 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func ensurePullRequestDashboardLoaded() async {
+        guard pullRequestDashboardLastUpdated == nil else {
+            return
+        }
+
+        await refreshPullRequestDashboard(force: false)
+    }
+
+    func ensureIssueDashboardLoaded() async {
+        guard issueDashboardLastUpdated == nil else {
+            return
+        }
+
+        await refreshIssueDashboard(force: false)
+    }
+
+    func refreshPullRequestDashboard(force: Bool = true) async {
+        guard hasToken, let token else {
+            return
+        }
+
+        guard !isPullRequestDashboardRefreshing else {
+            return
+        }
+
+        if !force, pullRequestDashboardLastUpdated != nil {
+            return
+        }
+
+        guard let login = userLogin else {
+            return
+        }
+
+        isPullRequestDashboardRefreshing = true
+        defer { isPullRequestDashboardRefreshing = false }
+
+        do {
+            let result = try await client.fetchPullRequestDashboard(
+                token: token,
+                login: login,
+                teamMembershipCache: teamMembershipCache
+            )
+            userLogin = result.login
+            teamMembershipCache = result.teamMembershipCache.normalized
+            persistTeamMembershipCache()
+            mergeRateLimitState(with: result.rateLimits)
+            latestSnapshotPullRequestDashboard = result.dashboard
+            pullRequestDashboardLastUpdated = Date()
+            pullRequestDashboardLastError = nil
+            reconcileVisibleContentFromSnapshot()
+        } catch {
+            if let clientError = error as? GitHubClientError,
+                case let .rateLimited(rateLimit) = clientError {
+                mergeRateLimitState(with: rateLimit)
+            }
+            pullRequestDashboardLastError = error.localizedDescription
+        }
+    }
+
+    func refreshIssueDashboard(force: Bool = true) async {
+        guard hasToken, let token else {
+            return
+        }
+
+        guard !isIssueDashboardRefreshing else {
+            return
+        }
+
+        if !force, issueDashboardLastUpdated != nil {
+            return
+        }
+
+        guard let login = userLogin else {
+            return
+        }
+
+        isIssueDashboardRefreshing = true
+        defer { isIssueDashboardRefreshing = false }
+
+        do {
+            let result = try await client.fetchIssueDashboard(
+                token: token,
+                login: login
+            )
+            userLogin = result.login
+            mergeRateLimitState(with: result.rateLimits)
+            latestSnapshotIssueDashboard = result.dashboard
+            issueDashboardLastUpdated = Date()
+            issueDashboardLastError = nil
+            reconcileVisibleContentFromSnapshot()
+        } catch {
+            if let clientError = error as? GitHubClientError,
+                case let .rateLimited(rateLimit) = clientError {
+                mergeRateLimitState(with: rateLimit)
+            }
+            issueDashboardLastError = error.localizedDescription
+        }
+    }
+
     func forceRefresh(item: AttentionItem? = nil) async {
         if let item, item.pullRequestReference != nil {
             pullRequestFocusCache[item.ignoreKey] = nil
@@ -426,6 +565,17 @@ final class AppModel: ObservableObject {
         }
 
         await refresh(force: true)
+
+        if let item, !item.supportsReadState {
+            switch item.stream {
+            case .pullRequests:
+                await refreshPullRequestDashboard(force: true)
+            case .issues:
+                await refreshIssueDashboard(force: true)
+            case .notifications:
+                break
+            }
+        }
     }
 
     func setWatchedPullRequest(_ item: AttentionItem?) {
@@ -648,7 +798,7 @@ final class AppModel: ObservableObject {
         persistIgnoredItems()
         presentIgnoreUndo(for: ignoredSummaries)
         notifier.removeSubjectNotifications(subjectKeys: Array(ignoredKeys))
-        reconcileAttentionItemsFromSnapshot()
+        reconcileVisibleContentFromSnapshot()
     }
 
     func unignore(_ ignoredItem: IgnoredAttentionSubject) {
@@ -877,7 +1027,7 @@ final class AppModel: ObservableObject {
             persistNotificationScanState()
             persistTeamMembershipCache()
             latestSnapshotAttentionItems = snapshot.attentionItems
-            reconcileAttentionItemsFromSnapshot()
+            reconcileVisibleContentFromSnapshot()
             lastUpdated = Date()
             lastError = nil
 
@@ -952,6 +1102,14 @@ final class AppModel: ObservableObject {
             clearRateLimitState()
             pullRequestFocusCache = [:]
             suppressedTransitionNotificationKeys = []
+            latestSnapshotPullRequestDashboard = .empty
+            latestSnapshotIssueDashboard = .empty
+            pullRequestDashboard = .empty
+            issueDashboard = .empty
+            pullRequestDashboardLastUpdated = nil
+            issueDashboardLastUpdated = nil
+            pullRequestDashboardLastError = nil
+            issueDashboardLastError = nil
             isResolvingInitialContent = false
 
             if previousLogin?.caseInsensitiveCompare(validatedLogin) != .orderedSame {
@@ -1224,6 +1382,10 @@ final class AppModel: ObservableObject {
 
     private func applyingLocalReadState(to item: AttentionItem) -> AttentionItem {
         var updated = item
+        guard item.supportsReadState else {
+            updated.isUnread = false
+            return updated
+        }
         let locallyUnread = isLocallyUnread(item)
         updated.isUnread = item.isUnread && locallyUnread
         return updated
@@ -1237,7 +1399,8 @@ final class AppModel: ObservableObject {
     }
 
     private func updateReadState(for items: [AttentionItem], isUnread: Bool) {
-        let subjectKeys = Set(items.map(\.subjectKey))
+        let readableItems = items.filter(\.supportsReadState)
+        let subjectKeys = Set(readableItems.map(\.subjectKey))
         guard !subjectKeys.isEmpty else {
             return
         }
@@ -1255,7 +1418,7 @@ final class AppModel: ObservableObject {
         if !isUnread {
             notifier.removeSubjectNotifications(subjectKeys: Array(subjectKeys))
         }
-        reconcileAttentionItemsFromSnapshot()
+        reconcileVisibleContentFromSnapshot()
     }
 
     private func persistReadState() {
@@ -1340,14 +1503,15 @@ final class AppModel: ObservableObject {
         syncIgnoredItems()
         persistIgnoredItems()
         trimIgnoreUndoState(removing: ignoredKeys)
-        reconcileAttentionItemsFromSnapshot()
+        reconcileVisibleContentFromSnapshot()
     }
 
-    private func reconcileAttentionItemsFromSnapshot() {
+    private func reconcileVisibleContentFromSnapshot() {
+        let ignoredKeys = Set(ignoredItemsByKey.keys)
         let visibleItems = AttentionItemVisibilityPolicy
             .excludingIgnoredSubjects(
                 latestSnapshotAttentionItems,
-                ignoredKeys: Set(ignoredItemsByKey.keys)
+                ignoredKeys: ignoredKeys
             )
         let aggregatedItems = AttentionCombinedViewPolicy
             .collapsingDuplicates(in: visibleItems)
@@ -1363,6 +1527,10 @@ final class AppModel: ObservableObject {
             key: attentionUpdateHistoryStoreKey
         )
         attentionItems = projection.items.map(applyingLocalReadState)
+        pullRequestDashboard = latestSnapshotPullRequestDashboard
+            .filteringIgnoredSubjects(ignoredKeys)
+        issueDashboard = latestSnapshotIssueDashboard
+            .filteringIgnoredSubjects(ignoredKeys)
         refreshNeedsActionItems()
     }
 
@@ -1380,7 +1548,7 @@ final class AppModel: ObservableObject {
                 ? nil
                 : sanitizedHistory
         }
-        reconcileAttentionItemsFromSnapshot()
+        reconcileVisibleContentFromSnapshot()
     }
 
     private func presentIgnoreUndo(for ignoredItems: [IgnoredAttentionSubject]) {
@@ -1750,7 +1918,17 @@ final class AppModel: ObservableObject {
         tokenInput = ""
         userLogin = fixture.login
         latestSnapshotAttentionItems = fixture.attentionItems
+        latestSnapshotPullRequestDashboard = .empty
+        latestSnapshotIssueDashboard = .empty
         attentionItems = fixture.attentionItems
+        pullRequestDashboard = .empty
+        issueDashboard = .empty
+        isPullRequestDashboardRefreshing = false
+        isIssueDashboardRefreshing = false
+        pullRequestDashboardLastUpdated = nil
+        issueDashboardLastUpdated = nil
+        pullRequestDashboardLastError = nil
+        issueDashboardLastError = nil
         needsActionItems = NeedsActionPolicy.matchingItems(
             in: fixture.attentionItems,
             configuration: needsActionConfiguration

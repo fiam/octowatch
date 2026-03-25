@@ -28,6 +28,114 @@ enum AttentionStream: String, CaseIterable, Hashable, Sendable {
     }
 }
 
+enum PullRequestDashboardFilter: String, CaseIterable, Identifiable, Hashable, Sendable {
+    case created
+    case assigned
+    case mentioned
+    case reviewRequests
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .created:
+            return "Created"
+        case .assigned:
+            return "Assigned"
+        case .mentioned:
+            return "Mentioned"
+        case .reviewRequests:
+            return "Review Requests"
+        }
+    }
+}
+
+enum IssueDashboardFilter: String, CaseIterable, Identifiable, Hashable, Sendable {
+    case created
+    case assigned
+    case mentioned
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .created:
+            return "Created"
+        case .assigned:
+            return "Assigned"
+        case .mentioned:
+            return "Mentioned"
+        }
+    }
+}
+
+struct PullRequestDashboard: Hashable, Sendable {
+    let created: [AttentionItem]
+    let assigned: [AttentionItem]
+    let mentioned: [AttentionItem]
+    let reviewRequests: [AttentionItem]
+
+    static let empty = PullRequestDashboard(
+        created: [],
+        assigned: [],
+        mentioned: [],
+        reviewRequests: []
+    )
+
+    subscript(filter: PullRequestDashboardFilter) -> [AttentionItem] {
+        switch filter {
+        case .created:
+            return created
+        case .assigned:
+            return assigned
+        case .mentioned:
+            return mentioned
+        case .reviewRequests:
+            return reviewRequests
+        }
+    }
+
+    func filteringIgnoredSubjects(_ ignoredKeys: Set<String>) -> PullRequestDashboard {
+        PullRequestDashboard(
+            created: created.filter { !ignoredKeys.contains($0.ignoreKey) },
+            assigned: assigned.filter { !ignoredKeys.contains($0.ignoreKey) },
+            mentioned: mentioned.filter { !ignoredKeys.contains($0.ignoreKey) },
+            reviewRequests: reviewRequests.filter { !ignoredKeys.contains($0.ignoreKey) }
+        )
+    }
+}
+
+struct IssueDashboard: Hashable, Sendable {
+    let created: [AttentionItem]
+    let assigned: [AttentionItem]
+    let mentioned: [AttentionItem]
+
+    static let empty = IssueDashboard(
+        created: [],
+        assigned: [],
+        mentioned: []
+    )
+
+    subscript(filter: IssueDashboardFilter) -> [AttentionItem] {
+        switch filter {
+        case .created:
+            return created
+        case .assigned:
+            return assigned
+        case .mentioned:
+            return mentioned
+        }
+    }
+
+    func filteringIgnoredSubjects(_ ignoredKeys: Set<String>) -> IssueDashboard {
+        IssueDashboard(
+            created: created.filter { !ignoredKeys.contains($0.ignoreKey) },
+            assigned: assigned.filter { !ignoredKeys.contains($0.ignoreKey) },
+            mentioned: mentioned.filter { !ignoredKeys.contains($0.ignoreKey) }
+        )
+    }
+}
+
 enum AttentionCombinedViewPolicy {
     static func collapsingDuplicates(in items: [AttentionItem]) -> [AttentionItem] {
         AttentionSubjectViewPolicy.collapsingUpdates(in: items)
@@ -3196,6 +3304,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     let isHistoricalLogEntry: Bool
     let closureNotificationEligibleOverride: Bool?
     let postMergeWatchEligibleOverride: Bool?
+    let supportsReadState: Bool
     var isUnread: Bool
 
     init(
@@ -3223,6 +3332,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         isHistoricalLogEntry: Bool = false,
         closureNotificationEligibleOverride: Bool? = nil,
         postMergeWatchEligibleOverride: Bool? = nil,
+        supportsReadState: Bool = true,
         isUnread: Bool = true
     ) {
         self.id = id
@@ -3258,6 +3368,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         self.isHistoricalLogEntry = isHistoricalLogEntry
         self.closureNotificationEligibleOverride = closureNotificationEligibleOverride
         self.postMergeWatchEligibleOverride = postMergeWatchEligibleOverride
+        self.supportsReadState = supportsReadState
         self.isUnread = isUnread
     }
 
@@ -3289,6 +3400,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             isHistoricalLogEntry: isHistoricalLogEntry,
             closureNotificationEligibleOverride: closureNotificationEligibleOverride,
             postMergeWatchEligibleOverride: postMergeWatchEligibleOverride,
+            supportsReadState: supportsReadState,
             isUnread: isUnread
         )
     }
@@ -3319,6 +3431,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             isHistoricalLogEntry: isHistoricalLogEntry,
             closureNotificationEligibleOverride: closureNotificationEligibleOverride,
             postMergeWatchEligibleOverride: postMergeWatchEligibleOverride,
+            supportsReadState: supportsReadState,
             isUnread: isUnread
         )
     }
@@ -4410,6 +4523,19 @@ struct GitHubSnapshot: Sendable {
     let rateLimits: GitHubRateLimitSnapshot?
     let notificationScanState: NotificationScanState
     let teamMembershipCache: TeamMembershipCache
+}
+
+struct PullRequestDashboardFetchResult: Sendable {
+    let login: String
+    let dashboard: PullRequestDashboard
+    let rateLimits: GitHubRateLimitSnapshot?
+    let teamMembershipCache: TeamMembershipCache
+}
+
+struct IssueDashboardFetchResult: Sendable {
+    let login: String
+    let dashboard: IssueDashboard
+    let rateLimits: GitHubRateLimitSnapshot?
 }
 
 struct NotificationScanState: Codable, Hashable, Sendable {

@@ -395,6 +395,96 @@ struct GitHubClient {
         )
     }
 
+    func fetchPullRequestDashboard(
+        token: String,
+        login: String,
+        teamMembershipCache: TeamMembershipCache
+    ) async throws -> PullRequestDashboardFetchResult {
+        let observer = GitHubRateLimitObserver()
+        let resolvedTeamMembershipCache = await resolveTeamMembershipCache(
+            token: token,
+            existingCache: teamMembershipCache,
+            observer: observer
+        )
+
+        async let createdTask = searchIssueItems(
+            token: token,
+            query: "is:open is:pr author:\(login) archived:false",
+            perPage: trackedPullRequestLimit,
+            observer: observer
+        )
+        async let assignedTask = searchIssueItems(
+            token: token,
+            query: "is:open is:pr assignee:\(login) archived:false",
+            perPage: trackedPullRequestLimit,
+            observer: observer
+        )
+        async let mentionedTask = searchIssueItems(
+            token: token,
+            query: "is:open is:pr involves:\(login) archived:false",
+            perPage: trackedPullRequestLimit,
+            observer: observer
+        )
+        async let reviewRequestsTask = fetchReviewRequestedPullRequests(
+            token: token,
+            login: login,
+            teamMembershipCache: resolvedTeamMembershipCache,
+            observer: observer
+        )
+
+        let dashboard = buildPullRequestDashboard(
+            created: try await createdTask,
+            assigned: try await assignedTask,
+            mentioned: try await mentionedTask,
+            reviewRequests: try await reviewRequestsTask
+        )
+
+        return PullRequestDashboardFetchResult(
+            login: login,
+            dashboard: dashboard,
+            rateLimits: await observer.snapshot(),
+            teamMembershipCache: resolvedTeamMembershipCache
+        )
+    }
+
+    func fetchIssueDashboard(
+        token: String,
+        login: String
+    ) async throws -> IssueDashboardFetchResult {
+        let observer = GitHubRateLimitObserver()
+
+        async let createdTask = searchIssueItems(
+            token: token,
+            query: "is:open is:issue author:\(login) archived:false",
+            perPage: trackedIssueLimit,
+            observer: observer
+        )
+        async let assignedTask = searchIssueItems(
+            token: token,
+            query: "is:open is:issue assignee:\(login) archived:false",
+            perPage: trackedIssueLimit,
+            observer: observer
+        )
+        async let mentionedTask = searchIssueItems(
+            token: token,
+            query: "is:open is:issue involves:\(login) archived:false",
+            perPage: trackedIssueLimit,
+            observer: observer
+        )
+
+        let dashboard = buildIssueDashboard(
+            created: try await createdTask,
+            assigned: try await assignedTask,
+            mentioned: try await mentionedTask
+        )
+
+        return IssueDashboardFetchResult(
+            login: login,
+            dashboard: dashboard,
+            rateLimits: await observer.snapshot()
+        )
+    }
+
     private func buildAttentionItems(
         pullRequests: [PullRequestSummary],
         trackedPullRequests: [TrackedSubjectSummary],
@@ -562,6 +652,265 @@ struct GitHubClient {
                 trackedIssueItems
         )
             .sorted { $0.timestamp > $1.timestamp }
+    }
+
+    private func buildPullRequestDashboard(
+        created: [IssueItem],
+        assigned: [IssueItem],
+        mentioned: [IssueItem],
+        reviewRequests: [ReviewRequestedPullRequestMatch]
+    ) -> PullRequestDashboard {
+        PullRequestDashboard(
+            created: mergeDashboardItems(
+                created.compactMap {
+                    dashboardAttentionItem(
+                        from: $0,
+                        stream: .pullRequests,
+                        filterKey: PullRequestDashboardFilter.created.rawValue,
+                        type: .authoredPullRequest,
+                        contextTitle: PullRequestDashboardFilter.created.title,
+                        summary: "This open pull request was created by you."
+                    )
+                }
+            ),
+            assigned: mergeDashboardItems(
+                assigned.compactMap {
+                    dashboardAttentionItem(
+                        from: $0,
+                        stream: .pullRequests,
+                        filterKey: PullRequestDashboardFilter.assigned.rawValue,
+                        type: .assignedPullRequest,
+                        contextTitle: PullRequestDashboardFilter.assigned.title,
+                        summary: "This open pull request is assigned to you."
+                    )
+                }
+            ),
+            mentioned: mergeDashboardItems(
+                mentioned.compactMap {
+                    dashboardAttentionItem(
+                        from: $0,
+                        stream: .pullRequests,
+                        filterKey: PullRequestDashboardFilter.mentioned.rawValue,
+                        type: .mention,
+                        contextTitle: PullRequestDashboardFilter.mentioned.title,
+                        summary: "This open pull request matches your GitHub Mentioned view."
+                    )
+                }
+            ),
+            reviewRequests: mergeDashboardItems(
+                reviewRequests.compactMap { match in
+                    dashboardAttentionItem(
+                        from: match.issue,
+                        stream: .pullRequests,
+                        filterKey: PullRequestDashboardFilter.reviewRequests.rawValue,
+                        type: match.isTeamScoped ? .teamReviewRequested : .reviewRequested,
+                        contextTitle: PullRequestDashboardFilter.reviewRequests.title,
+                        summary: match.isTeamScoped
+                            ? "A team you're on was asked to review this pull request."
+                            : "This open pull request is waiting for your review."
+                    )
+                }
+            )
+        )
+    }
+
+    private func buildIssueDashboard(
+        created: [IssueItem],
+        assigned: [IssueItem],
+        mentioned: [IssueItem]
+    ) -> IssueDashboard {
+        IssueDashboard(
+            created: mergeDashboardItems(
+                created.compactMap {
+                    dashboardAttentionItem(
+                        from: $0,
+                        stream: .issues,
+                        filterKey: IssueDashboardFilter.created.rawValue,
+                        type: .authoredIssue,
+                        contextTitle: IssueDashboardFilter.created.title,
+                        summary: "This open issue was created by you."
+                    )
+                }
+            ),
+            assigned: mergeDashboardItems(
+                assigned.compactMap {
+                    dashboardAttentionItem(
+                        from: $0,
+                        stream: .issues,
+                        filterKey: IssueDashboardFilter.assigned.rawValue,
+                        type: .assignedIssue,
+                        contextTitle: IssueDashboardFilter.assigned.title,
+                        summary: "This open issue is assigned to you."
+                    )
+                }
+            ),
+            mentioned: mergeDashboardItems(
+                mentioned.compactMap {
+                    dashboardAttentionItem(
+                        from: $0,
+                        stream: .issues,
+                        filterKey: IssueDashboardFilter.mentioned.rawValue,
+                        type: .mention,
+                        contextTitle: IssueDashboardFilter.mentioned.title,
+                        summary: "This open issue matches your GitHub Mentioned view."
+                    )
+                }
+            )
+        )
+    }
+
+    private func mergePullRequestSummaries(
+        _ summaries: [PullRequestSummary]
+    ) -> [PullRequestSummary] {
+        var byKey = [String: PullRequestSummary]()
+
+        for summary in summaries {
+            if let existing = byKey[summary.ignoreKey], existing.updatedAt >= summary.updatedAt {
+                continue
+            }
+
+            byKey[summary.ignoreKey] = summary
+        }
+
+        return byKey.values.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func pullRequestSummaries(
+        from issues: [IssueItem],
+        resolution: GitHubSubjectResolution
+    ) -> [PullRequestSummary] {
+        issues.compactMap { issue in
+            guard let repository = repositoryFullName(from: issue.repositoryURL) else {
+                return nil
+            }
+
+            return PullRequestSummary(
+                id: issue.id,
+                ignoreKey: issue.htmlURL.absoluteString,
+                number: issue.number,
+                title: issue.title,
+                subtitle: "#\(issue.number) · \(repository)",
+                repository: repository,
+                labels: issue.labels.map(\.gitHubLabel),
+                url: issue.htmlURL,
+                updatedAt: issue.updatedAt,
+                resolution: resolution
+            )
+        }
+    }
+
+    private func mergeDashboardItems(_ items: [AttentionItem]) -> [AttentionItem] {
+        var byKey = [String: AttentionItem]()
+
+        for item in items {
+            guard let existing = byKey[item.ignoreKey] else {
+                byKey[item.ignoreKey] = item
+                continue
+            }
+
+            if existing.timestamp == item.timestamp {
+                if dashboardDisplayPriority(for: item.type) > dashboardDisplayPriority(for: existing.type) {
+                    byKey[item.ignoreKey] = item
+                }
+                continue
+            }
+
+            if existing.timestamp < item.timestamp {
+                byKey[item.ignoreKey] = item
+            }
+        }
+
+        return byKey.values.sorted { lhs, rhs in
+            if lhs.timestamp == rhs.timestamp {
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+
+            return lhs.timestamp > rhs.timestamp
+        }
+    }
+
+    private func dashboardDisplayPriority(for type: AttentionItemType) -> Int {
+        switch type {
+        case .reviewRequested:
+            return 2
+        case .teamReviewRequested:
+            return 1
+        default:
+            return 0
+        }
+    }
+
+    private func dashboardAttentionItem(
+        from issue: IssueItem,
+        stream: AttentionStream,
+        filterKey: String,
+        type: AttentionItemType,
+        contextTitle: String,
+        summary: String
+    ) -> AttentionItem? {
+        guard let repository = repositoryFullName(from: issue.repositoryURL) else {
+            return nil
+        }
+
+        let subjectTitle = stream == .pullRequests ? "Pull request" : "Issue"
+        let openActionTitle = stream == .pullRequests ? "Open Pull Request" : "Open Issue"
+        let subjectIcon = stream == .pullRequests ? "arrow.triangle.pull" : "exclamationmark.circle"
+        let detail = AttentionDetail(
+            contextPillTitle: contextTitle,
+            why: AttentionWhy(summary: summary, detail: nil),
+            evidence: [
+                AttentionEvidence(
+                    id: "subject",
+                    title: subjectTitle,
+                    detail: "#\(issue.number) · \(issue.title)",
+                    iconName: subjectIcon,
+                    url: issue.htmlURL
+                ),
+                AttentionEvidence(
+                    id: "repository",
+                    title: "Repository",
+                    detail: repository,
+                    iconName: "shippingbox",
+                    url: repositoryWebURL(repository: repository)
+                )
+            ],
+            actions: [
+                AttentionAction(
+                    id: "open-subject",
+                    title: openActionTitle,
+                    iconName: "arrow.up.right.square",
+                    url: issue.htmlURL,
+                    isPrimary: true
+                ),
+                AttentionAction(
+                    id: "open-repo",
+                    title: "Open Repository",
+                    iconName: "shippingbox",
+                    url: repositoryWebURL(repository: repository)
+                )
+            ],
+            acknowledgement: "Use Open to continue on GitHub or Ignore to hide it locally."
+        )
+
+        return AttentionItem(
+            id: "dashboard:\(stream.rawValue):\(filterKey):\(repository)#\(issue.number)",
+            subjectKey: issue.htmlURL.absoluteString,
+            updateKey: "dashboard:\(stream.rawValue):\(filterKey):\(repository)#\(issue.number):\(Int(issue.updatedAt.timeIntervalSince1970))",
+            latestSourceID: "dashboard:\(stream.rawValue):\(filterKey):\(repository)#\(issue.number)",
+            stream: stream,
+            type: type,
+            title: issue.title,
+            subtitle: repository,
+            repository: repository,
+            labels: issue.labels.map(\.gitHubLabel),
+            timestamp: issue.updatedAt,
+            url: issue.htmlURL,
+            isTriggeredByCurrentUser: type.isSelfTriggeredRelationshipType,
+            subjectResolution: .open,
+            detail: detail,
+            supportsReadState: false,
+            isUnread: false
+        )
     }
 
     private func detail(for pullRequest: PullRequestSummary) -> AttentionDetail {
@@ -2104,6 +2453,70 @@ struct GitHubClient {
         let commented = try await commentedTask
 
         return mergeTrackedSubjects(assigned + authored + commented)
+    }
+
+    private func fetchReviewRequestedPullRequests(
+        token: String,
+        login: String,
+        teamMembershipCache: TeamMembershipCache,
+        observer: GitHubRateLimitObserver
+    ) async throws -> [ReviewRequestedPullRequestMatch] {
+        var matches = try await searchIssueItems(
+            token: token,
+            query: "is:open is:pr review-requested:\(login) archived:false",
+            perPage: trackedPullRequestLimit,
+            observer: observer
+        ).map { ReviewRequestedPullRequestMatch(issue: $0, isTeamScoped: false) }
+
+        for membershipKey in teamMembershipCache.normalized.membershipKeys {
+            let components = membershipKey.split(separator: "/", maxSplits: 1).map(String.init)
+            guard components.count == 2 else {
+                continue
+            }
+
+            let issues = try await searchIssueItems(
+                token: token,
+                query: """
+                is:open is:pr team-review-requested:\(components[0])/\(components[1]) archived:false
+                """,
+                perPage: trackedPullRequestLimit,
+                observer: observer
+            )
+            matches.append(
+                contentsOf: issues.map {
+                    ReviewRequestedPullRequestMatch(issue: $0, isTeamScoped: true)
+                }
+            )
+        }
+
+        var byKey = [String: ReviewRequestedPullRequestMatch]()
+
+        for match in matches {
+            let key = match.issue.htmlURL.absoluteString
+            guard let existing = byKey[key] else {
+                byKey[key] = match
+                continue
+            }
+
+            if existing.issue.updatedAt == match.issue.updatedAt {
+                if existing.isTeamScoped && !match.isTeamScoped {
+                    byKey[key] = match
+                }
+                continue
+            }
+
+            if existing.issue.updatedAt < match.issue.updatedAt {
+                byKey[key] = match
+            }
+        }
+
+        return byKey.values.sorted { lhs, rhs in
+            if lhs.issue.updatedAt == rhs.issue.updatedAt {
+                return lhs.issue.title.localizedCaseInsensitiveCompare(rhs.issue.title) == .orderedAscending
+            }
+
+            return lhs.issue.updatedAt > rhs.issue.updatedAt
+        }
     }
 
     private func searchTrackedSubjects(
@@ -5711,6 +6124,11 @@ private struct FallbackNotificationCandidate: Sendable {
 private struct NotificationFetchResult: Sendable {
     let notifications: [NotificationSummary]
     let scanState: NotificationScanState
+}
+
+private struct ReviewRequestedPullRequestMatch: Sendable {
+    let issue: IssueItem
+    let isTeamScoped: Bool
 }
 
 private struct Subject: Decodable {

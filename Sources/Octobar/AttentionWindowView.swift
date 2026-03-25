@@ -3,7 +3,7 @@ import SwiftUI
 
 struct AttentionWindowView: View {
     private enum InboxScope: String, CaseIterable, Identifiable {
-        case all
+        case focus
         case pullRequests
         case issues
         case workflows
@@ -13,7 +13,7 @@ struct AttentionWindowView: View {
 
         var section: AttentionSection? {
             switch self {
-            case .all:
+            case .focus:
                 return nil
             case .pullRequests:
                 return .pullRequests
@@ -31,7 +31,7 @@ struct AttentionWindowView: View {
                 return section.title
             }
 
-            return "All"
+            return "Focus"
         }
 
         var iconName: String {
@@ -39,7 +39,7 @@ struct AttentionWindowView: View {
                 return section.iconName
             }
 
-            return "square.stack.3d.up"
+            return "scope"
         }
 
         var itemNoun: String {
@@ -55,7 +55,7 @@ struct AttentionWindowView: View {
                 return section.emptyTitle
             }
 
-            return "Inbox is clear"
+            return "Focus is clear"
         }
 
         var emptyUnreadTitle: String {
@@ -71,7 +71,25 @@ struct AttentionWindowView: View {
                 return section.focusedSectionTitle
             }
 
-            return "All Items"
+            return "Focus"
+        }
+
+        var supportsUnreadFilter: Bool {
+            switch self {
+            case .focus, .workflows, .notifications:
+                return true
+            case .pullRequests, .issues:
+                return false
+            }
+        }
+
+        var supportsNeedsActionSection: Bool {
+            switch self {
+            case .focus, .workflows, .notifications:
+                return true
+            case .pullRequests, .issues:
+                return false
+            }
         }
     }
 
@@ -86,7 +104,9 @@ struct AttentionWindowView: View {
     @Environment(\.openURL) private var openURL
 
     @State private var selectedItemIDs = Set<AttentionItem.ID>()
-    @State private var inboxScope: InboxScope = .all
+    @State private var inboxScope: InboxScope = .focus
+    @State private var pullRequestDashboardFilter: PullRequestDashboardFilter = .created
+    @State private var issueDashboardFilter: IssueDashboardFilter = .assigned
     @State private var showsUnreadOnly = false
     @State private var autoMarkReadTask: Task<Void, Never>?
     @State private var autoSelectionTask: Task<Void, Never>?
@@ -118,10 +138,25 @@ struct AttentionWindowView: View {
         .onChange(of: model.attentionItems) { _, _ in
             syncSelection()
         }
+        .onChange(of: model.pullRequestDashboard) { _, _ in
+            syncSelection()
+        }
+        .onChange(of: model.issueDashboard) { _, _ in
+            syncSelection()
+        }
         .onChange(of: showsUnreadOnly) { _, _ in
             syncSelection()
         }
         .onChange(of: inboxScope) { _, _ in
+            syncSelection()
+            Task {
+                await loadDashboardIfNeeded()
+            }
+        }
+        .onChange(of: pullRequestDashboardFilter) { _, _ in
+            syncSelection()
+        }
+        .onChange(of: issueDashboardFilter) { _, _ in
             syncSelection()
         }
         .onChange(of: model.autoMarkReadSetting) { _, _ in
@@ -129,8 +164,10 @@ struct AttentionWindowView: View {
                 armAutoMarkReadForCurrentSelection()
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: showsInitialLoadingState)
         .animation(.easeInOut(duration: 0.18), value: model.ignoreUndoState?.id)
+        .task(id: dashboardLoadTaskID) {
+            await loadDashboardIfNeeded()
+        }
         .task(id: pullRequestFocusTaskID) {
             await loadPullRequestFocusForSelection()
         }
@@ -154,19 +191,21 @@ struct AttentionWindowView: View {
                     .appInteractiveHover()
                     .help(selectionActionItems.count == 1 ? "Open on GitHub" : "Open selected items on GitHub")
 
-                    Button {
-                        performPrimaryReadAction(for: selectionActionItems)
-                    } label: {
-                        Label(
-                            primaryReadActionTitle,
-                            systemImage: primaryReadActionSymbol
-                        )
+                    if showsReadActions {
+                        Button {
+                            performPrimaryReadAction(for: selectionActionItems)
+                        } label: {
+                            Label(
+                                primaryReadActionTitle,
+                                systemImage: primaryReadActionSymbol
+                            )
+                        }
+                        .appInteractiveHover()
+                        .keyboardShortcut("u", modifiers: [.command, .shift])
+                        .accessibilityIdentifier("item-toggle-read-state")
+                        .accessibilityLabel(primaryReadActionTitle)
+                        .help(primaryReadActionTitle)
                     }
-                    .appInteractiveHover()
-                    .keyboardShortcut("u", modifiers: [.command, .shift])
-                    .accessibilityIdentifier("item-toggle-read-state")
-                    .accessibilityLabel(primaryReadActionTitle)
-                    .help(primaryReadActionTitle)
 
                     Button {
                         ignoreSelection(selectionActionItems)
@@ -186,12 +225,12 @@ struct AttentionWindowView: View {
                         }
 
                         Task {
-                            await model.forceRefresh(item: item)
+                            await refreshSelection(item)
                         }
                     } label: {
                         Label("Refresh Item", systemImage: "arrow.clockwise")
                     }
-                    .disabled(model.isRefreshing)
+                    .disabled(isScopeRefreshing)
                     .appInteractiveHover()
                     .keyboardShortcut("r", modifiers: [.command])
                     .help("Refresh selected item")
@@ -213,16 +252,14 @@ struct AttentionWindowView: View {
     @ViewBuilder
     private func windowContent(relativeTo referenceDate: Date) -> some View {
         ZStack(alignment: .bottomTrailing) {
-            if showsInitialLoadingState {
+            NavigationSplitView {
+                sidebar(relativeTo: referenceDate)
+            } detail: {
+                detailPane(relativeTo: referenceDate)
+            }
+
+            if showsLoadingState {
                 loadingView
-                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
-            } else {
-                NavigationSplitView {
-                    sidebar(relativeTo: referenceDate)
-                } detail: {
-                    detailPane(relativeTo: referenceDate)
-                }
-                .transition(.opacity)
             }
 
             if let ignoreUndoState = model.ignoreUndoState {
@@ -238,23 +275,46 @@ struct AttentionWindowView: View {
         }
     }
 
-    private var showsInitialLoadingState: Bool {
-        (model.isResolvingInitialContent && !model.hasToken) ||
-            (
-                model.hasToken &&
-                    model.lastUpdated == nil &&
-                    model.isRefreshing &&
-                    displayedItems.isEmpty &&
-                    model.lastError == nil
-            )
+    private var showsLoadingState: Bool {
+        if model.isResolvingInitialContent && !model.hasToken {
+            return true
+        }
+
+        switch inboxScope {
+        case .focus, .workflows, .notifications:
+            return model.hasToken &&
+                model.lastUpdated == nil &&
+                model.isRefreshing &&
+                displayedItems.isEmpty &&
+                currentError == nil
+        case .pullRequests:
+            return model.hasToken &&
+                model.pullRequestDashboardLastUpdated == nil &&
+                model.isPullRequestDashboardRefreshing &&
+                displayedItems.isEmpty &&
+                currentError == nil
+        case .issues:
+            return model.hasToken &&
+                model.issueDashboardLastUpdated == nil &&
+                model.isIssueDashboardRefreshing &&
+                displayedItems.isEmpty &&
+                currentError == nil
+        }
     }
 
     private var scopedItems: [AttentionItem] {
-        model.combinedAttentionItems.filter(matchesScope)
+        switch inboxScope {
+        case .focus, .workflows, .notifications:
+            return model.combinedAttentionItems.filter(matchesAttentionScope)
+        case .pullRequests:
+            return model.pullRequestDashboardItems(for: pullRequestDashboardFilter)
+        case .issues:
+            return model.issueDashboardItems(for: issueDashboardFilter)
+        }
     }
 
     private var visibleItems: [AttentionItem] {
-        guard showsUnreadOnly else {
+        guard inboxScope.supportsUnreadFilter, showsUnreadOnly else {
             return scopedItems
         }
 
@@ -266,16 +326,38 @@ struct AttentionWindowView: View {
             ProgressView()
                 .controlSize(.large)
 
-            Text("Refreshing inbox…")
+            Text(loadingTitle)
                 .font(.title3.weight(.semibold))
 
-            Text("Fetching the latest GitHub activity.")
+            Text(loadingSubtitle)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var loadingTitle: String {
+        switch inboxScope {
+        case .focus, .workflows, .notifications:
+            return "Refreshing inbox…"
+        case .pullRequests:
+            return "Refreshing pull requests…"
+        case .issues:
+            return "Refreshing issues…"
+        }
+    }
+
+    private var loadingSubtitle: String {
+        switch inboxScope {
+        case .focus, .workflows, .notifications:
+            return "Fetching the latest GitHub activity."
+        case .pullRequests:
+            return "Loading your pull request dashboard."
+        case .issues:
+            return "Loading your issue dashboard."
+        }
     }
 
     private var displayedItems: [AttentionItem] {
@@ -287,7 +369,11 @@ struct AttentionWindowView: View {
     }
 
     private var scopedNeedsActionItems: [AttentionItem] {
-        model.needsActionItems.filter(matchesScope)
+        guard inboxScope.supportsNeedsActionSection else {
+            return []
+        }
+
+        return model.needsActionItems.filter(matchesAttentionScope)
     }
 
     private var needsActionItemsInCurrentStream: [AttentionItem] {
@@ -299,7 +385,11 @@ struct AttentionWindowView: View {
     }
 
     private var displayedOtherItems: [AttentionItem] {
-        visibleItems.filter { !needsActionSubjectKeys.contains($0.subjectKey) }
+        guard inboxScope.supportsNeedsActionSection else {
+            return visibleItems
+        }
+
+        return visibleItems.filter { !needsActionSubjectKeys.contains($0.subjectKey) }
     }
 
     private var displayedSections: [SidebarSectionDescriptor] {
@@ -316,7 +406,7 @@ struct AttentionWindowView: View {
         }
 
         switch inboxScope {
-        case .all:
+        case .focus:
             let sectionOrder: [AttentionSection] = [.pullRequests, .issues, .workflows, .notifications]
             for section in sectionOrder {
                 let items = displayedOtherItems.filter {
@@ -342,7 +432,7 @@ struct AttentionWindowView: View {
             sections.append(
                 SidebarSectionDescriptor(
                     id: inboxScope.rawValue,
-                    title: inboxScope.focusedSectionTitle,
+                    title: currentSectionTitle,
                     items: displayedOtherItems
                 )
             )
@@ -363,6 +453,10 @@ struct AttentionWindowView: View {
         return selectionActionItems.first
     }
 
+    private var showsReadActions: Bool {
+        selectionActionItems.contains(where: \.supportsReadState)
+    }
+
     private var primaryReadActionTitle: String {
         selectionActionItems.contains(where: \.isUnread) ? "Mark Read" : "Mark Unread"
     }
@@ -378,6 +472,61 @@ struct AttentionWindowView: View {
 
         return "\(item.ignoreKey)#\(item.timestamp.timeIntervalSince1970)#\(model.lastUpdated?.timeIntervalSince1970 ?? 0)"
             + "#\(model.pullRequestWatchRevision)"
+    }
+
+    private var currentSectionTitle: String {
+        switch inboxScope {
+        case .focus, .workflows, .notifications:
+            return inboxScope.focusedSectionTitle
+        case .pullRequests:
+            return "\(pullRequestDashboardFilter.title) Pull Requests"
+        case .issues:
+            return "\(issueDashboardFilter.title) Issues"
+        }
+    }
+
+    private var dashboardLoadTaskID: String {
+        switch inboxScope {
+        case .pullRequests:
+            return "pr#\(model.lastUpdated?.timeIntervalSince1970 ?? 0)#\(model.pullRequestDashboardLastUpdated?.timeIntervalSince1970 ?? 0)"
+        case .issues:
+            return "issue#\(model.lastUpdated?.timeIntervalSince1970 ?? 0)#\(model.issueDashboardLastUpdated?.timeIntervalSince1970 ?? 0)"
+        case .focus, .workflows, .notifications:
+            return inboxScope.rawValue
+        }
+    }
+
+    private var isScopeRefreshing: Bool {
+        switch inboxScope {
+        case .focus, .workflows, .notifications:
+            return model.isRefreshing
+        case .pullRequests:
+            return model.isPullRequestDashboardRefreshing
+        case .issues:
+            return model.isIssueDashboardRefreshing
+        }
+    }
+
+    private var currentError: String? {
+        switch inboxScope {
+        case .focus, .workflows, .notifications:
+            return model.lastError
+        case .pullRequests:
+            return model.pullRequestDashboardLastError
+        case .issues:
+            return model.issueDashboardLastError
+        }
+    }
+
+    private func currentLastUpdatedText(relativeTo referenceDate: Date) -> String {
+        switch inboxScope {
+        case .focus, .workflows, .notifications:
+            return model.relativeLastUpdated(relativeTo: referenceDate)
+        case .pullRequests:
+            return model.relativePullRequestDashboardLastUpdated(relativeTo: referenceDate)
+        case .issues:
+            return model.relativeIssueDashboardLastUpdated(relativeTo: referenceDate)
+        }
     }
 
     private var selectionBinding: Binding<Set<AttentionItem.ID>> {
@@ -429,7 +578,7 @@ struct AttentionWindowView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .navigationSplitViewColumnWidth(min: 320, ideal: 360)
+        .navigationSplitViewColumnWidth(min: 360, ideal: 420)
     }
 
     private func sidebarHeader(relativeTo _: Date) -> some View {
@@ -441,19 +590,19 @@ struct AttentionWindowView: View {
 
                     Spacer()
 
-                    Button(action: model.refreshNow) {
+                    Button(action: refreshCurrentScope) {
                         ZStack {
                             Image(systemName: "arrow.clockwise")
-                                .opacity(model.isRefreshing ? 0 : 1)
+                                .opacity(isScopeRefreshing ? 0 : 1)
 
-                            if model.isRefreshing && !showsInitialLoadingState {
+                            if isScopeRefreshing && !showsLoadingState {
                                 ProgressView()
                                     .controlSize(.small)
                             }
                         }
                         .frame(width: 18, height: 18)
                     }
-                    .disabled(model.isRefreshing)
+                    .disabled(isScopeRefreshing)
                     .buttonStyle(.borderless)
                     .appInteractiveHover(backgroundOpacity: 0.08, cornerRadius: 8)
                     .help("Refresh")
@@ -465,7 +614,7 @@ struct AttentionWindowView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                Text(model.relativeLastUpdated(relativeTo: context.date))
+                Text(currentLastUpdatedText(relativeTo: context.date))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -492,7 +641,7 @@ struct AttentionWindowView: View {
                     }
                 }
 
-                if let lastError = model.lastError {
+                if let lastError = currentError {
                     Text(lastError)
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -508,16 +657,35 @@ struct AttentionWindowView: View {
     }
 
     private var scopeControls: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 10) {
+        VStack(alignment: .leading, spacing: 10) {
+            if inboxScope.supportsUnreadFilter {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .center, spacing: 10) {
+                        scopeFilterRow
+                        unreadFilterButton
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        scopeFilterRow
+                        unreadFilterButton
+                    }
+                }
+            } else {
                 scopeFilterRow
-                unreadFilterButton
             }
 
-            VStack(alignment: .leading, spacing: 10) {
-                scopeFilterRow
-                unreadFilterButton
+            if showsDashboardFilters {
+                dashboardFilterControls
             }
+        }
+    }
+
+    private var showsDashboardFilters: Bool {
+        switch inboxScope {
+        case .pullRequests, .issues:
+            return true
+        case .focus, .workflows, .notifications:
+            return false
         }
     }
 
@@ -567,6 +735,84 @@ struct AttentionWindowView: View {
             .padding(.vertical, 1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var dashboardFilterControls: some View {
+        switch inboxScope {
+        case .pullRequests:
+            dashboardFilterRow(title: "Pull Request Filters") {
+                ForEach(PullRequestDashboardFilter.allCases) { filter in
+                    dashboardFilterChip(
+                        title: filter.title,
+                        isSelected: pullRequestDashboardFilter == filter
+                    ) {
+                        pullRequestDashboardFilter = filter
+                    }
+                }
+            }
+        case .issues:
+            dashboardFilterRow(title: "Issue Filters") {
+                ForEach(IssueDashboardFilter.allCases) { filter in
+                    dashboardFilterChip(
+                        title: filter.title,
+                        isSelected: issueDashboardFilter == filter
+                    ) {
+                        issueDashboardFilter = filter
+                    }
+                }
+            }
+        case .focus, .workflows, .notifications:
+            EmptyView()
+        }
+    }
+
+    private func dashboardFilterRow<Content: View>(
+        title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                content()
+            }
+            .padding(.vertical, 1)
+        }
+        .accessibilityLabel(title)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func dashboardFilterChip(
+        title: String,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .foregroundStyle(isSelected ? .white : .primary)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(
+                            isSelected
+                                ? Color.accentColor
+                                : Color(nsColor: .controlBackgroundColor)
+                        )
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(
+                            isSelected
+                                ? Color.accentColor.opacity(0.85)
+                                : Color(nsColor: .separatorColor).opacity(0.45),
+                            lineWidth: 1
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+        .appInteractiveHover(backgroundOpacity: isSelected ? 0 : 0.08, cornerRadius: 999)
+        .accessibilityLabel("Show \(title)")
     }
 
     private var unreadFilterButton: some View {
@@ -662,12 +908,14 @@ struct AttentionWindowView: View {
     }
 
     private var emptyStateView: some View {
-        let title = showsUnreadOnly ? inboxScope.emptyUnreadTitle : inboxScope.emptyTitle
+        let title = inboxScope.supportsUnreadFilter && showsUnreadOnly
+            ? inboxScope.emptyUnreadTitle
+            : inboxScope.emptyTitle
         let description: String
 
-        if showsUnreadOnly {
+        if inboxScope.supportsUnreadFilter && showsUnreadOnly {
             description = switch inboxScope {
-            case .all:
+            case .focus:
                 "Everything currently in the inbox has been marked read."
             case .pullRequests:
                 "Everything in the pull request view has been marked read."
@@ -680,12 +928,12 @@ struct AttentionWindowView: View {
             }
         } else {
             description = switch inboxScope {
-            case .all:
+            case .focus:
                 "Octowatch is watching GitHub, but there is nothing actionable right now."
             case .pullRequests:
-                "There are no pull request items matching the current inbox view."
+                "There are no open pull requests in the \(pullRequestDashboardFilter.title) view."
             case .issues:
-                "There are no issue items matching the current inbox view."
+                "There are no open issues in the \(issueDashboardFilter.title) view."
             case .workflows:
                 "There are no workflow items matching the current inbox view."
             case .notifications:
@@ -701,6 +949,23 @@ struct AttentionWindowView: View {
     }
 
     private var summaryLine: String {
+        switch inboxScope {
+        case .pullRequests:
+            return dashboardSummaryLine(
+                count: scopedItems.count,
+                noun: "pull request",
+                filterTitle: pullRequestDashboardFilter.title
+            )
+        case .issues:
+            return dashboardSummaryLine(
+                count: scopedItems.count,
+                noun: "issue",
+                filterTitle: issueDashboardFilter.title
+            )
+        case .focus, .workflows, .notifications:
+            break
+        }
+
         let totalItemCount = scopedItems.count
         let unreadCount = scopedItems.filter(\.isUnread).count
         let needsActionCount = scopedNeedsActionItems.count
@@ -730,6 +995,15 @@ struct AttentionWindowView: View {
 
         let actionSummary = needsActionCount == 1 ? "1 action item" : "\(needsActionCount) action items"
         return "\(actionSummary) · \(itemLabel) · \(unreadLabel)"
+    }
+
+    private func dashboardSummaryLine(
+        count: Int,
+        noun: String,
+        filterTitle: String
+    ) -> String {
+        let label = count == 1 ? "1 \(noun)" : "\(count) \(noun)s"
+        return "\(filterTitle) · \(label)"
     }
 
     private func sidebarSectionHeader(title: String, count: Int) -> some View {
@@ -771,7 +1045,11 @@ struct AttentionWindowView: View {
         ContentUnavailableView {
             Label("\(selectionActionItems.count) Items Selected", systemImage: "checklist")
         } description: {
-            Text("Use the toolbar or the right-click menu to open items, update their read state, or ignore them.")
+            Text(
+                showsReadActions
+                    ? "Use the toolbar or the right-click menu to open items, update their read state, or ignore them."
+                    : "Use the toolbar or the right-click menu to open items or ignore them."
+            )
         }
     }
 
@@ -805,7 +1083,7 @@ struct AttentionWindowView: View {
         return selection.intersection(displayedItemIDs)
     }
 
-    private func matchesScope(_ item: AttentionItem) -> Bool {
+    private func matchesAttentionScope(_ item: AttentionItem) -> Bool {
         guard let section = inboxScope.section else {
             return true
         }
@@ -821,6 +1099,41 @@ struct AttentionWindowView: View {
     private func unreadCountLabel(for count: Int) -> String {
         let noun = count == 1 ? inboxScope.itemNoun : "\(inboxScope.itemNoun)s"
         return "Showing \(count) unread \(noun)"
+    }
+
+    private func loadDashboardIfNeeded() async {
+        switch inboxScope {
+        case .pullRequests:
+            await model.ensurePullRequestDashboardLoaded()
+        case .issues:
+            await model.ensureIssueDashboardLoaded()
+        case .focus, .workflows, .notifications:
+            break
+        }
+    }
+
+    private func refreshCurrentScope() {
+        Task {
+            switch inboxScope {
+            case .pullRequests:
+                await model.refreshPullRequestDashboard(force: true)
+            case .issues:
+                await model.refreshIssueDashboard(force: true)
+            case .focus, .workflows, .notifications:
+                await model.forceRefresh()
+            }
+        }
+    }
+
+    private func refreshSelection(_ item: AttentionItem) async {
+        switch inboxScope {
+        case .pullRequests:
+            await model.refreshPullRequestDashboard(force: true)
+        case .issues:
+            await model.refreshIssueDashboard(force: true)
+        case .focus, .workflows, .notifications:
+            await model.forceRefresh(item: item)
+        }
     }
 
     private func scheduleAutoSelection(_ itemID: AttentionItem.ID) {
@@ -844,13 +1157,15 @@ struct AttentionWindowView: View {
 
     private func openRelatedURL(_ url: URL, for item: AttentionItem) {
         cancelAutoMarkReadTask()
-        model.markItemAsRead(item)
+        if item.supportsReadState {
+            model.markItemAsRead(item)
+        }
         openURL(url)
     }
 
     private func openSelection(_ items: [AttentionItem]) {
         cancelAutoMarkReadTask()
-        model.markItemsAsRead(items)
+        model.markItemsAsRead(items.filter(\.supportsReadState))
 
         for item in items {
             openURL(item.url)
@@ -884,7 +1199,7 @@ struct AttentionWindowView: View {
         _ request: WorkflowApprovalSheetRequest
     ) {
         cancelAutoMarkReadTask()
-        if let sourceItem = request.sourceItem {
+        if let sourceItem = request.sourceItem, sourceItem.supportsReadState {
             model.markItemAsRead(sourceItem)
         }
         workflowApprovalSheetRequest = request
@@ -920,7 +1235,9 @@ struct AttentionWindowView: View {
         }
 
         cancelAutoMarkReadTask()
-        model.markItemsAsRead(items.filter { $0.workflowApprovalURL != nil })
+        model.markItemsAsRead(
+            items.filter { $0.supportsReadState && $0.workflowApprovalURL != nil }
+        )
 
         for approvalURL in approvalURLs {
             openURL(approvalURL)
@@ -939,6 +1256,7 @@ struct AttentionWindowView: View {
     private func selectionContextMenu(for items: [AttentionItem]) -> some View {
         let approvalRequests = workflowApprovalRequests(for: items)
         let approvalURLs = workflowApprovalURLs(for: items)
+        let readEligibleItems = items.filter(\.supportsReadState)
 
         if approvalRequests.count == 1, let approvalRequest = approvalRequests.first {
             Button {
@@ -973,21 +1291,23 @@ struct AttentionWindowView: View {
             Label("Open", systemImage: "safari")
         }
 
-        Button {
-            markSelectionAsRead(items)
-        } label: {
-            Label("Mark as Read", systemImage: "circle")
-        }
-        .disabled(!items.contains(where: \.isUnread))
+        if !readEligibleItems.isEmpty {
+            Button {
+                markSelectionAsRead(readEligibleItems)
+            } label: {
+                Label("Mark as Read", systemImage: "circle")
+            }
+            .disabled(!readEligibleItems.contains(where: \.isUnread))
 
-        Button {
-            markSelectionAsUnread(items)
-        } label: {
-            Label("Mark as Unread", systemImage: "circle.fill")
-        }
-        .disabled(!items.contains(where: { !$0.isUnread }))
+            Button {
+                markSelectionAsUnread(readEligibleItems)
+            } label: {
+                Label("Mark as Unread", systemImage: "circle.fill")
+            }
+            .disabled(!readEligibleItems.contains(where: { !$0.isUnread }))
 
-        Divider()
+            Divider()
+        }
 
         Button {
             ignoreSelection(items)
@@ -1000,6 +1320,7 @@ struct AttentionWindowView: View {
         cancelAutoMarkReadTask()
 
         guard let item = selectedItem,
+            item.supportsReadState,
             item.isUnread,
             let autoMarkReadDelay = model.autoMarkReadDelay else {
             return
