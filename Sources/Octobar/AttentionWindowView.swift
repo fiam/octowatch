@@ -258,10 +258,6 @@ struct AttentionWindowView: View {
                 detailPane(relativeTo: referenceDate)
             }
 
-            if showsLoadingState {
-                loadingView
-            }
-
             if let ignoreUndoState = model.ignoreUndoState {
                 IgnoreUndoBanner(
                     state: ignoreUndoState,
@@ -321,7 +317,7 @@ struct AttentionWindowView: View {
         return scopedItems.filter(\.isUnread)
     }
 
-    private var loadingView: some View {
+    private var loadingContent: some View {
         VStack(spacing: 16) {
             ProgressView()
                 .controlSize(.large)
@@ -334,8 +330,6 @@ struct AttentionWindowView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var loadingTitle: String {
@@ -555,7 +549,9 @@ struct AttentionWindowView: View {
             }
 
             Group {
-                if !model.hasToken {
+                if showsLoadingState {
+                    sidebarLoadingView
+                } else if !model.hasToken {
                     connectionRequiredView
                 } else if displayedItems.isEmpty {
                     emptyStateView
@@ -579,6 +575,13 @@ struct AttentionWindowView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .navigationSplitViewColumnWidth(min: 360, ideal: 420)
+    }
+
+    private var sidebarLoadingView: some View {
+        loadingContent
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private func sidebarHeader(relativeTo _: Date) -> some View {
@@ -850,7 +853,9 @@ struct AttentionWindowView: View {
 
     private func detailPane(relativeTo referenceDate: Date) -> some View {
         Group {
-            if !model.hasToken {
+            if showsLoadingState {
+                loadingDetailPlaceholder
+            } else if !model.hasToken {
                 connectionRequiredView
             } else if selectionActionItems.count > 1 {
                 multipleSelectionView
@@ -892,6 +897,10 @@ struct AttentionWindowView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var loadingDetailPlaceholder: some View {
+        Color(nsColor: .windowBackgroundColor)
     }
 
     private var connectionRequiredView: some View {
