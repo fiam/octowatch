@@ -1534,6 +1534,36 @@ struct GitHubClient {
             )
         )
 
+        var supplementalItems = [AttentionItem]()
+        if let latestViewerReview,
+            let viewerReviewUpdate = viewerReviewUpdateSummary(from: latestViewerReview) {
+            supplementalItems.append(
+                selfUpdateAttentionItem(
+                    idPrefix: AttentionSubjectRefresh.localSupplementalItemIDPrefix,
+                    subjectKey: reference.pullRequestURL.absoluteString,
+                    stableBaseID: "\(reference.repository)#\(reference.number)",
+                    title: pullRequest.title,
+                    repository: reference.repository,
+                    labels: focusLabels,
+                    url: pullRequest.url,
+                    selfUpdate: viewerReviewUpdate,
+                    detail: nil,
+                    resolution: resolution,
+                    isUnread: true
+                )
+            )
+        }
+        supplementalItems.append(
+            contentsOf: PullRequestFocusSupplementalItemPolicy.workflowItems(
+                reference: reference,
+                title: pullRequest.title,
+                repository: reference.repository,
+                labels: focusLabels,
+                resolution: resolution,
+                preview: postMergeWorkflowPreview
+            )
+        )
+
         return PullRequestFocusResult(
             focus: focus,
             rateLimits: await observer.snapshot(),
@@ -1541,29 +1571,7 @@ struct GitHubClient {
                 subjectKey: reference.pullRequestURL.absoluteString,
                 labels: focusLabels,
                 mergedAt: pullRequest.mergedAt,
-                supplementalItems: latestViewerReview
-                    .flatMap(viewerReviewUpdateSummary(from:))
-                    .map {
-                        [
-                            selfUpdateAttentionItem(
-                                idPrefix: AttentionSubjectRefresh.localSupplementalItemIDPrefix,
-                                subjectKey: reference.pullRequestURL.absoluteString,
-                                stableBaseID: "\(reference.repository)#\(reference.number)",
-                                title: pullRequest.title,
-                                repository: reference.repository,
-                                labels: focusLabels,
-                                url: pullRequest.url,
-                                selfUpdate: $0,
-                                detail: nil,
-                                resolution: pullRequest.merged
-                                    ? .merged
-                                    : pullRequest.state.caseInsensitiveCompare("closed") == .orderedSame
-                                    ? .closed
-                                    : .open,
-                                isUnread: true
-                            )
-                        ]
-                    } ?? []
+                supplementalItems: supplementalItems
             )
         )
     }

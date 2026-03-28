@@ -654,6 +654,69 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testFocusWorkflowSupplementalItemsPromoteMergedPullRequestsIntoNeedsAction() {
+        let reference = PullRequestReference(owner: "example", name: "repo", number: 42)
+        let subjectURL = reference.pullRequestURL
+        let workflowURL = URL(string: "https://github.com/example/repo/actions/runs/99")!
+        let mergedItem = AttentionItem(
+            id: "tracked-pr:42",
+            subjectKey: subjectURL.absoluteString,
+            type: .reviewApproved,
+            secondaryIndicatorType: .authoredPullRequest,
+            focusType: .authoredPullRequest,
+            title: "Example PR",
+            subtitle: "example/repo · Review approved",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 100),
+            url: subjectURL,
+            subjectResolution: .merged
+        )
+        let supplementalItems = PullRequestFocusSupplementalItemPolicy.workflowItems(
+            reference: reference,
+            title: "Example PR",
+            repository: "example/repo",
+            labels: [],
+            resolution: .merged,
+            preview: PullRequestPostMergeWorkflowPreview(
+                mode: .observed(branch: "main"),
+                workflows: [
+                    PullRequestPostMergeWorkflow(
+                        id: "run:99",
+                        title: "Promote main",
+                        url: workflowURL,
+                        status: .actionRequired,
+                        timestamp: Date(timeIntervalSince1970: 200)
+                    )
+                ],
+                evaluationIssues: []
+            )
+        )
+
+        let refreshed = AttentionSubjectRefreshPolicy.applying(
+            AttentionSubjectRefresh(
+                subjectKey: subjectURL.absoluteString,
+                labels: [],
+                mergedAt: Date(timeIntervalSince1970: 150),
+                supplementalItems: supplementalItems
+            ),
+            to: [mergedItem]
+        )
+        let combined = AttentionCombinedViewPolicy.collapsingDuplicates(in: refreshed)
+        let matches = NeedsActionPolicy.matchingItems(
+            in: combined,
+            configuration: .default
+        )
+
+        XCTAssertEqual(supplementalItems.map(\.type), [.workflowApprovalRequired])
+        XCTAssertEqual(combined.count, 1)
+        XCTAssertEqual(
+            combined.first?.currentUpdateTypes,
+            Set([.reviewApproved, .workflowApprovalRequired])
+        )
+        XCTAssertEqual(combined.first?.workflowApprovalURL, workflowURL)
+        XCTAssertEqual(matches.map(\.id), [subjectURL.absoluteString])
+    }
+
     func testAttentionTypeDefaultStreamMapsDirectWorkSeparately() {
         XCTAssertEqual(AttentionItemType.comment.defaultStream, .notifications)
         XCTAssertEqual(AttentionItemType.authoredPullRequest.defaultStream, .pullRequests)
@@ -2341,6 +2404,48 @@ final class AttentionClassificationTests: XCTestCase {
         )
 
         XCTAssertTrue(badges.isEmpty)
+    }
+
+    func testPullRequestFocusDisplayedContextBadgesHideWorkflowBadgeAfterSourceTypeRefresh() {
+        let focus = PullRequestFocus(
+            reference: PullRequestReference(owner: "example", name: "repo", number: 42),
+            baseBranch: "main",
+            sourceType: .reviewApproved,
+            mode: .authored,
+            resolution: .merged,
+            mergedAt: Date(timeIntervalSince1970: 100),
+            author: nil,
+            labels: [],
+            headerFacts: [],
+            contextBadges: PullRequestContextBadge.badges(
+                workflowAttentionType: .workflowApprovalRequired,
+                excluding: .reviewApproved
+            ),
+            descriptionHTML: nil,
+            statusSummary: nil,
+            postMergeWorkflowPreview: PullRequestPostMergeWorkflowPreview(
+                mode: .observed(branch: "main"),
+                workflows: [
+                    PullRequestPostMergeWorkflow(
+                        id: "run:99",
+                        title: "Promote main",
+                        url: URL(string: "https://github.com/example/repo/actions/runs/99")!,
+                        status: .actionRequired,
+                        timestamp: Date(timeIntervalSince1970: 120)
+                    )
+                ],
+                evaluationIssues: []
+            ),
+            sections: [],
+            actions: [],
+            reviewMergeAction: nil,
+            emptyStateTitle: "",
+            emptyStateDetail: ""
+        )
+
+        XCTAssertTrue(
+            focus.displayedContextBadges(excluding: .workflowApprovalRequired).isEmpty
+        )
     }
 
     func testReadyToMergeHeaderFactsUseApprovalLanguage() {

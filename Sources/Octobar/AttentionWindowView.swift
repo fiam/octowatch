@@ -579,9 +579,9 @@ struct AttentionWindowView: View {
 
     private var sidebarLoadingView: some View {
         loadingContent
-            .padding(24)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .windowBackgroundColor))
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private func sidebarHeader(relativeTo _: Date) -> some View {
@@ -2276,12 +2276,16 @@ private struct PullRequestFocusView: View {
         return reviewMergeAction.mergeMethod
     }
 
+    private var displayedContextBadges: [PullRequestContextBadge] {
+        focus.displayedContextBadges(excluding: sourceItem.type)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            if !focus.contextBadges.isEmpty {
+            if !displayedContextBadges.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(focus.contextBadges) { badge in
+                        ForEach(displayedContextBadges) { badge in
                             PullRequestContextBadgeView(badge: badge)
                         }
                     }

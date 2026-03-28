@@ -1684,6 +1684,19 @@ struct PullRequestFocus: Hashable, Sendable {
     let reviewMergeAction: PullRequestReviewMergeAction?
     let emptyStateTitle: String
     let emptyStateDetail: String
+
+    func displayedContextBadges(
+        excluding currentSourceType: AttentionItemType
+    ) -> [PullRequestContextBadge] {
+        if currentSourceType == sourceType || postMergeWorkflowPreview == nil {
+            return contextBadges
+        }
+
+        return PullRequestContextBadge.badges(
+            workflowAttentionType: postMergeWorkflowPreview?.attentionType,
+            excluding: currentSourceType
+        )
+    }
 }
 
 enum PullRequestPostMergeWorkflowStatus: Hashable, Sendable {
@@ -1876,6 +1889,135 @@ struct PullRequestPostMergeWorkflow: Identifiable, Hashable, Sendable {
         }
 
         return WorkflowApprovalTarget(url: url)
+    }
+}
+
+enum PullRequestFocusSupplementalItemPolicy {
+    static func workflowItems(
+        reference: PullRequestReference,
+        title: String,
+        repository: String,
+        labels: [GitHubLabel],
+        resolution: GitHubSubjectResolution,
+        preview: PullRequestPostMergeWorkflowPreview?
+    ) -> [AttentionItem] {
+        guard let preview else {
+            return []
+        }
+
+        return preview.workflows.compactMap { workflow in
+            guard
+                let type = actionableAttentionType(for: workflow.status),
+                let timestamp = workflow.timestamp
+            else {
+                return nil
+            }
+
+            let repositoryURL = URL(string: "https://github.com/\(repository)")
+            let subjectURL = reference.pullRequestURL
+            let runIdentifier = workflowRunIdentifier(from: workflow.url) ?? workflow.id
+
+            return AttentionItem(
+                id: "\(AttentionSubjectRefresh.localSupplementalItemIDPrefix)workflow:\(runIdentifier)",
+                subjectKey: subjectURL.absoluteString,
+                updateKey: "focus-supplemental:workflow:\(runIdentifier):\(type.rawValue):\(Int(timestamp.timeIntervalSince1970))",
+                latestSourceID: "focus-supplemental:workflow:\(runIdentifier)",
+                stream: .pullRequests,
+                type: type,
+                title: title,
+                subtitle: repository,
+                repository: repository,
+                labels: labels,
+                timestamp: timestamp,
+                url: workflow.url,
+                subjectResolution: resolution,
+                detail: AttentionDetail(
+                    why: AttentionWhy(
+                        summary: whySummary(for: type),
+                        detail: "This workflow activity was observed while loading the pull request detail."
+                    ),
+                    evidence: [
+                        AttentionEvidence(
+                            id: "run",
+                            title: "Workflow run",
+                            detail: workflow.title,
+                            iconName: type.iconName,
+                            url: workflow.url
+                        ),
+                        AttentionEvidence(
+                            id: "repository",
+                            title: "Repository",
+                            detail: repository,
+                            iconName: "shippingbox",
+                            url: repositoryURL
+                        ),
+                        AttentionEvidence(
+                            id: "subject",
+                            title: "Related pull request",
+                            detail: "#\(reference.number) · \(title)",
+                            iconName: "arrow.triangle.pull",
+                            url: subjectURL
+                        )
+                    ],
+                    actions: [
+                        AttentionAction(
+                            id: "open-run",
+                            title: "Open Workflow Run",
+                            iconName: "bolt",
+                            url: workflow.url,
+                            isPrimary: true
+                        ),
+                        AttentionAction(
+                            id: "open-pr",
+                            title: "Open Pull Request",
+                            iconName: "arrow.triangle.pull",
+                            url: subjectURL
+                        )
+                    ],
+                    acknowledgement: "Use the toolbar to mark this read or ignore it."
+                )
+            )
+        }
+    }
+
+    private static func actionableAttentionType(
+        for status: PullRequestPostMergeWorkflowStatus
+    ) -> AttentionItemType? {
+        switch status {
+        case .actionRequired:
+            return .workflowApprovalRequired
+        case .failed:
+            return .workflowFailed
+        case .expected, .waiting, .queued, .inProgress, .succeeded, .completed:
+            return nil
+        }
+    }
+
+    private static func workflowRunIdentifier(from url: URL) -> String? {
+        if let approvalTarget = WorkflowApprovalTarget(url: url) {
+            return approvalTarget.id
+        }
+
+        let components = url.pathComponents
+        guard
+            let runsIndex = components.firstIndex(of: "runs"),
+            runsIndex + 1 < components.count
+        else {
+            return nil
+        }
+
+        return components[runsIndex + 1]
+    }
+
+    private static func whySummary(for type: AttentionItemType) -> String {
+        switch type {
+        case .workflowApprovalRequired:
+            return "A post-merge workflow is waiting for approval."
+        case .workflowFailed:
+            return "A post-merge workflow failed and likely needs intervention."
+        default:
+            return "A post-merge workflow needs attention."
+        }
     }
 }
 
