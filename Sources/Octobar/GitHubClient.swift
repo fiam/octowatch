@@ -284,28 +284,6 @@ struct GitHubClient {
             )
         }
 
-        do {
-            let _: SearchIssuesResponse = try await request(
-                path: "/search/issues",
-                queryItems: [
-                    URLQueryItem(
-                        name: "q",
-                        value: "is:open is:pr assignee:\(user.login) archived:false"
-                    ),
-                    URLQueryItem(name: "per_page", value: "1")
-                ],
-                token: token
-            )
-        } catch {
-            throw mapTokenValidationError(
-                error,
-                fallback: """
-                This token cannot search pull requests assigned to you. Octowatch needs \
-                access to GitHub search for pull requests.
-                """
-            )
-        }
-
         return user.login
     }
 
@@ -345,16 +323,6 @@ struct GitHubClient {
             teamMembershipCache: resolvedTeamMembershipCache,
             observer: observer
         )
-        async let workflowRunsTask = fetchWatchedWorkflowRuns(
-            token: token,
-            login: login,
-            observer: observer
-        )
-        async let trackedIssuesTask = fetchTrackedIssues(
-            token: token,
-            login: login,
-            observer: observer
-        )
 
         let openAuthoredPullRequests = try await openAuthoredPullRequestsTask
         async let trackedPullRequestsTask = fetchTrackedPullRequests(
@@ -374,8 +342,18 @@ struct GitHubClient {
         let trackedPullRequests = try await trackedPullRequestsTask
         let authoredPullRequestSignals = try await authoredPullRequestSignalsTask
         let notificationFetch = try await notificationsTask
-        let workflowRuns = try await workflowRunsTask
-        let trackedIssues = try await trackedIssuesTask
+
+        let workflowCandidates = workflowWatchCandidates(
+            assignedPullRequests: pullRequests,
+            trackedPullRequests: trackedPullRequests,
+            openAuthoredIssues: openAuthoredPullRequests
+        )
+        let workflowRuns = try await fetchWatchedWorkflowRuns(
+            token: token,
+            login: login,
+            candidates: workflowCandidates,
+            observer: observer
+        )
 
         let attentionItems = buildAttentionItems(
             pullRequests: pullRequests,
@@ -383,7 +361,7 @@ struct GitHubClient {
             authoredPullRequestSignals: authoredPullRequestSignals,
             notifications: notificationFetch.notifications,
             actionRuns: workflowRuns,
-            trackedIssues: trackedIssues
+            trackedIssues: []
         )
 
         return GitHubSnapshot(
@@ -407,25 +385,17 @@ struct GitHubClient {
             observer: observer
         )
 
-        async let createdTask = searchIssueItems(
-            token: token,
-            query: "is:open is:pr author:\(login) archived:false",
-            perPage: trackedPullRequestLimit,
-            observer: observer
-        )
-        async let assignedTask = searchIssueItems(
-            token: token,
-            query: "is:open is:pr assignee:\(login) archived:false",
-            perPage: trackedPullRequestLimit,
-            observer: observer
-        )
-        async let mentionedTask = searchIssueItems(
+        let allIssues = try await searchIssueItems(
             token: token,
             query: "is:open is:pr involves:\(login) archived:false",
             perPage: trackedPullRequestLimit,
             observer: observer
         )
-        async let reviewRequestsTask = fetchReviewRequestedPullRequests(
+
+        let created = allIssues.filter { $0.isCreatedBy(login) }
+        let assigned = allIssues.filter { $0.isAssignedTo(login) }
+        let reviewRequests = await classifyReviewRequests(
+            from: allIssues,
             token: token,
             login: login,
             teamMembershipCache: resolvedTeamMembershipCache,
@@ -433,10 +403,10 @@ struct GitHubClient {
         )
 
         let dashboard = buildPullRequestDashboard(
-            created: try await createdTask,
-            assigned: try await assignedTask,
-            mentioned: try await mentionedTask,
-            reviewRequests: try await reviewRequestsTask
+            created: created,
+            assigned: assigned,
+            mentioned: allIssues,
+            reviewRequests: reviewRequests
         )
 
         return PullRequestDashboardFetchResult(
@@ -453,19 +423,7 @@ struct GitHubClient {
     ) async throws -> IssueDashboardFetchResult {
         let observer = GitHubRateLimitObserver()
 
-        async let createdTask = searchIssueItems(
-            token: token,
-            query: "is:open is:issue author:\(login) archived:false",
-            perPage: trackedIssueLimit,
-            observer: observer
-        )
-        async let assignedTask = searchIssueItems(
-            token: token,
-            query: "is:open is:issue assignee:\(login) archived:false",
-            perPage: trackedIssueLimit,
-            observer: observer
-        )
-        async let mentionedTask = searchIssueItems(
+        let allIssues = try await searchIssueItems(
             token: token,
             query: "is:open is:issue involves:\(login) archived:false",
             perPage: trackedIssueLimit,
@@ -473,9 +431,9 @@ struct GitHubClient {
         )
 
         let dashboard = buildIssueDashboard(
-            created: try await createdTask,
-            assigned: try await assignedTask,
-            mentioned: try await mentionedTask
+            created: allIssues.filter { $0.isCreatedBy(login) },
+            assigned: allIssues.filter { $0.isAssignedTo(login) },
+            mentioned: allIssues
         )
 
         return IssueDashboardFetchResult(
@@ -2343,24 +2301,14 @@ struct GitHubClient {
         login: String,
         observer: GitHubRateLimitObserver
     ) async throws -> [PullRequestSummary] {
-        async let openTask = searchPullRequests(
+        let summaries = try await searchPullRequests(
             token: token,
-            query: "is:open is:pr assignee:\(login) archived:false",
-            perPage: 20,
-            observer: observer
-        )
-        async let mergedTask = searchPullRequests(
-            token: token,
-            query: "is:merged is:pr assignee:\(login) archived:false",
-            perPage: 20,
+            query: "is:pr assignee:\(login) archived:false",
+            perPage: 40,
             observer: observer
         )
 
-        let open = try await openTask
-        let merged = try await mergedTask
-        let summaries = open + merged
         var byKey = [String: PullRequestSummary]()
-
         for summary in summaries {
             if let existing = byKey[summary.ignoreKey], existing.updatedAt >= summary.updatedAt {
                 continue
@@ -2380,27 +2328,21 @@ struct GitHubClient {
     ) async throws -> [TrackedSubjectSummary] {
         async let mergedAuthoredTask = searchTrackedSubjects(
             token: token,
-            queries: ["is:merged is:pr author:\(login) archived:false"],
+            query: "is:merged is:pr author:\(login) archived:false",
             type: .authoredPullRequest,
             perPage: trackedPullRequestLimit,
             observer: observer
         )
         async let reviewedTask = searchTrackedSubjects(
             token: token,
-            queries: [
-                "is:open is:pr reviewed-by:\(login) archived:false",
-                "is:merged is:pr reviewed-by:\(login) archived:false"
-            ],
+            query: "is:pr reviewed-by:\(login) archived:false",
             type: .reviewedPullRequest,
             perPage: trackedPullRequestLimit,
             observer: observer
         )
         async let commentedTask = searchTrackedSubjects(
             token: token,
-            queries: [
-                "is:open is:pr commenter:\(login) archived:false",
-                "is:merged is:pr commenter:\(login) archived:false"
-            ],
+            query: "is:pr commenter:\(login) archived:false",
             type: .commentedPullRequest,
             perPage: trackedPullRequestLimit,
             observer: observer
@@ -2429,38 +2371,52 @@ struct GitHubClient {
         )
     }
 
-    private func fetchTrackedIssues(
+    private func classifyReviewRequests(
+        from issues: [IssueItem],
         token: String,
         login: String,
+        teamMembershipCache: TeamMembershipCache,
         observer: GitHubRateLimitObserver
-    ) async throws -> [TrackedSubjectSummary] {
-        async let assignedTask = searchTrackedSubjects(
-            token: token,
-            queries: ["is:open is:issue assignee:\(login) archived:false"],
-            type: .assignedIssue,
-            perPage: trackedIssueLimit,
-            observer: observer
-        )
-        async let authoredTask = searchTrackedSubjects(
-            token: token,
-            queries: ["is:open is:issue author:\(login) archived:false"],
-            type: .authoredIssue,
-            perPage: trackedIssueLimit,
-            observer: observer
-        )
-        async let commentedTask = searchTrackedSubjects(
-            token: token,
-            queries: ["is:open is:issue commenter:\(login) archived:false"],
-            type: .commentedIssue,
-            perPage: trackedIssueLimit,
-            observer: observer
-        )
+    ) async -> [ReviewRequestedPullRequestMatch] {
+        await withTaskGroup(of: ReviewRequestedPullRequestMatch?.self) { group in
+            for issue in issues {
+                guard let repository = repositoryFullName(from: issue.repositoryURL) else {
+                    continue
+                }
 
-        let assigned = try await assignedTask
-        let authored = try await authoredTask
-        let commented = try await commentedTask
+                group.addTask {
+                    do {
+                        let state: PullRequestReviewRequestState = try await request(
+                            path: "/repos/\(repository)/pulls/\(issue.number)",
+                            token: token,
+                            observer: observer
+                        )
 
-        return mergeTrackedSubjects(assigned + authored + commented)
+                        guard let classification = state.isRequestedFrom(
+                            login: login,
+                            teamMembershipCache: teamMembershipCache
+                        ) else {
+                            return nil
+                        }
+
+                        return ReviewRequestedPullRequestMatch(
+                            issue: issue,
+                            isTeamScoped: classification == .team
+                        )
+                    } catch {
+                        return nil
+                    }
+                }
+            }
+
+            var matches = [ReviewRequestedPullRequestMatch]()
+            for await match in group {
+                if let match {
+                    matches.append(match)
+                }
+            }
+            return matches
+        }
     }
 
     private func fetchReviewRequestedPullRequests(
@@ -2476,22 +2432,21 @@ struct GitHubClient {
             observer: observer
         ).map { ReviewRequestedPullRequestMatch(issue: $0, isTeamScoped: false) }
 
-        for membershipKey in teamMembershipCache.normalized.membershipKeys {
-            let components = membershipKey.split(separator: "/", maxSplits: 1).map(String.init)
-            guard components.count == 2 else {
-                continue
-            }
+        let teamQualifiers = teamMembershipCache.normalized.membershipKeys.compactMap { key -> String? in
+            let components = key.split(separator: "/", maxSplits: 1).map(String.init)
+            guard components.count == 2 else { return nil }
+            return "team-review-requested:\(components[0])/\(components[1])"
+        }
 
-            let issues = try await searchIssueItems(
+        if !teamQualifiers.isEmpty {
+            let teamIssues = try await searchIssueItems(
                 token: token,
-                query: """
-                is:open is:pr team-review-requested:\(components[0])/\(components[1]) archived:false
-                """,
+                query: "is:open is:pr archived:false \(teamQualifiers.joined(separator: " "))",
                 perPage: trackedPullRequestLimit,
                 observer: observer
             )
             matches.append(
-                contentsOf: issues.map {
+                contentsOf: teamIssues.map {
                     ReviewRequestedPullRequestMatch(issue: $0, isTeamScoped: true)
                 }
             )
@@ -2529,24 +2484,19 @@ struct GitHubClient {
 
     private func searchTrackedSubjects(
         token: String,
-        queries: [String],
+        query: String,
         type: AttentionItemType,
         perPage: Int,
         observer: GitHubRateLimitObserver
     ) async throws -> [TrackedSubjectSummary] {
-        var summaries = [TrackedSubjectSummary]()
+        let issues = try await searchIssueItems(
+            token: token,
+            query: query,
+            perPage: perPage,
+            observer: observer
+        )
 
-        for query in queries {
-            let issues = try await searchIssueItems(
-                token: token,
-                query: query,
-                perPage: perPage,
-                observer: observer
-            )
-
-            let resolution: GitHubSubjectResolution = query.contains("is:merged") ? .merged : .open
-            summaries.append(contentsOf: trackedSubjectSummaries(from: issues, type: type, resolution: resolution))
-        }
+        let summaries = trackedSubjectSummaries(from: issues, type: type)
 
         var byKey = [String: TrackedSubjectSummary]()
         for summary in summaries {
@@ -2706,7 +2656,6 @@ struct GitHubClient {
             perPage: perPage,
             observer: observer
         )
-        let resolution: GitHubSubjectResolution = query.contains("is:merged") ? .merged : .open
         return issues.compactMap { issue in
             guard let repository = repositoryFullName(from: issue.repositoryURL) else {
                 return nil
@@ -2722,7 +2671,7 @@ struct GitHubClient {
                 labels: issue.labels.map(\.gitHubLabel),
                 url: issue.htmlURL,
                 updatedAt: issue.updatedAt,
-                resolution: resolution
+                resolution: issue.resolution
             )
         }
     }
@@ -2817,7 +2766,7 @@ struct GitHubClient {
     private func trackedSubjectSummaries(
         from issues: [IssueItem],
         type: AttentionItemType,
-        resolution: GitHubSubjectResolution
+        resolution: GitHubSubjectResolution? = nil
     ) -> [TrackedSubjectSummary] {
         issues.compactMap { issue in
             guard let repository = repositoryFullName(from: issue.repositoryURL) else {
@@ -2838,7 +2787,7 @@ struct GitHubClient {
                 actor: nil,
                 isTriggeredByCurrentUser: type.isSelfTriggeredRelationshipType,
                 latestSelfUpdate: nil,
-                resolution: resolution
+                resolution: resolution ?? issue.resolution
             )
         }
     }
@@ -3862,13 +3811,9 @@ struct GitHubClient {
     private func fetchWatchedWorkflowRuns(
         token: String,
         login: String,
+        candidates: [WorkflowWatchCandidate],
         observer: GitHubRateLimitObserver
     ) async throws -> [ActionRunSummary] {
-        let candidates = try await fetchWorkflowWatchCandidates(
-            token: token,
-            login: login,
-            observer: observer
-        )
 
         return await withTaskGroup(of: [ActionRunSummary].self) { group in
             for candidate in candidates {
@@ -3900,77 +3845,58 @@ struct GitHubClient {
         }
     }
 
-    private func fetchWorkflowWatchCandidates(
-        token: String,
-        login: String,
-        observer: GitHubRateLimitObserver
-    ) async throws -> [WorkflowWatchCandidate] {
-        async let authoredTask = searchWorkflowWatchCandidates(
-            token: token,
-            query: "is:pr author:\(login) archived:false",
-            relationship: .authored,
-            observer: observer
-        )
-        async let reviewedTask = searchWorkflowWatchCandidates(
-            token: token,
-            query: "is:pr reviewed-by:\(login) archived:false",
-            relationship: .reviewed,
-            observer: observer
-        )
-        async let assignedTask = searchWorkflowWatchCandidates(
-            token: token,
-            query: "is:open is:pr assignee:\(login) archived:false",
-            relationship: .assigned,
-            observer: observer
-        )
-        async let mergedTask = searchWorkflowWatchCandidates(
-            token: token,
-            query: "is:pr is:merged merged-by:\(login) archived:false",
-            relationship: .merged,
-            observer: observer
-        )
+    private func workflowWatchCandidates(
+        assignedPullRequests: [PullRequestSummary],
+        trackedPullRequests: [TrackedSubjectSummary],
+        openAuthoredIssues: [IssueItem]
+    ) -> [WorkflowWatchCandidate] {
+        var candidates = [WorkflowWatchCandidate]()
 
-        let authored = try await authoredTask
-        let reviewed = try await reviewedTask
-        let assigned = try await assignedTask
-        let merged = try await mergedTask
+        for pr in openAuthoredIssues {
+            guard let repository = repositoryFullName(from: pr.repositoryURL) else {
+                continue
+            }
+            candidates.append(WorkflowWatchCandidate(
+                repository: repository,
+                number: pr.number,
+                relationship: .authored,
+                updatedAt: pr.updatedAt
+            ))
+        }
+
+        for pr in trackedPullRequests {
+            let relationship: WorkflowWatchRelationship
+            switch pr.type {
+            case .authoredPullRequest:
+                relationship = .authored
+            case .reviewedPullRequest:
+                relationship = .reviewed
+            case .commentedPullRequest:
+                relationship = .reviewed
+            default:
+                continue
+            }
+            candidates.append(WorkflowWatchCandidate(
+                repository: pr.repository,
+                number: pr.number,
+                relationship: relationship,
+                updatedAt: pr.updatedAt
+            ))
+        }
+
+        for pr in assignedPullRequests {
+            candidates.append(WorkflowWatchCandidate(
+                repository: pr.repository,
+                number: pr.number,
+                relationship: .assigned,
+                updatedAt: pr.updatedAt
+            ))
+        }
 
         return WorkflowWatchCandidateSelectionPolicy.select(
-            authored + reviewed + assigned + merged,
+            candidates,
             limit: workflowCandidateLimit
         )
-    }
-
-    private func searchWorkflowWatchCandidates(
-        token: String,
-        query: String,
-        relationship: WorkflowWatchRelationship,
-        observer: GitHubRateLimitObserver
-    ) async throws -> [WorkflowWatchCandidate] {
-        let response: SearchIssuesResponse = try await request(
-            path: "/search/issues",
-            queryItems: [
-                URLQueryItem(name: "q", value: query),
-                URLQueryItem(name: "sort", value: "updated"),
-                URLQueryItem(name: "order", value: "desc"),
-                URLQueryItem(name: "per_page", value: "\(workflowCandidateLimit)")
-            ],
-            token: token,
-            observer: observer
-        )
-
-        return response.items.compactMap { issue in
-            guard let repository = repositoryFullName(from: issue.repositoryURL) else {
-                return nil
-            }
-
-            return WorkflowWatchCandidate(
-                repository: repository,
-                number: issue.number,
-                relationship: relationship,
-                updatedAt: issue.updatedAt
-            )
-        }
     }
 
     private func fetchWorkflowRuns(
@@ -5983,19 +5909,53 @@ private struct IssueItem: Decodable {
     let id: Int
     let number: Int
     let title: String
+    let state: String
+    let user: GitHubUser?
+    let assignees: [GitHubUser]
     let labels: [GitHubRESTLabel]
     let htmlURL: URL
     let repositoryURL: URL
+    let pullRequest: IssueItemPullRequest?
     let updatedAt: Date
+
+    var resolution: GitHubSubjectResolution {
+        if pullRequest?.mergedAt != nil {
+            return .merged
+        }
+        if state == "closed" {
+            return .closed
+        }
+        return .open
+    }
+
+    func isCreatedBy(_ login: String) -> Bool {
+        user?.login.caseInsensitiveCompare(login) == .orderedSame
+    }
+
+    func isAssignedTo(_ login: String) -> Bool {
+        assignees.contains { $0.login.caseInsensitiveCompare(login) == .orderedSame }
+    }
 
     enum CodingKeys: String, CodingKey {
         case id
         case number
         case title
+        case state
+        case user
+        case assignees
         case labels
         case htmlURL = "html_url"
         case repositoryURL = "repository_url"
+        case pullRequest = "pull_request"
         case updatedAt = "updated_at"
+    }
+}
+
+private struct IssueItemPullRequest: Decodable {
+    let mergedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case mergedAt = "merged_at"
     }
 }
 
@@ -6137,6 +6097,41 @@ private struct NotificationFetchResult: Sendable {
 private struct ReviewRequestedPullRequestMatch: Sendable {
     let issue: IssueItem
     let isTeamScoped: Bool
+}
+
+private struct PullRequestReviewRequestState: Decodable {
+    let requestedReviewers: [GitHubUser]
+    let requestedTeams: [GitHubTeam]
+
+    enum CodingKeys: String, CodingKey {
+        case requestedReviewers = "requested_reviewers"
+        case requestedTeams = "requested_teams"
+    }
+
+    func isRequestedFrom(
+        login: String,
+        teamMembershipCache: TeamMembershipCache
+    ) -> ReviewRequestedClassification? {
+        if requestedReviewers.contains(where: {
+            $0.login.caseInsensitiveCompare(login) == .orderedSame
+        }) {
+            return .individual
+        }
+
+        for team in requestedTeams {
+            if let org = team.organization,
+                teamMembershipCache.contains(owner: org.login, slug: team.slug) {
+                return .team
+            }
+        }
+
+        return nil
+    }
+
+    enum ReviewRequestedClassification {
+        case individual
+        case team
+    }
 }
 
 private struct Subject: Decodable {

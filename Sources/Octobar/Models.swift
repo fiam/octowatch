@@ -4013,9 +4013,9 @@ extension AttentionItemType {
             return 8
         case .reviewChangesRequested:
             return 7
-        case .reviewRequested, .teamReviewRequested:
+        case .readyToMerge, .reviewRequested, .teamReviewRequested:
             return 6
-        case .reviewApproved, .readyToMerge:
+        case .reviewApproved:
             return 5
         case .reviewComment, .comment, .mention, .teamMention:
             return 4
@@ -4213,10 +4213,10 @@ enum AttentionSubjectViewPolicy {
     }
 
     private static func updateSort(lhs: AttentionItem, rhs: AttentionItem) -> Bool {
-        if lhs.timestamp == rhs.timestamp {
-            return lhs.type.aggregateDisplayPriority < rhs.type.aggregateDisplayPriority
+        if lhs.type.aggregateDisplayPriority == rhs.type.aggregateDisplayPriority {
+            return lhs.timestamp < rhs.timestamp
         }
-        return lhs.timestamp < rhs.timestamp
+        return lhs.type.aggregateDisplayPriority < rhs.type.aggregateDisplayPriority
     }
 
     private static func secondaryIndicator(

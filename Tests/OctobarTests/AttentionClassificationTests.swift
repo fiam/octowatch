@@ -717,6 +717,49 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(matches.map(\.id), [subjectURL.absoluteString])
     }
 
+    func testReadyToMergeOutranksReviewApprovedInAggregation() {
+        let subjectURL = URL(string: "https://github.com/example/repo/pull/1")!
+        let subjectKey = subjectURL.absoluteString
+        let approvalItem = AttentionItem(
+            id: "notif:approval",
+            subjectKey: subjectKey,
+            updateKey: "notif:approval:reviewApproved:100",
+            type: .reviewApproved,
+            title: "Example PR",
+            subtitle: "example/repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 200),
+            url: subjectURL,
+            subjectResolution: .open
+        )
+        let readyItem = AttentionItem(
+            id: "authored-signal:ready",
+            subjectKey: subjectKey,
+            updateKey: "authored-signal:ready:readyToMerge:150",
+            type: .readyToMerge,
+            title: "Example PR",
+            subtitle: "example/repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 150),
+            url: subjectURL,
+            subjectResolution: .open
+        )
+
+        let combined = AttentionCombinedViewPolicy.collapsingDuplicates(
+            in: [approvalItem, readyItem]
+        )
+
+        XCTAssertEqual(combined.count, 1)
+        XCTAssertEqual(
+            combined.first?.type, .readyToMerge,
+            "readyToMerge should win over reviewApproved even with an earlier timestamp"
+        )
+        XCTAssertNotEqual(
+            combined.first?.updateKey, approvalItem.updateKey,
+            "updateKey should change so a replacement notification fires"
+        )
+    }
+
     func testAttentionTypeDefaultStreamMapsDirectWorkSeparately() {
         XCTAssertEqual(AttentionItemType.comment.defaultStream, .notifications)
         XCTAssertEqual(AttentionItemType.authoredPullRequest.defaultStream, .pullRequests)
@@ -1116,7 +1159,10 @@ final class AttentionClassificationTests: XCTestCase {
         )
 
         XCTAssertEqual(combined.count, 1)
-        XCTAssertEqual(combined.first?.type, .comment)
+        XCTAssertEqual(
+            combined.first?.type, .workflowFailed,
+            "Higher-priority type should win even when another type has a later timestamp"
+        )
         XCTAssertEqual(combined.first?.secondaryIndicatorType, .authoredPullRequest)
         XCTAssertEqual(
             combined.first?.detail.updates.map(\.type),
