@@ -37,11 +37,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var notifyOnSelfTriggeredUpdates = false
     @Published private(set) var pullRequestWatchRevision = 0
     @Published private(set) var showsDebugRateLimitDetails = false
-    @Published private(set) var yourTurnConfiguration: YourTurnConfiguration = .default
-    @Published private(set) var yourTurnSections: [YourTurnPolicy.SectionResult] = []
+    @Published private(set) var inboxSectionConfig: InboxSectionConfiguration = .default
+    @Published private(set) var inboxSections: [InboxSectionPolicy.SectionResult] = []
 
-    var yourTurnItems: [AttentionItem] {
-        yourTurnSections.flatMap(\.items)
+    var inboxSectionItems: [AttentionItem] {
+        inboxSections.flatMap(\.items)
     }
 
     private let readStateStoreKey = "attention-subject-read-state-v2"
@@ -51,8 +51,8 @@ final class AppModel: ObservableObject {
     private let autoMarkReadStoreKey = "auto-mark-read-setting-v1"
     private let notifyOnSelfTriggeredUpdatesStoreKey = "notify-on-self-triggered-updates-v1"
     private let debugRateLimitDetailsStoreKey = "debug-rate-limit-details-v1"
-    private let yourTurnConfigurationStoreKey = "needs-action-configuration-v2"
-    private let legacyYourTurnConfigurationStoreKey = "needs-action-configuration-v1"
+    private let inboxSectionConfigStoreKey = "needs-action-configuration-v2"
+    private let legacyInboxSectionConfigStoreKey = "needs-action-configuration-v1"
     private let notificationScanStateStoreKey = "notification-scan-state-v1"
     private let teamMembershipStoreKey = "team-membership-cache-v1"
     private let postMergeWatchStoreKey = "post-merge-watches-v1"
@@ -120,10 +120,10 @@ final class AppModel: ObservableObject {
             from: UserDefaults.standard,
             key: debugRateLimitDetailsStoreKey
         )
-        yourTurnConfiguration = Self.loadYourTurnConfiguration(
+        inboxSectionConfig = Self.loadInboxSectionConfiguration(
             from: UserDefaults.standard,
-            key: yourTurnConfigurationStoreKey,
-            legacyKey: legacyYourTurnConfigurationStoreKey
+            key: inboxSectionConfigStoreKey,
+            legacyKey: legacyInboxSectionConfigStoreKey
         )
         notificationScanState = Self.loadNotificationScanState(
             from: UserDefaults.standard,
@@ -278,117 +278,136 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(value, forKey: notifyOnSelfTriggeredUpdatesStoreKey)
     }
 
-    func setYourTurnRuleEnabled(_ ruleID: UUID, isEnabled: Bool) {
-        guard let existingRule = yourTurnConfiguration.rules.first(where: { $0.id == ruleID }) else {
+    func setInboxRuleEnabled(_ ruleID: UUID, isEnabled: Bool) {
+        guard let existingRule = inboxSectionConfig.rules.first(where: { $0.id == ruleID }) else {
             return
         }
 
         var updatedRule = existingRule
         updatedRule.isEnabled = isEnabled
-        let updatedConfiguration = yourTurnConfiguration.replacing(updatedRule)
-        guard updatedConfiguration != yourTurnConfiguration else {
+        let updatedConfiguration = inboxSectionConfig.replacing(updatedRule)
+        guard updatedConfiguration != inboxSectionConfig else {
             return
         }
 
-        yourTurnConfiguration = updatedConfiguration
-        refreshYourTurnItems()
-        persistYourTurnConfiguration()
+        inboxSectionConfig = updatedConfiguration
+        refreshInboxSections()
+        persistInboxSectionConfiguration()
     }
 
     @discardableResult
-    func saveYourTurnRule(_ rule: YourTurnRuleDefinition) -> YourTurnRuleDefinition {
+    func saveInboxRule(_ rule: InboxSectionRule) -> InboxSectionRule {
         let normalizedRule = rule.normalized
-        let updatedConfiguration = yourTurnConfiguration.replacing(normalizedRule)
-        yourTurnConfiguration = updatedConfiguration
-        refreshYourTurnItems()
-        persistYourTurnConfiguration()
+        let updatedConfiguration = inboxSectionConfig.replacing(normalizedRule)
+        inboxSectionConfig = updatedConfiguration
+        refreshInboxSections()
+        persistInboxSectionConfiguration()
         return normalizedRule
     }
 
-    func duplicateYourTurnRule(_ ruleID: UUID) {
-        let updatedConfiguration = yourTurnConfiguration.duplicatingRule(id: ruleID)
-        guard updatedConfiguration != yourTurnConfiguration else {
+    func duplicateInboxRule(_ ruleID: UUID) {
+        let updatedConfiguration = inboxSectionConfig.duplicatingRule(id: ruleID)
+        guard updatedConfiguration != inboxSectionConfig else {
             return
         }
 
-        yourTurnConfiguration = updatedConfiguration
-        refreshYourTurnItems()
-        persistYourTurnConfiguration()
+        inboxSectionConfig = updatedConfiguration
+        refreshInboxSections()
+        persistInboxSectionConfiguration()
     }
 
-    func deleteYourTurnRule(_ ruleID: UUID) {
-        let updatedConfiguration = yourTurnConfiguration.removingRule(id: ruleID)
-        guard updatedConfiguration != yourTurnConfiguration else {
+    func deleteInboxRule(_ ruleID: UUID) {
+        let updatedConfiguration = inboxSectionConfig.removingRule(id: ruleID)
+        guard updatedConfiguration != inboxSectionConfig else {
             return
         }
 
-        yourTurnConfiguration = updatedConfiguration
-        refreshYourTurnItems()
-        persistYourTurnConfiguration()
+        inboxSectionConfig = updatedConfiguration
+        refreshInboxSections()
+        persistInboxSectionConfiguration()
     }
 
-    func resetYourTurnRules() {
-        guard yourTurnConfiguration != .default else {
+    func resetInboxSections() {
+        guard inboxSectionConfig != .default else {
             return
         }
 
-        yourTurnConfiguration = .default
-        refreshYourTurnItems()
-        persistYourTurnConfiguration()
+        inboxSectionConfig = .default
+        refreshInboxSections()
+        persistInboxSectionConfiguration()
     }
 
     // MARK: - Section CRUD
 
-    func addYourTurnSection(name: String) {
-        let section = YourTurnSection(name: name, rules: [])
-        yourTurnConfiguration = yourTurnConfiguration.addingSection(section)
-        refreshYourTurnItems()
-        persistYourTurnConfiguration()
+    func addInboxSection(name: String) {
+        let section = InboxSection(name: name, rules: [])
+        inboxSectionConfig = inboxSectionConfig.addingSection(section)
+        refreshInboxSections()
+        persistInboxSectionConfiguration()
     }
 
-    func deleteYourTurnSection(id: UUID) {
-        yourTurnConfiguration = yourTurnConfiguration.removingSection(id: id)
-        refreshYourTurnItems()
-        persistYourTurnConfiguration()
+    func deleteInboxSection(id: UUID) {
+        inboxSectionConfig = inboxSectionConfig.removingSection(id: id)
+        refreshInboxSections()
+        persistInboxSectionConfiguration()
     }
 
-    func renameYourTurnSection(id: UUID, name: String) {
-        guard var section = yourTurnConfiguration.sections.first(where: { $0.id == id }) else {
+    func renameInboxSection(id: UUID, name: String) {
+        guard var section = inboxSectionConfig.sections.first(where: { $0.id == id }) else {
             return
         }
         section.name = name
-        yourTurnConfiguration = yourTurnConfiguration.replacing(section)
-        refreshYourTurnItems()
-        persistYourTurnConfiguration()
+        inboxSectionConfig = inboxSectionConfig.replacing(section)
+        refreshInboxSections()
+        persistInboxSectionConfiguration()
     }
 
-    func moveYourTurnSection(id: UUID, direction: Int) {
-        let updatedConfiguration = yourTurnConfiguration.movingSection(id: id, direction: direction)
-        guard updatedConfiguration != yourTurnConfiguration else {
+    func moveInboxSection(id: UUID, direction: Int) {
+        let updatedConfiguration = inboxSectionConfig.movingSection(id: id, direction: direction)
+        guard updatedConfiguration != inboxSectionConfig else {
             return
         }
 
-        yourTurnConfiguration = updatedConfiguration
-        refreshYourTurnItems()
-        persistYourTurnConfiguration()
+        inboxSectionConfig = updatedConfiguration
+        refreshInboxSections()
+        persistInboxSectionConfiguration()
     }
 
-    func toggleYourTurnSection(id: UUID) {
-        guard var section = yourTurnConfiguration.sections.first(where: { $0.id == id }) else {
+    func reorderInboxSections(fromOffsets: IndexSet, toOffset: Int) {
+        var sections = inboxSectionConfig.sections
+        sections.move(fromOffsets: fromOffsets, toOffset: toOffset)
+        inboxSectionConfig = InboxSectionConfiguration(sections: sections)
+        refreshInboxSections()
+        persistInboxSectionConfiguration()
+    }
+
+    func reorderInboxRules(inSectionID sectionID: UUID, fromOffsets: IndexSet, toOffset: Int) {
+        guard let index = inboxSectionConfig.sections.firstIndex(where: { $0.id == sectionID }) else {
+            return
+        }
+        var sections = inboxSectionConfig.sections
+        sections[index].rules.move(fromOffsets: fromOffsets, toOffset: toOffset)
+        inboxSectionConfig = InboxSectionConfiguration(sections: sections)
+        refreshInboxSections()
+        persistInboxSectionConfiguration()
+    }
+
+    func toggleInboxSection(id: UUID) {
+        guard var section = inboxSectionConfig.sections.first(where: { $0.id == id }) else {
             return
         }
         section.isEnabled.toggle()
-        yourTurnConfiguration = yourTurnConfiguration.replacing(section)
-        refreshYourTurnItems()
-        persistYourTurnConfiguration()
+        inboxSectionConfig = inboxSectionConfig.replacing(section)
+        refreshInboxSections()
+        persistInboxSectionConfiguration()
     }
 
     @discardableResult
-    func addRuleToSection(sectionID: UUID) -> YourTurnRuleDefinition {
-        let rule = YourTurnRuleDefinition.newCustom()
-        yourTurnConfiguration = yourTurnConfiguration.addingRule(rule, toSectionID: sectionID)
-        refreshYourTurnItems()
-        persistYourTurnConfiguration()
+    func addRuleToSection(sectionID: UUID, itemKind: InboxRuleItemKind = .pullRequest) -> InboxSectionRule {
+        let rule = InboxSectionRule.newCustom(itemKind: itemKind)
+        inboxSectionConfig = inboxSectionConfig.addingRule(rule, toSectionID: sectionID)
+        refreshInboxSections()
+        persistInboxSectionConfiguration()
         return rule
     }
 
@@ -464,7 +483,7 @@ final class AppModel: ObservableObject {
         issueDashboardLastUpdated = nil
         pullRequestDashboardLastError = nil
         issueDashboardLastError = nil
-        yourTurnSections = []
+        inboxSections = []
         userLogin = nil
         lastUpdated = nil
         lastError = nil
@@ -854,7 +873,7 @@ final class AppModel: ObservableObject {
             )
         }
         persistAcknowledgedWorkflows()
-        refreshYourTurnItems()
+        refreshInboxSections()
     }
 
     func ignore(_ item: AttentionItem) {
@@ -1532,13 +1551,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func persistYourTurnConfiguration() {
+    private func persistInboxSectionConfiguration() {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
-        if let data = try? encoder.encode(yourTurnConfiguration.normalized) {
-            UserDefaults.standard.set(data, forKey: yourTurnConfigurationStoreKey)
-            UserDefaults.standard.removeObject(forKey: legacyYourTurnConfigurationStoreKey)
+        if let data = try? encoder.encode(inboxSectionConfig.normalized) {
+            UserDefaults.standard.set(data, forKey: inboxSectionConfigStoreKey)
+            UserDefaults.standard.removeObject(forKey: legacyInboxSectionConfigStoreKey)
         }
     }
 
@@ -1645,7 +1664,7 @@ final class AppModel: ObservableObject {
             .filteringIgnoredSubjects(ignoredKeys)
         issueDashboard = latestSnapshotIssueDashboard
             .filteringIgnoredSubjects(ignoredKeys)
-        refreshYourTurnItems()
+        refreshInboxSections()
     }
 
     private func applyPullRequestFocusSubjectRefresh(_ refresh: AttentionSubjectRefresh) {
@@ -1717,10 +1736,10 @@ final class AppModel: ObservableObject {
         ignoreUndoState = nil
     }
 
-    private func refreshYourTurnItems() {
-        yourTurnSections = YourTurnPolicy.matchingItemsBySection(
+    private func refreshInboxSections() {
+        inboxSections = InboxSectionPolicy.matchingItemsBySection(
             in: attentionItems,
-            configuration: yourTurnConfiguration,
+            configuration: inboxSectionConfig,
             acknowledgedWorkflows: acknowledgedWorkflows
         )
     }
@@ -1905,22 +1924,22 @@ final class AppModel: ObservableObject {
         AutoMarkReadSetting.normalized(rawValue: defaults.object(forKey: key) as? Int ?? 3)
     }
 
-    private static func loadYourTurnConfiguration(
+    private static func loadInboxSectionConfiguration(
         from defaults: UserDefaults,
         key: String,
         legacyKey: String
-    ) -> YourTurnConfiguration {
+    ) -> InboxSectionConfiguration {
         if let data = defaults.data(forKey: key),
-            let configuration = try? JSONDecoder().decode(YourTurnConfiguration.self, from: data) {
+            let configuration = try? JSONDecoder().decode(InboxSectionConfiguration.self, from: data) {
             return configuration.normalized
         }
 
         if let data = defaults.data(forKey: legacyKey),
             let legacyConfiguration = try? JSONDecoder().decode(
-                LegacyYourTurnConfiguration.self,
+                LegacyInboxSectionConfiguration.self,
                 from: data
             ) {
-            return YourTurnConfiguration.migrated(from: legacyConfiguration)
+            return InboxSectionConfiguration.migrated(from: legacyConfiguration)
         }
 
         return .default
@@ -2044,9 +2063,9 @@ final class AppModel: ObservableObject {
         issueDashboardLastUpdated = nil
         pullRequestDashboardLastError = nil
         issueDashboardLastError = nil
-        yourTurnSections = YourTurnPolicy.matchingItemsBySection(
+        inboxSections = InboxSectionPolicy.matchingItemsBySection(
             in: fixture.attentionItems,
-            configuration: yourTurnConfiguration
+            configuration: inboxSectionConfig
         )
         lastUpdated = fixture.lastUpdated
         lastError = nil

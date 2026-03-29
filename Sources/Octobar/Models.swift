@@ -4929,7 +4929,7 @@ struct IgnoreUndoState: Identifiable, Hashable, Sendable {
     }
 }
 
-enum YourTurnItemKind: String, Codable, CaseIterable, Hashable, Sendable {
+enum InboxRuleItemKind: String, Codable, CaseIterable, Hashable, Sendable {
     case pullRequest
     case issue
     case workflow
@@ -4956,11 +4956,19 @@ enum YourTurnItemKind: String, Codable, CaseIterable, Hashable, Sendable {
         }
     }
 
+    var iconName: String {
+        switch self {
+        case .pullRequest: return "arrow.triangle.pull"
+        case .issue: return "exclamationmark.circle"
+        case .workflow: return "bolt.horizontal.circle"
+        }
+    }
+
     var defaultRuleName: String {
         "\(title) Rule"
     }
 
-    var availableConditionKinds: [YourTurnConditionKind] {
+    var availableConditionKinds: [InboxRuleConditionKind] {
         switch self {
         case .pullRequest:
             return [.relationship, .signal, .viewerReview]
@@ -4971,7 +4979,7 @@ enum YourTurnItemKind: String, Codable, CaseIterable, Hashable, Sendable {
         }
     }
 
-    var availableRelationships: [YourTurnViewerRelationship] {
+    var availableRelationships: [InboxRuleRelationship] {
         switch self {
         case .pullRequest:
             return [.authored, .assigned, .reviewed, .commented, .interacted]
@@ -4982,7 +4990,7 @@ enum YourTurnItemKind: String, Codable, CaseIterable, Hashable, Sendable {
         }
     }
 
-    var availableSignals: [YourTurnSignal] {
+    var availableSignals: [InboxRuleSignal] {
         switch self {
         case .pullRequest:
             return [.readyToMerge, .mergeConflicts, .failedChecks]
@@ -4994,7 +5002,7 @@ enum YourTurnItemKind: String, Codable, CaseIterable, Hashable, Sendable {
     }
 }
 
-enum YourTurnMatchMode: String, Codable, CaseIterable, Hashable, Sendable {
+enum InboxRuleMatchMode: String, Codable, CaseIterable, Hashable, Sendable {
     case all
     case any
 
@@ -5009,7 +5017,7 @@ enum YourTurnMatchMode: String, Codable, CaseIterable, Hashable, Sendable {
 
 }
 
-enum YourTurnConditionKind: String, Codable, CaseIterable, Hashable, Sendable {
+enum InboxRuleConditionKind: String, Codable, CaseIterable, Hashable, Sendable {
     case relationship
     case signal
     case viewerReview
@@ -5026,7 +5034,7 @@ enum YourTurnConditionKind: String, Codable, CaseIterable, Hashable, Sendable {
     }
 }
 
-enum YourTurnViewerRelationship: String, Codable, CaseIterable, Hashable, Sendable {
+enum InboxRuleRelationship: String, Codable, CaseIterable, Hashable, Sendable {
     case authored
     case assigned
     case reviewed
@@ -5034,21 +5042,37 @@ enum YourTurnViewerRelationship: String, Codable, CaseIterable, Hashable, Sendab
     case interacted
 
     var title: String {
-        switch self {
-        case .authored:
-            return "Authored"
-        case .assigned:
-            return "Assigned"
-        case .reviewed:
-            return "Reviewed"
-        case .commented:
-            return "Commented"
-        case .interacted:
-            return "Interacted with"
+        title(for: nil)
+    }
+
+    func title(for itemKind: InboxRuleItemKind?) -> String {
+        switch (self, itemKind) {
+        case (.authored, .workflow):
+            return "From PRs you authored"
+        case (.authored, .issue):
+            return "Created by you"
+        case (.authored, _):
+            return "Authored by you"
+        case (.assigned, .workflow):
+            return "From PRs assigned to you"
+        case (.assigned, _):
+            return "Assigned to you"
+        case (.reviewed, .workflow):
+            return "From PRs you reviewed"
+        case (.reviewed, _):
+            return "Reviewed by you"
+        case (.commented, .workflow):
+            return "From PRs you commented on"
+        case (.commented, _):
+            return "Commented on by you"
+        case (.interacted, .workflow):
+            return "From PRs you interacted with"
+        case (.interacted, _):
+            return "You interacted with"
         }
     }
 
-    var expandedRelationships: Set<YourTurnViewerRelationship> {
+    var expandedRelationships: Set<InboxRuleRelationship> {
         switch self {
         case .interacted:
             return [.reviewed, .commented]
@@ -5058,7 +5082,7 @@ enum YourTurnViewerRelationship: String, Codable, CaseIterable, Hashable, Sendab
     }
 }
 
-enum YourTurnSignal: String, Codable, CaseIterable, Hashable, Sendable {
+enum InboxRuleSignal: String, Codable, CaseIterable, Hashable, Sendable {
     case readyToMerge
     case mergeConflicts
     case failedChecks
@@ -5084,7 +5108,7 @@ enum YourTurnSignal: String, Codable, CaseIterable, Hashable, Sendable {
     }
 }
 
-enum YourTurnViewerReviewCondition: String, Codable, CaseIterable, Hashable, Sendable {
+enum InboxRuleReviewCondition: String, Codable, CaseIterable, Hashable, Sendable {
     case missing
     case present
 
@@ -5098,13 +5122,13 @@ enum YourTurnViewerReviewCondition: String, Codable, CaseIterable, Hashable, Sen
     }
 }
 
-struct YourTurnCondition: Identifiable, Codable, Hashable, Sendable {
+struct InboxRuleCondition: Identifiable, Codable, Hashable, Sendable {
     var id: UUID
-    var kind: YourTurnConditionKind
+    var kind: InboxRuleConditionKind
     var isNegated: Bool
-    var relationshipValues: Set<YourTurnViewerRelationship>
-    var signalValues: Set<YourTurnSignal>
-    var viewerReviewValue: YourTurnViewerReviewCondition
+    var relationshipValues: Set<InboxRuleRelationship>
+    var signalValues: Set<InboxRuleSignal>
+    var viewerReviewValue: InboxRuleReviewCondition
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -5117,11 +5141,11 @@ struct YourTurnCondition: Identifiable, Codable, Hashable, Sendable {
 
     init(
         id: UUID,
-        kind: YourTurnConditionKind,
+        kind: InboxRuleConditionKind,
         isNegated: Bool,
-        relationshipValues: Set<YourTurnViewerRelationship>,
-        signalValues: Set<YourTurnSignal>,
-        viewerReviewValue: YourTurnViewerReviewCondition
+        relationshipValues: Set<InboxRuleRelationship>,
+        signalValues: Set<InboxRuleSignal>,
+        viewerReviewValue: InboxRuleReviewCondition
     ) {
         self.id = id
         self.kind = kind
@@ -5134,28 +5158,28 @@ struct YourTurnCondition: Identifiable, Codable, Hashable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
-        kind = try container.decode(YourTurnConditionKind.self, forKey: .kind)
+        kind = try container.decode(InboxRuleConditionKind.self, forKey: .kind)
         isNegated = try container.decodeIfPresent(Bool.self, forKey: .isNegated) ?? false
         relationshipValues = try container.decodeIfPresent(
-            Set<YourTurnViewerRelationship>.self,
+            Set<InboxRuleRelationship>.self,
             forKey: .relationshipValues
         ) ?? []
         signalValues = try container.decodeIfPresent(
-            Set<YourTurnSignal>.self,
+            Set<InboxRuleSignal>.self,
             forKey: .signalValues
         ) ?? []
         viewerReviewValue = try container.decodeIfPresent(
-            YourTurnViewerReviewCondition.self,
+            InboxRuleReviewCondition.self,
             forKey: .viewerReviewValue
         ) ?? .missing
     }
 
     static func relationship(
-        _ values: Set<YourTurnViewerRelationship>,
+        _ values: Set<InboxRuleRelationship>,
         isNegated: Bool = false,
         id: UUID = UUID()
-    ) -> YourTurnCondition {
-        YourTurnCondition(
+    ) -> InboxRuleCondition {
+        InboxRuleCondition(
             id: id,
             kind: .relationship,
             isNegated: isNegated,
@@ -5166,11 +5190,11 @@ struct YourTurnCondition: Identifiable, Codable, Hashable, Sendable {
     }
 
     static func signal(
-        _ values: Set<YourTurnSignal>,
+        _ values: Set<InboxRuleSignal>,
         isNegated: Bool = false,
         id: UUID = UUID()
-    ) -> YourTurnCondition {
-        YourTurnCondition(
+    ) -> InboxRuleCondition {
+        InboxRuleCondition(
             id: id,
             kind: .signal,
             isNegated: isNegated,
@@ -5181,11 +5205,11 @@ struct YourTurnCondition: Identifiable, Codable, Hashable, Sendable {
     }
 
     static func viewerReview(
-        _ value: YourTurnViewerReviewCondition,
+        _ value: InboxRuleReviewCondition,
         isNegated: Bool = false,
         id: UUID = UUID()
-    ) -> YourTurnCondition {
-        YourTurnCondition(
+    ) -> InboxRuleCondition {
+        InboxRuleCondition(
             id: id,
             kind: .viewerReview,
             isNegated: isNegated,
@@ -5196,10 +5220,10 @@ struct YourTurnCondition: Identifiable, Codable, Hashable, Sendable {
     }
 
     static func `default`(
-        for kind: YourTurnConditionKind,
-        itemKind: YourTurnItemKind,
+        for kind: InboxRuleConditionKind,
+        itemKind: InboxRuleItemKind,
         id: UUID = UUID()
-    ) -> YourTurnCondition {
+    ) -> InboxRuleCondition {
         switch kind {
         case .relationship:
             let value = itemKind.availableRelationships.first ?? .authored
@@ -5212,7 +5236,7 @@ struct YourTurnCondition: Identifiable, Codable, Hashable, Sendable {
         }
     }
 
-    func normalized(for itemKind: YourTurnItemKind) -> YourTurnCondition? {
+    func normalized(for itemKind: InboxRuleItemKind) -> InboxRuleCondition? {
         switch kind {
         case .relationship:
             let filtered = relationshipValues.intersection(itemKind.availableRelationships)
@@ -5250,7 +5274,7 @@ struct YourTurnCondition: Identifiable, Codable, Hashable, Sendable {
         summaryPhrase(for: nil)
     }
 
-    func summaryPhrase(for itemKind: YourTurnItemKind?) -> String {
+    func summaryPhrase(for itemKind: InboxRuleItemKind?) -> String {
         switch kind {
         case .relationship:
             let phrases = relationshipValues
@@ -5285,37 +5309,17 @@ struct YourTurnCondition: Identifiable, Codable, Hashable, Sendable {
     }
 
     private func relationshipPhrase(
-        for relationship: YourTurnViewerRelationship,
-        itemKind: YourTurnItemKind?,
+        for relationship: InboxRuleRelationship,
+        itemKind: InboxRuleItemKind?,
         isNegated: Bool
     ) -> String {
-        switch relationship {
-        case .authored:
-            switch itemKind {
-            case .issue:
-                return isNegated ? "not opened by you" : "opened by you"
-            case .pullRequest, .workflow, .none:
-                return isNegated ? "not authored by you" : "authored by you"
-            }
-        case .assigned:
-            return isNegated ? "not assigned to you" : "assigned to you"
-        case .reviewed:
-            return isNegated ? "not reviewed by you" : "reviewed by you"
-        case .commented:
-            switch itemKind {
-            case .issue:
-                return isNegated ? "without your comments" : "commented on by you"
-            case .pullRequest, .workflow, .none:
-                return isNegated ? "without your comments" : "commented on by you"
-            }
-        case .interacted:
-            return isNegated ? "not interacted with by you" : "you interacted with"
-        }
+        let label = relationship.title(for: itemKind).lowercased()
+        return isNegated ? "not \(label)" : label
     }
 
     private func signalPhrase(
-        for signal: YourTurnSignal,
-        itemKind: YourTurnItemKind?,
+        for signal: InboxRuleSignal,
+        itemKind: InboxRuleItemKind?,
         isNegated: Bool
     ) -> String {
         switch signal {
@@ -5342,12 +5346,12 @@ struct YourTurnCondition: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
-struct YourTurnRuleDefinition: Identifiable, Codable, Hashable, Sendable {
+struct InboxSectionRule: Identifiable, Codable, Hashable, Sendable {
     var id: UUID
     var name: String
-    var itemKind: YourTurnItemKind
-    var matchMode: YourTurnMatchMode
-    var conditions: [YourTurnCondition]
+    var itemKind: InboxRuleItemKind
+    var matchMode: InboxRuleMatchMode
+    var conditions: [InboxRuleCondition]
     var isEnabled: Bool
 
     private enum CodingKeys: String, CodingKey {
@@ -5362,9 +5366,9 @@ struct YourTurnRuleDefinition: Identifiable, Codable, Hashable, Sendable {
     init(
         id: UUID = UUID(),
         name: String,
-        itemKind: YourTurnItemKind,
-        matchMode: YourTurnMatchMode = .all,
-        conditions: [YourTurnCondition],
+        itemKind: InboxRuleItemKind,
+        matchMode: InboxRuleMatchMode = .all,
+        conditions: [InboxRuleCondition],
         isEnabled: Bool = true
     ) {
         self.id = id
@@ -5379,25 +5383,25 @@ struct YourTurnRuleDefinition: Identifiable, Codable, Hashable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
-        itemKind = try container.decode(YourTurnItemKind.self, forKey: .itemKind)
-        matchMode = try container.decode(YourTurnMatchMode.self, forKey: .matchMode)
-        conditions = try container.decode([YourTurnCondition].self, forKey: .conditions)
+        itemKind = try container.decode(InboxRuleItemKind.self, forKey: .itemKind)
+        matchMode = try container.decode(InboxRuleMatchMode.self, forKey: .matchMode)
+        conditions = try container.decode([InboxRuleCondition].self, forKey: .conditions)
         isEnabled = try container.decode(Bool.self, forKey: .isEnabled)
     }
 
-    static func newCustom() -> YourTurnRuleDefinition {
-        YourTurnRuleDefinition(
+    static func newCustom(itemKind: InboxRuleItemKind = .pullRequest) -> InboxSectionRule {
+        InboxSectionRule(
             name: "New Rule",
-            itemKind: .pullRequest,
+            itemKind: itemKind,
             conditions: [
-                .default(for: .relationship, itemKind: .pullRequest)
+                .default(for: .relationship, itemKind: itemKind)
             ]
         )
     }
 
-    var normalized: YourTurnRuleDefinition {
+    var normalized: InboxSectionRule {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return YourTurnRuleDefinition(
+        return InboxSectionRule(
             id: id,
             name: trimmedName.isEmpty ? itemKind.defaultRuleName : trimmedName,
             itemKind: itemKind,
@@ -5421,7 +5425,7 @@ struct YourTurnRuleDefinition: Identifiable, Codable, Hashable, Sendable {
             return "All \(normalizedRule.itemKind.pluralTitle.lowercased())"
         }
 
-        return "\(normalizedRule.itemKind.pluralTitle) \(Self.joinedSummaryDetails(details))"
+        return "\(normalizedRule.itemKind.pluralTitle) · \(details.joined(separator: " · "))"
     }
 
     private static func joinedSummaryDetails(_ details: [String]) -> String {
@@ -5439,18 +5443,18 @@ struct YourTurnRuleDefinition: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
-struct LegacyYourTurnConfiguration: Codable, Hashable, Sendable {
-    var enabledRules: Set<YourTurnRule>
+struct LegacyInboxSectionConfiguration: Codable, Hashable, Sendable {
+    var enabledRules: Set<DefaultInboxRule>
 }
 
-struct YourTurnFacts: Hashable, Sendable {
-    let itemKinds: Set<YourTurnItemKind>
-    let relationships: Set<YourTurnViewerRelationship>
-    let signals: Set<YourTurnSignal>
+struct InboxRuleFacts: Hashable, Sendable {
+    let itemKinds: Set<InboxRuleItemKind>
+    let relationships: Set<InboxRuleRelationship>
+    let signals: Set<InboxRuleSignal>
     let hasViewerReview: Bool
 }
 
-enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
+enum DefaultInboxRule: String, Codable, CaseIterable, Hashable, Sendable {
     case authoredReadyToMerge
     case authoredMergeConflicts
     case authoredFailedChecks
@@ -5523,10 +5527,10 @@ enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
         }
     }
 
-    fileprivate var defaultDefinition: YourTurnRuleDefinition {
+    fileprivate var defaultDefinition: InboxSectionRule {
         switch self {
         case .authoredReadyToMerge:
-            return YourTurnRuleDefinition(
+            return InboxSectionRule(
                 id: stableID,
                 name: title,
                 itemKind: .pullRequest,
@@ -5538,7 +5542,7 @@ enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
                 isEnabled: true
             )
         case .authoredMergeConflicts:
-            return YourTurnRuleDefinition(
+            return InboxSectionRule(
                 id: stableID,
                 name: title,
                 itemKind: .pullRequest,
@@ -5550,7 +5554,7 @@ enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
                 isEnabled: true
             )
         case .authoredFailedChecks:
-            return YourTurnRuleDefinition(
+            return InboxSectionRule(
                 id: stableID,
                 name: title,
                 itemKind: .pullRequest,
@@ -5562,7 +5566,7 @@ enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
                 isEnabled: true
             )
         case .assignedPullRequestsWithoutReview:
-            return YourTurnRuleDefinition(
+            return InboxSectionRule(
                 id: stableID,
                 name: title,
                 itemKind: .pullRequest,
@@ -5573,7 +5577,7 @@ enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
                 isEnabled: true
             )
         case .authoredWorkflowFailed:
-            return YourTurnRuleDefinition(
+            return InboxSectionRule(
                 id: stableID,
                 name: title,
                 itemKind: .workflow,
@@ -5585,7 +5589,7 @@ enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
                 isEnabled: true
             )
         case .interactedWorkflowFailed:
-            return YourTurnRuleDefinition(
+            return InboxSectionRule(
                 id: stableID,
                 name: title,
                 itemKind: .workflow,
@@ -5597,18 +5601,19 @@ enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
                 isEnabled: true
             )
         case .relatedWorkflowApprovalRequired:
-            return YourTurnRuleDefinition(
+            return InboxSectionRule(
                 id: stableID,
                 name: title,
                 itemKind: .workflow,
                 matchMode: .all,
                 conditions: [
+                    .relationship([.authored]),
                     .signal([.workflowApprovalRequired])
                 ],
                 isEnabled: true
             )
         case .assignedIssues:
-            return YourTurnRuleDefinition(
+            return InboxSectionRule(
                 id: stableID,
                 name: title,
                 itemKind: .issue,
@@ -5622,20 +5627,20 @@ enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
     }
 }
 
-struct YourTurnSection: Identifiable, Codable, Hashable, Sendable {
+struct InboxSection: Identifiable, Codable, Hashable, Sendable {
     var id: UUID
     var name: String
-    var rules: [YourTurnRuleDefinition]
+    var rules: [InboxSectionRule]
     var isEnabled: Bool
 
-    init(id: UUID = UUID(), name: String, rules: [YourTurnRuleDefinition], isEnabled: Bool = true) {
+    init(id: UUID = UUID(), name: String, rules: [InboxSectionRule], isEnabled: Bool = true) {
         self.id = id
         self.name = name
         self.rules = rules
         self.isEnabled = isEnabled
     }
 
-    var enabledRules: [YourTurnRuleDefinition] {
+    var enabledRules: [InboxSectionRule] {
         isEnabled ? rules.filter(\.isEnabled) : []
     }
 
@@ -5643,14 +5648,14 @@ struct YourTurnSection: Identifiable, Codable, Hashable, Sendable {
     var enabledRuleCount: Int { rules.filter(\.isEnabled).count }
 }
 
-struct YourTurnConfiguration: Codable, Hashable, Sendable {
-    var sections: [YourTurnSection]
+struct InboxSectionConfiguration: Codable, Hashable, Sendable {
+    var sections: [InboxSection]
 
-    private static let yourTurnSectionID = UUID(uuidString: "A0000000-0000-0000-0000-000000000001")!
+    private static let defaultSectionID = UUID(uuidString: "A0000000-0000-0000-0000-000000000001")!
     private static let radarSectionID = UUID(uuidString: "A0000000-0000-0000-0000-000000000002")!
 
-    static let `default`: YourTurnConfiguration = {
-        let yourTurnRules: [YourTurnRule] = [
+    static let `default`: InboxSectionConfiguration = {
+        let defaultRules: [DefaultInboxRule] = [
             .authoredReadyToMerge,
             .authoredMergeConflicts,
             .authoredFailedChecks,
@@ -5659,16 +5664,16 @@ struct YourTurnConfiguration: Codable, Hashable, Sendable {
             .relatedWorkflowApprovalRequired,
             .authoredWorkflowFailed
         ]
-        let radarRules: [YourTurnRule] = [
+        let radarRules: [DefaultInboxRule] = [
             .interactedWorkflowFailed
         ]
-        return YourTurnConfiguration(sections: [
-            YourTurnSection(
-                id: yourTurnSectionID,
+        return InboxSectionConfiguration(sections: [
+            InboxSection(
+                id: defaultSectionID,
                 name: "Your Turn",
-                rules: yourTurnRules.map(\.defaultDefinition)
+                rules: defaultRules.map(\.defaultDefinition)
             ),
-            YourTurnSection(
+            InboxSection(
                 id: radarSectionID,
                 name: "On Your Radar",
                 rules: radarRules.map(\.defaultDefinition)
@@ -5677,18 +5682,18 @@ struct YourTurnConfiguration: Codable, Hashable, Sendable {
     }()
 
     /// Backward-compatible computed property: flattens all rules across sections.
-    var rules: [YourTurnRuleDefinition] {
+    var rules: [InboxSectionRule] {
         sections.flatMap(\.rules)
     }
 
-    var enabledRules: [YourTurnRuleDefinition] {
+    var enabledRules: [InboxSectionRule] {
         sections.flatMap(\.enabledRules).map(\.normalized)
     }
 
-    var normalized: YourTurnConfiguration {
-        YourTurnConfiguration(
+    var normalized: InboxSectionConfiguration {
+        InboxSectionConfiguration(
             sections: sections.map { section in
-                YourTurnSection(
+                InboxSection(
                     id: section.id,
                     name: section.name,
                     rules: section.rules.map(\.normalized),
@@ -5699,13 +5704,13 @@ struct YourTurnConfiguration: Codable, Hashable, Sendable {
     }
 
     /// Convenience initializer that wraps a flat rule array into a single "Your Turn" section.
-    init(rules: [YourTurnRuleDefinition]) {
+    init(rules: [InboxSectionRule]) {
         self.sections = [
-            YourTurnSection(name: "Your Turn", rules: rules)
+            InboxSection(name: "Your Turn", rules: rules)
         ]
     }
 
-    init(sections: [YourTurnSection]) {
+    init(sections: [InboxSection]) {
         self.sections = sections
     }
 
@@ -5721,19 +5726,19 @@ struct YourTurnConfiguration: Codable, Hashable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        if let sections = try? container.decode([YourTurnSection].self, forKey: .sections) {
+        if let sections = try? container.decode([InboxSection].self, forKey: .sections) {
             self.sections = sections
-        } else if let flatRules = try? container.decode([YourTurnRuleDefinition].self, forKey: .rules) {
+        } else if let flatRules = try? container.decode([InboxSectionRule].self, forKey: .rules) {
             // Legacy format: flat rules array, possibly with "section" strings baked in.
             // Group by the old section value if present in the JSON (we parse it manually).
-            // Since the new YourTurnRuleDefinition no longer has a section property,
+            // Since the new InboxSectionRule no longer has a section property,
             // decode the raw JSON to extract section names.
             struct LegacyRuleWithSection: Decodable {
                 let section: String?
             }
 
             var sectionOrder = [String]()
-            var grouped = [String: [YourTurnRuleDefinition]]()
+            var grouped = [String: [InboxSectionRule]]()
             let legacySections: [LegacyRuleWithSection]
             if let legacy = try? container.decode([LegacyRuleWithSection].self, forKey: .rules) {
                 legacySections = legacy
@@ -5750,16 +5755,16 @@ struct YourTurnConfiguration: Codable, Hashable, Sendable {
             }
 
             self.sections = sectionOrder.map { name in
-                YourTurnSection(name: name, rules: grouped[name] ?? [])
+                InboxSection(name: name, rules: grouped[name] ?? [])
             }
         } else {
             self.sections = []
         }
     }
 
-    static func migrated(from legacy: LegacyYourTurnConfiguration) -> YourTurnConfiguration {
-        YourTurnConfiguration(
-            rules: YourTurnRule.allCases.map { rule in
+    static func migrated(from legacy: LegacyInboxSectionConfiguration) -> InboxSectionConfiguration {
+        InboxSectionConfiguration(
+            rules: DefaultInboxRule.allCases.map { rule in
                 var definition = rule.defaultDefinition
                 definition.isEnabled = legacy.enabledRules.contains(rule)
                 return definition
@@ -5769,45 +5774,45 @@ struct YourTurnConfiguration: Codable, Hashable, Sendable {
 
     // MARK: - Rule CRUD
 
-    func replacing(_ rule: YourTurnRuleDefinition) -> YourTurnConfiguration {
+    func replacing(_ rule: InboxSectionRule) -> InboxSectionConfiguration {
         var updatedSections = sections
         for i in updatedSections.indices {
             if let j = updatedSections[i].rules.firstIndex(where: { $0.id == rule.id }) {
                 updatedSections[i].rules[j] = rule
-                return YourTurnConfiguration(sections: updatedSections).normalized
+                return InboxSectionConfiguration(sections: updatedSections).normalized
             }
         }
         // Rule not found in any section — append to first section if available.
         if !updatedSections.isEmpty {
             updatedSections[0].rules.append(rule)
         }
-        return YourTurnConfiguration(sections: updatedSections).normalized
+        return InboxSectionConfiguration(sections: updatedSections).normalized
     }
 
-    func removingRule(id: UUID) -> YourTurnConfiguration {
+    func removingRule(id: UUID) -> InboxSectionConfiguration {
         var updatedSections = sections
         for i in updatedSections.indices {
             updatedSections[i].rules.removeAll { $0.id == id }
         }
-        return YourTurnConfiguration(sections: updatedSections).normalized
+        return InboxSectionConfiguration(sections: updatedSections).normalized
     }
 
-    func addingRule(_ rule: YourTurnRuleDefinition, toSectionID sectionID: UUID) -> YourTurnConfiguration {
+    func addingRule(_ rule: InboxSectionRule, toSectionID sectionID: UUID) -> InboxSectionConfiguration {
         var updatedSections = sections
         if let i = updatedSections.firstIndex(where: { $0.id == sectionID }) {
             updatedSections[i].rules.append(rule)
         }
-        return YourTurnConfiguration(sections: updatedSections).normalized
+        return InboxSectionConfiguration(sections: updatedSections).normalized
     }
 
-    func duplicatingRule(id: UUID) -> YourTurnConfiguration {
+    func duplicatingRule(id: UUID) -> InboxSectionConfiguration {
         var updatedSections = sections
         for i in updatedSections.indices {
             if let j = updatedSections[i].rules.firstIndex(where: { $0.id == id }) {
                 var dup = updatedSections[i].rules[j]
                 dup.id = UUID()
                 updatedSections[i].rules.insert(dup, at: j + 1)
-                return YourTurnConfiguration(sections: updatedSections).normalized
+                return InboxSectionConfiguration(sections: updatedSections).normalized
             }
         }
         return self
@@ -5815,23 +5820,23 @@ struct YourTurnConfiguration: Codable, Hashable, Sendable {
 
     // MARK: - Section CRUD
 
-    func replacing(_ section: YourTurnSection) -> YourTurnConfiguration {
+    func replacing(_ section: InboxSection) -> InboxSectionConfiguration {
         var updatedSections = sections
         if let i = updatedSections.firstIndex(where: { $0.id == section.id }) {
             updatedSections[i] = section
         }
-        return YourTurnConfiguration(sections: updatedSections)
+        return InboxSectionConfiguration(sections: updatedSections)
     }
 
-    func addingSection(_ section: YourTurnSection) -> YourTurnConfiguration {
-        YourTurnConfiguration(sections: sections + [section])
+    func addingSection(_ section: InboxSection) -> InboxSectionConfiguration {
+        InboxSectionConfiguration(sections: sections + [section])
     }
 
-    func removingSection(id: UUID) -> YourTurnConfiguration {
-        YourTurnConfiguration(sections: sections.filter { $0.id != id })
+    func removingSection(id: UUID) -> InboxSectionConfiguration {
+        InboxSectionConfiguration(sections: sections.filter { $0.id != id })
     }
 
-    func movingSection(id: UUID, direction: Int) -> YourTurnConfiguration {
+    func movingSection(id: UUID, direction: Int) -> InboxSectionConfiguration {
         var updatedSections = sections
         guard let index = updatedSections.firstIndex(where: { $0.id == id }) else {
             return self
@@ -5841,7 +5846,7 @@ struct YourTurnConfiguration: Codable, Hashable, Sendable {
             return self
         }
         updatedSections.swapAt(index, newIndex)
-        return YourTurnConfiguration(sections: updatedSections)
+        return InboxSectionConfiguration(sections: updatedSections)
     }
 }
 
@@ -5860,7 +5865,7 @@ enum AttentionItemVisibilityPolicy {
     }
 }
 
-enum YourTurnPolicy {
+enum InboxSectionPolicy {
     private static let selfReviewTypes: Set<AttentionItemType> = [
         .reviewApproved,
         .reviewChangesRequested,
@@ -5869,7 +5874,7 @@ enum YourTurnPolicy {
 
     static func matchingItems(
         in items: [AttentionItem],
-        configuration: YourTurnConfiguration,
+        configuration: InboxSectionConfiguration,
         acknowledgedWorkflows: [String: AcknowledgedWorkflowState] = [:]
     ) -> [AttentionItem] {
         let enabledRules = configuration.enabledRules
@@ -5896,7 +5901,7 @@ enum YourTurnPolicy {
 
     static func matchingItemsBySection(
         in items: [AttentionItem],
-        configuration: YourTurnConfiguration,
+        configuration: InboxSectionConfiguration,
         acknowledgedWorkflows: [String: AcknowledgedWorkflowState] = [:]
     ) -> [SectionResult] {
         var seen = Set<String>()
@@ -5935,8 +5940,8 @@ enum YourTurnPolicy {
 
     static func matchingRules(
         for item: AttentionItem,
-        configuration: YourTurnConfiguration
-    ) -> [YourTurnRuleDefinition] {
+        configuration: InboxSectionConfiguration
+    ) -> [InboxSectionRule] {
         let facts = facts(for: item)
         return configuration.enabledRules.filter { rule in
             matches(item, facts: facts, rule: rule)
@@ -5945,8 +5950,8 @@ enum YourTurnPolicy {
 
     private static func matches(
         _ item: AttentionItem,
-        facts: YourTurnFacts,
-        rule: YourTurnRuleDefinition
+        facts: InboxRuleFacts,
+        rule: InboxSectionRule
     ) -> Bool {
         let normalizedRule = rule.normalized
 
@@ -5970,10 +5975,10 @@ enum YourTurnPolicy {
     }
 
     private static func matches(
-        facts: YourTurnFacts,
-        condition: YourTurnCondition
+        facts: InboxRuleFacts,
+        condition: InboxRuleCondition
     ) -> Bool {
-        let expandedRelationships = condition.relationshipValues.reduce(into: Set<YourTurnViewerRelationship>()) {
+        let expandedRelationships = condition.relationshipValues.reduce(into: Set<InboxRuleRelationship>()) {
             $0.formUnion($1.expandedRelationships)
         }
         let baseMatch: Bool = switch condition.kind {
@@ -6003,8 +6008,8 @@ enum YourTurnPolicy {
         }
     }
 
-    private static func facts(for item: AttentionItem) -> YourTurnFacts {
-        let signals = item.currentUpdateTypes.reduce(into: Set<YourTurnSignal>()) { partialResult, type in
+    private static func facts(for item: AttentionItem) -> InboxRuleFacts {
+        let signals = item.currentUpdateTypes.reduce(into: Set<InboxRuleSignal>()) { partialResult, type in
             switch type {
             case .readyToMerge:
                 partialResult.insert(.readyToMerge)
@@ -6024,7 +6029,7 @@ enum YourTurnPolicy {
         }
 
         let relationships = relationshipTypes(in: item).reduce(
-            into: Set<YourTurnViewerRelationship>()
+            into: Set<InboxRuleRelationship>()
         ) { partialResult, type in
             switch type {
             case .authoredPullRequest, .authoredIssue:
@@ -6040,7 +6045,7 @@ enum YourTurnPolicy {
             }
         }
 
-        var itemKinds = Set<YourTurnItemKind>()
+        var itemKinds = Set<InboxRuleItemKind>()
         let isOpenSubject = item.subjectResolution == nil || item.subjectResolution == .open
 
         if item.currentUpdateTypes.contains(where: \.isWorkflowActivityType) {
@@ -6054,7 +6059,7 @@ enum YourTurnPolicy {
             itemKinds.insert(.issue)
         }
 
-        return YourTurnFacts(
+        return InboxRuleFacts(
             itemKinds: itemKinds,
             relationships: relationships,
             signals: signals,

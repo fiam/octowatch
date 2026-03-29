@@ -327,8 +327,8 @@ struct AttentionWindowView: View {
         displayedSections.flatMap(\.items)
     }
 
-    private var yourTurnSubjectKeys: Set<String> {
-        Set(model.yourTurnItems.map(\.subjectKey))
+    private var inboxSectionSubjectKeys: Set<String> {
+        Set(model.inboxSectionItems.map(\.subjectKey))
     }
 
     private var displayedOtherItems: [AttentionItem] {
@@ -336,7 +336,7 @@ struct AttentionWindowView: View {
             return visibleItems
         }
 
-        return visibleItems.filter { !yourTurnSubjectKeys.contains($0.subjectKey) }
+        return visibleItems.filter { !inboxSectionSubjectKeys.contains($0.subjectKey) }
     }
 
     private var displayedSections: [SidebarSectionDescriptor] {
@@ -344,7 +344,7 @@ struct AttentionWindowView: View {
 
         if inboxMode == .inbox {
             let visibleKeys = Set(visibleItems.map(\.subjectKey))
-            for section in model.yourTurnSections {
+            for section in model.inboxSections {
                 let items = section.items.filter { visibleKeys.contains($0.subjectKey) }
                 guard !items.isEmpty else { continue }
                 sections.append(
@@ -936,9 +936,9 @@ struct AttentionWindowView: View {
 
         let totalItemCount = scopedItems.count
         let unreadCount = scopedItems.filter(\.isUnread).count
-        let yourTurnCount = model.yourTurnItems.count
+        let inboxSectionCount = model.inboxSectionItems.count
         let displayedCount = displayedItems.count
-        let displayedYourTurnCount = model.yourTurnItems.count
+        let displayedInboxSectionCount = model.inboxSectionItems.count
         let itemLabel = itemCountLabel(for: totalItemCount)
         let unreadLabel = unreadCount == 1
             ? "1 unread"
@@ -947,21 +947,21 @@ struct AttentionWindowView: View {
         if showsUnreadOnly {
             let unreadSummary = unreadCountLabel(for: displayedCount)
 
-            guard displayedYourTurnCount > 0 else {
+            guard displayedInboxSectionCount > 0 else {
                 return unreadSummary
             }
 
-            let actionSummary = displayedYourTurnCount == 1
+            let actionSummary = displayedInboxSectionCount == 1
                 ? "1 action item"
-                : "\(displayedYourTurnCount) action items"
+                : "\(displayedInboxSectionCount) action items"
             return "\(unreadSummary) · \(actionSummary)"
         }
 
-        guard yourTurnCount > 0 else {
+        guard inboxSectionCount > 0 else {
             return "\(itemLabel) · \(unreadLabel)"
         }
 
-        let actionSummary = yourTurnCount == 1 ? "1 action item" : "\(yourTurnCount) action items"
+        let actionSummary = inboxSectionCount == 1 ? "1 action item" : "\(inboxSectionCount) action items"
         return "\(actionSummary) · \(itemLabel) · \(unreadLabel)"
     }
 

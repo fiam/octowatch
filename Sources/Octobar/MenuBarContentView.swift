@@ -17,7 +17,7 @@ struct MenuBarContentView: View {
             header
 
             if model.hasToken {
-                yourTurnList
+                inboxSectionList
             } else {
                 tokenSetup
             }
@@ -36,7 +36,7 @@ struct MenuBarContentView: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            let count = model.yourTurnItems.count
+            let count = model.inboxSectionItems.count
             Text("Your Turn")
                 .font(.headline)
             if count > 0 {
@@ -62,9 +62,9 @@ struct MenuBarContentView: View {
         }
     }
 
-    private var yourTurnList: some View {
+    private var inboxSectionList: some View {
         Group {
-            if model.yourTurnSections.isEmpty {
+            if model.inboxSections.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle")
                         .font(.title3)
@@ -78,12 +78,12 @@ struct MenuBarContentView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 2) {
-                        ForEach(model.yourTurnSections, id: \.name) { section in
+                        ForEach(model.inboxSections, id: \.name) { section in
                             Text(section.name)
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 8)
-                                .padding(.top, section.name == model.yourTurnSections.first?.name ? 0 : 8)
+                                .padding(.top, section.name == model.inboxSections.first?.name ? 0 : 8)
 
                             ForEach(section.items.prefix(10)) { item in
                                 Button {

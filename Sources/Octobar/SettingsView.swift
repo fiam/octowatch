@@ -10,10 +10,10 @@ struct SettingsView: View {
     @Environment(\.openWindow) private var openWindow
     @FocusState private var tokenFieldFocused: Bool
     @State private var selectedTokenSource: TokenSource = .personalAccessToken
-    @State private var editingYourTurnRule: YourTurnRuleDefinition?
-    @State private var showsResetYourTurnRulesConfirmation = false
-    @State private var renamingSection: YourTurnSection?
+    @State private var showsResetInboxSectionsConfirmation = false
+    @State private var renamingSection: InboxSection?
     @State private var renamingSectionName = ""
+    @State private var editingSectionForRules: InboxSection?
 
     var body: some View {
         ZStack {
@@ -43,25 +43,13 @@ struct SettingsView: View {
                 selectedTokenSource = .githubCLI
             }
         }
-        .sheet(item: $editingYourTurnRule) { rule in
-            YourTurnRuleEditorSheet(
-                initialRule: rule,
-                onSave: { updatedRule in
-                    editingYourTurnRule = nil
-                    model.saveYourTurnRule(updatedRule)
-                },
-                onCancel: {
-                    editingYourTurnRule = nil
-                }
-            )
-        }
         .confirmationDialog(
-            "Reset Your Turn Rules?",
-            isPresented: $showsResetYourTurnRulesConfirmation,
+            "Reset Inbox Sections?",
+            isPresented: $showsResetInboxSectionsConfirmation,
             titleVisibility: .visible
         ) {
             Button("Reset Defaults", role: .destructive) {
-                model.resetYourTurnRules()
+                model.resetInboxSections()
             }
 
             Button("Cancel", role: .cancel) {}
@@ -78,7 +66,7 @@ struct SettingsView: View {
                     Spacer()
                     Button("Cancel") { renamingSection = nil }
                     Button("Rename") {
-                        model.renameYourTurnSection(id: section.id, name: renamingSectionName)
+                        model.renameInboxSection(id: section.id, name: renamingSectionName)
                         renamingSection = nil
                     }
                     .keyboardShortcut(.defaultAction)
@@ -86,6 +74,13 @@ struct SettingsView: View {
             }
             .padding(20)
             .frame(width: 300)
+        }
+        .sheet(item: $editingSectionForRules) { section in
+            SectionRulesSheet(
+                sectionID: section.id,
+                model: model,
+                onDismiss: { editingSectionForRules = nil }
+            )
         }
     }
 
@@ -269,7 +264,7 @@ struct SettingsView: View {
         settingsCard {
             cardIntro(
                 title: "Inbox",
-                message: "Choose how the inbox handles read state, self-triggered notifications, and the Your Turn section."
+                message: "Choose how the inbox handles read state, self-triggered notifications, and inbox sections."
             ) {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(.blue.gradient)
@@ -326,21 +321,17 @@ struct SettingsView: View {
                 .padding(.leading, 20)
 
             settingsRow(
-                title: "Your Turn Rules",
-                subtitle: "Build the rules that decide what appears in the Your Turn section."
+                title: "Inbox Sections",
+                subtitle: "Define the pinned sections at the top of your inbox. Items match the first section whose rules apply."
             ) {
                 EmptyView()
             }
 
-            ForEach(model.yourTurnConfiguration.sections) { section in
-                DisclosureGroup {
-                    ForEach(section.rules) { rule in
-                        yourTurnRuleRow(rule, sectionID: section.id)
-                    }
-                } label: {
+            List {
+                ForEach(model.inboxSectionConfig.sections) { section in
                     HStack {
                         Text(section.name)
-                            .font(.subheadline.weight(.semibold))
+                            .font(.body.weight(.medium))
 
                         Spacer()
 
@@ -348,25 +339,19 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                        Button {
-                            let rule = model.addRuleToSection(sectionID: section.id)
-                            editingYourTurnRule = rule
-                        } label: {
-                            Image(systemName: "plus.circle")
+                        Button("Edit") {
+                            editingSectionForRules = section
                         }
-                        .buttonStyle(.plain)
+                        .appInteractiveHover()
 
                         Menu {
                             Button("Rename...") {
                                 renamingSectionName = section.name
                                 renamingSection = section
                             }
-                            Button("Move Up") { model.moveYourTurnSection(id: section.id, direction: -1) }
-                            Button("Move Down") { model.moveYourTurnSection(id: section.id, direction: 1) }
-                            Divider()
                             Toggle("Enabled", isOn: sectionToggleBinding(section))
                             Divider()
-                            Button("Delete Section", role: .destructive) { model.deleteYourTurnSection(id: section.id) }
+                            Button("Delete Section", role: .destructive) { model.deleteInboxSection(id: section.id) }
                         } label: {
                             Image(systemName: "ellipsis.circle")
                         }
@@ -374,15 +359,19 @@ struct SettingsView: View {
                         .fixedSize()
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 6)
+                .onMove { from, to in
+                    model.reorderInboxSections(fromOffsets: from, toOffset: to)
+                }
             }
+            .listStyle(.plain)
+            .frame(height: CGFloat(model.inboxSectionConfig.sections.count) * 44)
+            .padding(.horizontal, 20)
 
             HStack {
-                Button("Add Section") { model.addYourTurnSection(name: "New Section") }
+                Button("Add Section") { model.addInboxSection(name: "New Section") }
                     .appInteractiveHover()
                 Spacer()
-                Button("Reset Defaults") { showsResetYourTurnRulesConfirmation = true }
+                Button("Reset Defaults") { showsResetInboxSectionsConfirmation = true }
                     .appInteractiveHover()
             }
             .padding(.horizontal, 20)
@@ -471,61 +460,17 @@ struct SettingsView: View {
         return "Open a separate window to restore hidden pull requests and issues without crowding settings."
     }
 
-    private func sectionToggleBinding(_ section: YourTurnSection) -> Binding<Bool> {
+    private func sectionToggleBinding(_ section: InboxSection) -> Binding<Bool> {
         Binding(
             get: {
-                model.yourTurnConfiguration.sections
+                model.inboxSectionConfig.sections
                     .first(where: { $0.id == section.id })?
                     .isEnabled ?? section.isEnabled
             },
             set: { _ in
-                model.toggleYourTurnSection(id: section.id)
+                model.toggleInboxSection(id: section.id)
             }
         )
-    }
-
-    private func yourTurnRuleRow(_ rule: YourTurnRuleDefinition, sectionID: UUID) -> some View {
-        settingsRow(
-            title: rule.summary,
-            subtitle: ""
-        ) {
-            HStack(spacing: 10) {
-                Toggle(
-                    rule.summary,
-                    isOn: Binding(
-                        get: {
-                            model.yourTurnConfiguration.sections
-                                .flatMap(\.rules)
-                                .first(where: { $0.id == rule.id })?
-                                .isEnabled ?? rule.isEnabled
-                        },
-                        set: { model.setYourTurnRuleEnabled(rule.id, isEnabled: $0) }
-                    )
-                )
-                .labelsHidden()
-                .toggleStyle(.switch)
-
-                Button("Edit") {
-                    editingYourTurnRule = rule
-                }
-                .appInteractiveHover()
-
-                Menu {
-                    Button("Duplicate") {
-                        model.duplicateYourTurnRule(rule.id)
-                    }
-
-                    Button("Delete", role: .destructive) {
-                        model.deleteYourTurnRule(rule.id)
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 16, weight: .medium))
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-            }
-        }
     }
 
     private var tokenSourceSelection: Binding<TokenSource> {
@@ -646,17 +591,460 @@ struct SettingsView: View {
     }
 }
 
-private struct YourTurnRuleEditorSheet: View {
+private struct InboxRuleRow: View {
+    let rule: InboxSectionRule
+    @Binding var isEnabled: Bool
+
+    private var typeIcon: (String, Color) {
+        switch rule.itemKind {
+        case .pullRequest: ("arrow.triangle.pull", .blue)
+        case .issue: ("exclamationmark.circle", .orange)
+        case .workflow: ("bolt.horizontal.circle", .purple)
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Toggle("", isOn: $isEnabled)
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+
+            Image(systemName: typeIcon.0)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(typeIcon.1)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(rule.name)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+
+                Text(conditionSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 4)
+        .opacity(isEnabled ? 1 : 0.45)
+    }
+
+    private var conditionSummary: String {
+        let normalized = rule.normalized
+        let parts = normalized.conditions.map {
+            $0.summaryPhrase(for: normalized.itemKind)
+        }.filter { !$0.isEmpty }
+
+        if parts.isEmpty {
+            return "Matches all \(rule.itemKind.pluralTitle.lowercased())"
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
+private struct InboxRuleClauseRow: View {
+    @Binding var condition: InboxRuleCondition
+    let itemKind: InboxRuleItemKind
+    let onRemove: () -> Void
+
+    private var dotColor: Color {
+        switch condition.kind {
+        case .relationship: return .blue
+        case .signal: return .orange
+        case .viewerReview: return .green
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(dotColor)
+                .frame(width: 8, height: 8)
+
+            conditionContent
+
+            Spacer()
+
+            if condition.isNegated {
+                Text("NOT")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.red.opacity(0.1)))
+            }
+
+            Button { onRemove() } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(dotColor.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(dotColor.opacity(0.12), lineWidth: 1)
+        )
+        .contextMenu {
+            Button(condition.isNegated ? "Remove negation" : "Negate (is not)") {
+                condition.isNegated.toggle()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var conditionContent: some View {
+        switch condition.kind {
+        case .relationship:
+            relationshipPicker
+        case .signal:
+            signalPicker
+        case .viewerReview:
+            reviewPicker
+        }
+    }
+
+    private var relationshipPicker: some View {
+        let currentValue = condition.relationshipValues.first ?? .authored
+        return Picker("", selection: Binding(
+            get: { currentValue },
+            set: { condition.relationshipValues = [$0] }
+        )) {
+            ForEach(itemKind.availableRelationships, id: \.self) { rel in
+                Text(rel.title(for: itemKind)).tag(rel)
+            }
+        }
+        .labelsHidden()
+        .fixedSize()
+    }
+
+    private var signalPicker: some View {
+        let currentValue = condition.signalValues.first ?? .failedChecks
+        return Picker("", selection: Binding(
+            get: { currentValue },
+            set: { condition.signalValues = [$0] }
+        )) {
+            ForEach(itemKind.availableSignals, id: \.self) { signal in
+                Text(signal.title).tag(signal)
+            }
+        }
+        .labelsHidden()
+        .fixedSize()
+    }
+
+    private var reviewPicker: some View {
+        Picker("", selection: $condition.viewerReviewValue) {
+            Text("with your review").tag(InboxRuleReviewCondition.present)
+            Text("without your review").tag(InboxRuleReviewCondition.missing)
+        }
+        .labelsHidden()
+        .fixedSize()
+    }
+}
+
+private struct SectionRulesSheet: View {
+    let sectionID: UUID
+    @ObservedObject var model: AppModel
+    let onDismiss: () -> Void
+
+    @State private var editingRuleID: InboxSectionRule.ID?
+
+    private var section: InboxSection? {
+        model.inboxSectionConfig.sections.first(where: { $0.id == sectionID })
+    }
+
+    var body: some View {
+        Group {
+            if let editingRuleID,
+               let rule = section?.rules.first(where: { $0.id == editingRuleID }) {
+                InboxRuleEditorView(
+                    initialRule: rule,
+                    onSave: { updatedRule in
+                        model.saveInboxRule(updatedRule)
+                        withAnimation { self.editingRuleID = nil }
+                    },
+                    onBack: {
+                        withAnimation { self.editingRuleID = nil }
+                    }
+                )
+            } else {
+                rulesList
+            }
+        }
+        .frame(width: 620, height: 520)
+    }
+
+    private var rulesList: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(section?.name ?? "Section")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                addRuleMenu
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+
+            Divider()
+
+            List {
+                if let section {
+                    ForEach(section.rules) { rule in
+                        InboxRuleRow(
+                            rule: rule,
+                            isEnabled: Binding(
+                                get: {
+                                    model.inboxSectionConfig.sections
+                                        .flatMap(\.rules)
+                                        .first(where: { $0.id == rule.id })?
+                                        .isEnabled ?? rule.isEnabled
+                                },
+                                set: { model.setInboxRuleEnabled(rule.id, isEnabled: $0) }
+                            )
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation { editingRuleID = rule.id }
+                        }
+                        .contextMenu {
+                            Button("Duplicate") {
+                                model.duplicateInboxRule(rule.id)
+                            }
+                            Divider()
+                            Button("Delete", role: .destructive) {
+                                model.deleteInboxRule(rule.id)
+                            }
+                        }
+                    }
+                    .onMove { from, to in
+                        model.reorderInboxRules(
+                            inSectionID: sectionID,
+                            fromOffsets: from,
+                            toOffset: to
+                        )
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .overlay {
+                if section?.rules.isEmpty == true {
+                    Text("No rules yet. Click + to get started.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Done") { onDismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(20)
+        }
+    }
+
+    private var addRuleMenu: some View {
+        Menu {
+            ForEach(InboxRuleItemKind.allCases, id: \.self) { kind in
+                Button {
+                    let rule = model.addRuleToSection(sectionID: sectionID, itemKind: kind)
+                    withAnimation { editingRuleID = rule.id }
+                } label: {
+                    Label(kind.pluralTitle, systemImage: kind.iconName)
+                }
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 14, weight: .semibold))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Add rule")
+    }
+}
+
+private struct InboxRuleEditorView: View {
+    let initialRule: InboxSectionRule
+    let onSave: (InboxSectionRule) -> Void
+    let onBack: () -> Void
+
+    @State private var draft: InboxSectionRule
+
+    init(
+        initialRule: InboxSectionRule,
+        onSave: @escaping (InboxSectionRule) -> Void,
+        onBack: @escaping () -> Void
+    ) {
+        self.initialRule = initialRule
+        self.onSave = onSave
+        self.onBack = onBack
+        _draft = State(initialValue: initialRule)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button { onBack() } label: {
+                    Label("Back", systemImage: "chevron.left")
+                        .font(.subheadline)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Text("Edit Rule")
+                    .font(.headline)
+
+                Spacer()
+
+                Button("Save") {
+                    onSave(draft.normalized)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            editorContent
+        }
+    }
+
+    private var editorContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                itemKindRow
+                conditionClauses
+                Divider()
+                previewSection
+            }
+            .padding(24)
+        }
+    }
+
+    private var itemKindRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("Show")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+            Label(draft.itemKind.pluralTitle, systemImage: draft.itemKind.iconName)
+                .font(.title3.weight(.medium))
+            Text("where:")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var conditionClauses: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(draft.conditions.enumerated()), id: \.element.id) { index, _ in
+                InboxRuleClauseRow(
+                    condition: $draft.conditions[index],
+                    itemKind: draft.itemKind,
+                    onRemove: {
+                        withAnimation {
+                            _ = draft.conditions.remove(at: index)
+                        }
+                    }
+                )
+            }
+
+            addConditionMenu
+        }
+    }
+
+    private var addConditionMenu: some View {
+        Menu {
+            ForEach(draft.itemKind.availableRelationships, id: \.self) { rel in
+                Button(rel.title(for: draft.itemKind)) {
+                    withAnimation {
+                        draft.conditions.append(.relationship([rel]))
+                    }
+                }
+            }
+
+            if !draft.itemKind.availableSignals.isEmpty {
+                Divider()
+                ForEach(draft.itemKind.availableSignals, id: \.self) { signal in
+                    Button(signal.title) {
+                        withAnimation {
+                            draft.conditions.append(.signal([signal]))
+                        }
+                    }
+                }
+            }
+
+            if draft.itemKind.availableConditionKinds.contains(.viewerReview) {
+                Divider()
+                Button("With your review") {
+                    withAnimation {
+                        draft.conditions.append(.viewerReview(.present))
+                    }
+                }
+                Button("Without your review") {
+                    withAnimation {
+                        draft.conditions.append(.viewerReview(.missing))
+                    }
+                }
+            }
+        } label: {
+            Label("Add condition", systemImage: "plus.circle")
+                .font(.subheadline)
+                .foregroundStyle(Color.accentColor)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .padding(.top, 4)
+    }
+
+    private var previewSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Preview")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.tertiary)
+
+            InboxRuleRow(
+                rule: draft.normalized,
+                isEnabled: .constant(true)
+            )
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
+        }
+    }
+
+    private func clauseIcon(for kind: InboxRuleConditionKind) -> String {
+        switch kind {
+        case .relationship: return "person"
+        case .signal: return "exclamationmark.triangle"
+        case .viewerReview: return "eye"
+        }
+    }
+}
+
+private struct LegacyInboxRuleEditorSheet_Unused: View {
     @Environment(\.dismiss) private var dismiss
 
-    @State private var draft: YourTurnRuleDefinition
+    @State private var draft: InboxSectionRule
 
-    let onSave: (YourTurnRuleDefinition) -> Void
+    let onSave: (InboxSectionRule) -> Void
     let onCancel: () -> Void
 
     init(
-        initialRule: YourTurnRuleDefinition,
-        onSave: @escaping (YourTurnRuleDefinition) -> Void,
+        initialRule: InboxSectionRule,
+        onSave: @escaping (InboxSectionRule) -> Void,
         onCancel: @escaping () -> Void
     ) {
         _draft = State(initialValue: initialRule.normalized)
@@ -665,10 +1053,10 @@ private struct YourTurnRuleEditorSheet: View {
     }
 
     private func addCondition(
-        _ kind: YourTurnConditionKind,
+        _ kind: InboxRuleConditionKind,
         after index: Int? = nil
     ) {
-        let newCondition = YourTurnCondition.default(
+        let newCondition = InboxRuleCondition.default(
             for: kind,
             itemKind: draft.itemKind
         )
@@ -685,10 +1073,10 @@ private struct YourTurnRuleEditorSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Your Turn Rule")
+                        Text("Section Rule")
                             .font(.title2.weight(.semibold))
 
-                        Text("Build a rule for the work that should rise to the top when it needs something from you.")
+                        Text("Define when items should appear in this section.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -699,7 +1087,7 @@ private struct YourTurnRuleEditorSheet: View {
                             Text("Show")
 
                             Picker("Item Type", selection: $draft.itemKind) {
-                                ForEach(YourTurnItemKind.allCases, id: \.self) { itemKind in
+                                ForEach(InboxRuleItemKind.allCases, id: \.self) { itemKind in
                                     Text(itemKind.pluralTitle).tag(itemKind)
                                 }
                             }
@@ -734,7 +1122,7 @@ private struct YourTurnRuleEditorSheet: View {
                                 .padding(16)
                             } else {
                                 ForEach(Array(draft.conditions.enumerated()), id: \.element.id) { index, _ in
-                                    YourTurnConditionEditor(
+                                    InboxRuleConditionEditor(
                                         condition: $draft.conditions[index],
                                         itemKind: draft.itemKind,
                                         onAddCondition: { kind in
@@ -816,11 +1204,11 @@ private struct YourTurnRuleEditorSheet: View {
     }
 }
 
-private struct YourTurnConditionEditor: View {
-    @Binding var condition: YourTurnCondition
+private struct InboxRuleConditionEditor: View {
+    @Binding var condition: InboxRuleCondition
 
-    let itemKind: YourTurnItemKind
-    let onAddCondition: (YourTurnConditionKind) -> Void
+    let itemKind: InboxRuleItemKind
+    let onAddCondition: (InboxRuleConditionKind) -> Void
     let onRemove: () -> Void
 
     private var title: String {
@@ -869,7 +1257,7 @@ private struct YourTurnConditionEditor: View {
                 conditionCheckboxGrid {
                     ForEach(itemKind.availableRelationships, id: \.self) { relationship in
                         Toggle(
-                            relationship.title,
+                            relationship.title(for: itemKind),
                             isOn: relationshipBinding(for: relationship)
                         )
                         .toggleStyle(.checkbox)
@@ -887,7 +1275,7 @@ private struct YourTurnConditionEditor: View {
                 }
             case .viewerReview:
                 Picker("Your Review", selection: $condition.viewerReviewValue) {
-                    ForEach(YourTurnViewerReviewCondition.allCases, id: \.self) { reviewCondition in
+                    ForEach(InboxRuleReviewCondition.allCases, id: \.self) { reviewCondition in
                         Text(reviewCondition.title).tag(reviewCondition)
                     }
                 }
@@ -943,7 +1331,7 @@ private struct YourTurnConditionEditor: View {
     }
 
     private func relationshipBinding(
-        for relationship: YourTurnViewerRelationship
+        for relationship: InboxRuleRelationship
     ) -> Binding<Bool> {
         Binding(
             get: { condition.relationshipValues.contains(relationship) },
@@ -957,7 +1345,7 @@ private struct YourTurnConditionEditor: View {
         )
     }
 
-    private func signalBinding(for signal: YourTurnSignal) -> Binding<Bool> {
+    private func signalBinding(for signal: InboxRuleSignal) -> Binding<Bool> {
         Binding(
             get: { condition.signalValues.contains(signal) },
             set: { isEnabled in
