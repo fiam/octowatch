@@ -38,7 +38,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var pullRequestWatchRevision = 0
     @Published private(set) var showsDebugRateLimitDetails = false
     @Published private(set) var yourTurnConfiguration: YourTurnConfiguration = .default
-    @Published private(set) var yourTurnItems: [AttentionItem] = []
+    @Published private(set) var yourTurnSections: [YourTurnPolicy.SectionResult] = []
+
+    var yourTurnItems: [AttentionItem] {
+        yourTurnSections.flatMap(\.items)
+    }
 
     private let readStateStoreKey = "attention-subject-read-state-v2"
     private let ignoredSubjectStoreKey = "ignored-attention-subjects-v2"
@@ -302,13 +306,14 @@ final class AppModel: ObservableObject {
     }
 
     func duplicateYourTurnRule(_ ruleID: UUID) {
-        guard let existingRule = yourTurnConfiguration.rules.first(where: { $0.id == ruleID }) else {
+        let updatedConfiguration = yourTurnConfiguration.duplicatingRule(id: ruleID)
+        guard updatedConfiguration != yourTurnConfiguration else {
             return
         }
 
-        var duplicatedRule = existingRule
-        duplicatedRule.id = UUID()
-        _ = saveYourTurnRule(duplicatedRule)
+        yourTurnConfiguration = updatedConfiguration
+        refreshYourTurnItems()
+        persistYourTurnConfiguration()
     }
 
     func deleteYourTurnRule(_ ruleID: UUID) {
@@ -330,6 +335,61 @@ final class AppModel: ObservableObject {
         yourTurnConfiguration = .default
         refreshYourTurnItems()
         persistYourTurnConfiguration()
+    }
+
+    // MARK: - Section CRUD
+
+    func addYourTurnSection(name: String) {
+        let section = YourTurnSection(name: name, rules: [])
+        yourTurnConfiguration = yourTurnConfiguration.addingSection(section)
+        refreshYourTurnItems()
+        persistYourTurnConfiguration()
+    }
+
+    func deleteYourTurnSection(id: UUID) {
+        yourTurnConfiguration = yourTurnConfiguration.removingSection(id: id)
+        refreshYourTurnItems()
+        persistYourTurnConfiguration()
+    }
+
+    func renameYourTurnSection(id: UUID, name: String) {
+        guard var section = yourTurnConfiguration.sections.first(where: { $0.id == id }) else {
+            return
+        }
+        section.name = name
+        yourTurnConfiguration = yourTurnConfiguration.replacing(section)
+        refreshYourTurnItems()
+        persistYourTurnConfiguration()
+    }
+
+    func moveYourTurnSection(id: UUID, direction: Int) {
+        let updatedConfiguration = yourTurnConfiguration.movingSection(id: id, direction: direction)
+        guard updatedConfiguration != yourTurnConfiguration else {
+            return
+        }
+
+        yourTurnConfiguration = updatedConfiguration
+        refreshYourTurnItems()
+        persistYourTurnConfiguration()
+    }
+
+    func toggleYourTurnSection(id: UUID) {
+        guard var section = yourTurnConfiguration.sections.first(where: { $0.id == id }) else {
+            return
+        }
+        section.isEnabled.toggle()
+        yourTurnConfiguration = yourTurnConfiguration.replacing(section)
+        refreshYourTurnItems()
+        persistYourTurnConfiguration()
+    }
+
+    @discardableResult
+    func addRuleToSection(sectionID: UUID) -> YourTurnRuleDefinition {
+        let rule = YourTurnRuleDefinition.newCustom()
+        yourTurnConfiguration = yourTurnConfiguration.addingRule(rule, toSectionID: sectionID)
+        refreshYourTurnItems()
+        persistYourTurnConfiguration()
+        return rule
     }
 
     func rateLimitBucketSummary(
@@ -404,7 +464,7 @@ final class AppModel: ObservableObject {
         issueDashboardLastUpdated = nil
         pullRequestDashboardLastError = nil
         issueDashboardLastError = nil
-        yourTurnItems = []
+        yourTurnSections = []
         userLogin = nil
         lastUpdated = nil
         lastError = nil
@@ -1658,7 +1718,7 @@ final class AppModel: ObservableObject {
     }
 
     private func refreshYourTurnItems() {
-        yourTurnItems = YourTurnPolicy.matchingItems(
+        yourTurnSections = YourTurnPolicy.matchingItemsBySection(
             in: attentionItems,
             configuration: yourTurnConfiguration,
             acknowledgedWorkflows: acknowledgedWorkflows
@@ -1984,7 +2044,7 @@ final class AppModel: ObservableObject {
         issueDashboardLastUpdated = nil
         pullRequestDashboardLastError = nil
         issueDashboardLastError = nil
-        yourTurnItems = YourTurnPolicy.matchingItems(
+        yourTurnSections = YourTurnPolicy.matchingItemsBySection(
             in: fixture.attentionItems,
             configuration: yourTurnConfiguration
         )

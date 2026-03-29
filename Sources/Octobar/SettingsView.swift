@@ -12,6 +12,8 @@ struct SettingsView: View {
     @State private var selectedTokenSource: TokenSource = .personalAccessToken
     @State private var editingYourTurnRule: YourTurnRuleDefinition?
     @State private var showsResetYourTurnRulesConfirmation = false
+    @State private var renamingSection: YourTurnSection?
+    @State private var renamingSectionName = ""
 
     var body: some View {
         ZStack {
@@ -65,6 +67,25 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This restores the default rule list and removes your custom edits.")
+        }
+        .sheet(item: $renamingSection) { section in
+            VStack(spacing: 16) {
+                Text("Rename Section")
+                    .font(.headline)
+                TextField("Section Name", text: $renamingSectionName)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { renamingSection = nil }
+                    Button("Rename") {
+                        model.renameYourTurnSection(id: section.id, name: renamingSectionName)
+                        renamingSection = nil
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(20)
+            .frame(width: 300)
         }
     }
 
@@ -308,28 +329,64 @@ struct SettingsView: View {
                 title: "Your Turn Rules",
                 subtitle: "Build the rules that decide what appears in the Your Turn section."
             ) {
-                HStack(spacing: 10) {
-                    Button("Reset Defaults") {
-                        showsResetYourTurnRulesConfirmation = true
-                    }
-                    .appInteractiveHover()
-
-                    Button("Add Rule") {
-                        editingYourTurnRule = YourTurnRuleDefinition.newCustom()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .appInteractiveHover()
-                }
+                EmptyView()
             }
 
-            ForEach(Array(model.yourTurnConfiguration.rules.enumerated()), id: \.element.id) { index, rule in
-                if index > 0 {
-                    Divider()
-                        .padding(.leading, 20)
-                }
+            ForEach(model.yourTurnConfiguration.sections) { section in
+                DisclosureGroup {
+                    ForEach(section.rules) { rule in
+                        yourTurnRuleRow(rule, sectionID: section.id)
+                    }
+                } label: {
+                    HStack {
+                        Text(section.name)
+                            .font(.subheadline.weight(.semibold))
 
-                yourTurnRuleRow(rule)
+                        Spacer()
+
+                        Text("\(section.enabledRuleCount) of \(section.ruleCount) rules")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Button {
+                            let rule = model.addRuleToSection(sectionID: section.id)
+                            editingYourTurnRule = rule
+                        } label: {
+                            Image(systemName: "plus.circle")
+                        }
+                        .buttonStyle(.plain)
+
+                        Menu {
+                            Button("Rename...") {
+                                renamingSectionName = section.name
+                                renamingSection = section
+                            }
+                            Button("Move Up") { model.moveYourTurnSection(id: section.id, direction: -1) }
+                            Button("Move Down") { model.moveYourTurnSection(id: section.id, direction: 1) }
+                            Divider()
+                            Toggle("Enabled", isOn: sectionToggleBinding(section))
+                            Divider()
+                            Button("Delete Section", role: .destructive) { model.deleteYourTurnSection(id: section.id) }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 6)
             }
+
+            HStack {
+                Button("Add Section") { model.addYourTurnSection(name: "New Section") }
+                    .appInteractiveHover()
+                Spacer()
+                Button("Reset Defaults") { showsResetYourTurnRulesConfirmation = true }
+                    .appInteractiveHover()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 6)
         }
     }
 
@@ -414,7 +471,20 @@ struct SettingsView: View {
         return "Open a separate window to restore hidden pull requests and issues without crowding settings."
     }
 
-    private func yourTurnRuleRow(_ rule: YourTurnRuleDefinition) -> some View {
+    private func sectionToggleBinding(_ section: YourTurnSection) -> Binding<Bool> {
+        Binding(
+            get: {
+                model.yourTurnConfiguration.sections
+                    .first(where: { $0.id == section.id })?
+                    .isEnabled ?? section.isEnabled
+            },
+            set: { _ in
+                model.toggleYourTurnSection(id: section.id)
+            }
+        )
+    }
+
+    private func yourTurnRuleRow(_ rule: YourTurnRuleDefinition, sectionID: UUID) -> some View {
         settingsRow(
             title: rule.summary,
             subtitle: ""
@@ -424,7 +494,8 @@ struct SettingsView: View {
                     rule.summary,
                     isOn: Binding(
                         get: {
-                            model.yourTurnConfiguration.rules
+                            model.yourTurnConfiguration.sections
+                                .flatMap(\.rules)
                                 .first(where: { $0.id == rule.id })?
                                 .isEnabled ?? rule.isEnabled
                         },
@@ -635,7 +706,7 @@ private struct YourTurnRuleEditorSheet: View {
                             .labelsHidden()
                             .fixedSize()
 
-                            Text("in Your Turn if all of the following conditions are met:")
+                            Text("if all of the following conditions are met:")
                                 .fixedSize(horizontal: false, vertical: true)
                         }
 
@@ -688,7 +759,7 @@ private struct YourTurnRuleEditorSheet: View {
                         }
 
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Shows in Your Turn:")
+                            Text("Summary:")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
 

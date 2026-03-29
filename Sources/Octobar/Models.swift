@@ -4967,18 +4967,18 @@ enum YourTurnItemKind: String, Codable, CaseIterable, Hashable, Sendable {
         case .issue:
             return [.relationship]
         case .workflow:
-            return [.signal]
+            return [.relationship, .signal]
         }
     }
 
     var availableRelationships: [YourTurnViewerRelationship] {
         switch self {
         case .pullRequest:
-            return [.authored, .assigned, .reviewed, .commented]
+            return [.authored, .assigned, .reviewed, .commented, .interacted]
         case .issue:
-            return [.authored, .assigned, .commented]
+            return [.authored, .assigned, .commented, .interacted]
         case .workflow:
-            return []
+            return [.authored, .assigned, .reviewed, .commented, .interacted]
         }
     }
 
@@ -5031,6 +5031,7 @@ enum YourTurnViewerRelationship: String, Codable, CaseIterable, Hashable, Sendab
     case assigned
     case reviewed
     case commented
+    case interacted
 
     var title: String {
         switch self {
@@ -5042,6 +5043,17 @@ enum YourTurnViewerRelationship: String, Codable, CaseIterable, Hashable, Sendab
             return "Reviewed"
         case .commented:
             return "Commented"
+        case .interacted:
+            return "Interacted with"
+        }
+    }
+
+    var expandedRelationships: Set<YourTurnViewerRelationship> {
+        switch self {
+        case .interacted:
+            return [.reviewed, .commented]
+        default:
+            return [self]
         }
     }
 }
@@ -5296,6 +5308,8 @@ struct YourTurnCondition: Identifiable, Codable, Hashable, Sendable {
             case .pullRequest, .workflow, .none:
                 return isNegated ? "without your comments" : "commented on by you"
             }
+        case .interacted:
+            return isNegated ? "not interacted with by you" : "you interacted with"
         }
     }
 
@@ -5336,16 +5350,48 @@ struct YourTurnRuleDefinition: Identifiable, Codable, Hashable, Sendable {
     var conditions: [YourTurnCondition]
     var isEnabled: Bool
 
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case itemKind
+        case matchMode
+        case conditions
+        case isEnabled
+    }
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        itemKind: YourTurnItemKind,
+        matchMode: YourTurnMatchMode = .all,
+        conditions: [YourTurnCondition],
+        isEnabled: Bool = true
+    ) {
+        self.id = id
+        self.name = name
+        self.itemKind = itemKind
+        self.matchMode = matchMode
+        self.conditions = conditions
+        self.isEnabled = isEnabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        itemKind = try container.decode(YourTurnItemKind.self, forKey: .itemKind)
+        matchMode = try container.decode(YourTurnMatchMode.self, forKey: .matchMode)
+        conditions = try container.decode([YourTurnCondition].self, forKey: .conditions)
+        isEnabled = try container.decode(Bool.self, forKey: .isEnabled)
+    }
+
     static func newCustom() -> YourTurnRuleDefinition {
         YourTurnRuleDefinition(
-            id: UUID(),
             name: "New Rule",
             itemKind: .pullRequest,
-            matchMode: .all,
             conditions: [
                 .default(for: .relationship, itemKind: .pullRequest)
-            ],
-            isEnabled: true
+            ]
         )
     }
 
@@ -5409,7 +5455,8 @@ enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
     case authoredMergeConflicts
     case authoredFailedChecks
     case assignedPullRequestsWithoutReview
-    case relatedWorkflowFailed
+    case authoredWorkflowFailed
+    case interactedWorkflowFailed
     case relatedWorkflowApprovalRequired
     case assignedIssues
 
@@ -5423,8 +5470,10 @@ enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
             return "Your PRs with failed checks"
         case .assignedPullRequestsWithoutReview:
             return "Open PRs assigned to you"
-        case .relatedWorkflowFailed:
+        case .authoredWorkflowFailed:
             return "Failed workflows on your PRs"
+        case .interactedWorkflowFailed:
+            return "Failed workflows on PRs you interacted with"
         case .relatedWorkflowApprovalRequired:
             return "Workflows awaiting approval on your PRs"
         case .assignedIssues:
@@ -5442,8 +5491,10 @@ enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
             return "Open pull requests you authored that currently have failing checks."
         case .assignedPullRequestsWithoutReview:
             return "Open pull requests assigned to you."
-        case .relatedWorkflowFailed:
-            return "Failed workflows tied to pull requests you authored, reviewed, or are assigned to."
+        case .authoredWorkflowFailed:
+            return "Failed workflows tied to pull requests you authored."
+        case .interactedWorkflowFailed:
+            return "Failed workflows on pull requests you reviewed or commented on."
         case .relatedWorkflowApprovalRequired:
             return "Workflow runs waiting for approval on pull requests you authored, reviewed, or are assigned to."
         case .assignedIssues:
@@ -5461,7 +5512,9 @@ enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
             return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4503")!
         case .assignedPullRequestsWithoutReview:
             return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4504")!
-        case .relatedWorkflowFailed:
+        case .authoredWorkflowFailed:
+            return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4508")!
+        case .interactedWorkflowFailed:
             return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4505")!
         case .relatedWorkflowApprovalRequired:
             return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4506")!
@@ -5519,13 +5572,26 @@ enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
                 ],
                 isEnabled: true
             )
-        case .relatedWorkflowFailed:
+        case .authoredWorkflowFailed:
             return YourTurnRuleDefinition(
                 id: stableID,
                 name: title,
                 itemKind: .workflow,
                 matchMode: .all,
                 conditions: [
+                    .relationship([.authored]),
+                    .signal([.workflowFailed])
+                ],
+                isEnabled: true
+            )
+        case .interactedWorkflowFailed:
+            return YourTurnRuleDefinition(
+                id: stableID,
+                name: title,
+                itemKind: .workflow,
+                matchMode: .all,
+                conditions: [
+                    .relationship([.interacted]),
                     .signal([.workflowFailed])
                 ],
                 isEnabled: true
@@ -5556,21 +5622,139 @@ enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
     }
 }
 
-struct YourTurnConfiguration: Codable, Hashable, Sendable {
+struct YourTurnSection: Identifiable, Codable, Hashable, Sendable {
+    var id: UUID
+    var name: String
     var rules: [YourTurnRuleDefinition]
+    var isEnabled: Bool
 
-    static let `default` = YourTurnConfiguration(
-        rules: YourTurnRule.allCases.map(\.defaultDefinition)
-    )
-
-    var normalized: YourTurnConfiguration {
-        YourTurnConfiguration(
-            rules: rules.map(\.normalized)
-        )
+    init(id: UUID = UUID(), name: String, rules: [YourTurnRuleDefinition], isEnabled: Bool = true) {
+        self.id = id
+        self.name = name
+        self.rules = rules
+        self.isEnabled = isEnabled
     }
 
     var enabledRules: [YourTurnRuleDefinition] {
-        normalized.rules.filter(\.isEnabled)
+        isEnabled ? rules.filter(\.isEnabled) : []
+    }
+
+    var ruleCount: Int { rules.count }
+    var enabledRuleCount: Int { rules.filter(\.isEnabled).count }
+}
+
+struct YourTurnConfiguration: Codable, Hashable, Sendable {
+    var sections: [YourTurnSection]
+
+    private static let yourTurnSectionID = UUID(uuidString: "A0000000-0000-0000-0000-000000000001")!
+    private static let radarSectionID = UUID(uuidString: "A0000000-0000-0000-0000-000000000002")!
+
+    static let `default`: YourTurnConfiguration = {
+        let yourTurnRules: [YourTurnRule] = [
+            .authoredReadyToMerge,
+            .authoredMergeConflicts,
+            .authoredFailedChecks,
+            .assignedPullRequestsWithoutReview,
+            .assignedIssues,
+            .relatedWorkflowApprovalRequired,
+            .authoredWorkflowFailed
+        ]
+        let radarRules: [YourTurnRule] = [
+            .interactedWorkflowFailed
+        ]
+        return YourTurnConfiguration(sections: [
+            YourTurnSection(
+                id: yourTurnSectionID,
+                name: "Your Turn",
+                rules: yourTurnRules.map(\.defaultDefinition)
+            ),
+            YourTurnSection(
+                id: radarSectionID,
+                name: "On Your Radar",
+                rules: radarRules.map(\.defaultDefinition)
+            )
+        ])
+    }()
+
+    /// Backward-compatible computed property: flattens all rules across sections.
+    var rules: [YourTurnRuleDefinition] {
+        sections.flatMap(\.rules)
+    }
+
+    var enabledRules: [YourTurnRuleDefinition] {
+        sections.flatMap(\.enabledRules).map(\.normalized)
+    }
+
+    var normalized: YourTurnConfiguration {
+        YourTurnConfiguration(
+            sections: sections.map { section in
+                YourTurnSection(
+                    id: section.id,
+                    name: section.name,
+                    rules: section.rules.map(\.normalized),
+                    isEnabled: section.isEnabled
+                )
+            }
+        )
+    }
+
+    /// Convenience initializer that wraps a flat rule array into a single "Your Turn" section.
+    init(rules: [YourTurnRuleDefinition]) {
+        self.sections = [
+            YourTurnSection(name: "Your Turn", rules: rules)
+        ]
+    }
+
+    init(sections: [YourTurnSection]) {
+        self.sections = sections
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sections
+        case rules
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sections, forKey: .sections)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let sections = try? container.decode([YourTurnSection].self, forKey: .sections) {
+            self.sections = sections
+        } else if let flatRules = try? container.decode([YourTurnRuleDefinition].self, forKey: .rules) {
+            // Legacy format: flat rules array, possibly with "section" strings baked in.
+            // Group by the old section value if present in the JSON (we parse it manually).
+            // Since the new YourTurnRuleDefinition no longer has a section property,
+            // decode the raw JSON to extract section names.
+            struct LegacyRuleWithSection: Decodable {
+                let section: String?
+            }
+
+            var sectionOrder = [String]()
+            var grouped = [String: [YourTurnRuleDefinition]]()
+            let legacySections: [LegacyRuleWithSection]
+            if let legacy = try? container.decode([LegacyRuleWithSection].self, forKey: .rules) {
+                legacySections = legacy
+            } else {
+                legacySections = flatRules.map { _ in LegacyRuleWithSection(section: nil) }
+            }
+
+            for (rule, legacy) in zip(flatRules, legacySections) {
+                let sectionName = legacy.section ?? "Your Turn"
+                if !sectionOrder.contains(sectionName) {
+                    sectionOrder.append(sectionName)
+                }
+                grouped[sectionName, default: []].append(rule)
+            }
+
+            self.sections = sectionOrder.map { name in
+                YourTurnSection(name: name, rules: grouped[name] ?? [])
+            }
+        } else {
+            self.sections = []
+        }
     }
 
     static func migrated(from legacy: LegacyYourTurnConfiguration) -> YourTurnConfiguration {
@@ -5583,21 +5767,81 @@ struct YourTurnConfiguration: Codable, Hashable, Sendable {
         ).normalized
     }
 
-    func replacing(_ rule: YourTurnRuleDefinition) -> YourTurnConfiguration {
-        var updatedRules = rules
-        if let index = updatedRules.firstIndex(where: { $0.id == rule.id }) {
-            updatedRules[index] = rule
-        } else {
-            updatedRules.append(rule)
-        }
+    // MARK: - Rule CRUD
 
-        return YourTurnConfiguration(rules: updatedRules).normalized
+    func replacing(_ rule: YourTurnRuleDefinition) -> YourTurnConfiguration {
+        var updatedSections = sections
+        for i in updatedSections.indices {
+            if let j = updatedSections[i].rules.firstIndex(where: { $0.id == rule.id }) {
+                updatedSections[i].rules[j] = rule
+                return YourTurnConfiguration(sections: updatedSections).normalized
+            }
+        }
+        // Rule not found in any section — append to first section if available.
+        if !updatedSections.isEmpty {
+            updatedSections[0].rules.append(rule)
+        }
+        return YourTurnConfiguration(sections: updatedSections).normalized
     }
 
     func removingRule(id: UUID) -> YourTurnConfiguration {
-        YourTurnConfiguration(
-            rules: rules.filter { $0.id != id }
-        ).normalized
+        var updatedSections = sections
+        for i in updatedSections.indices {
+            updatedSections[i].rules.removeAll { $0.id == id }
+        }
+        return YourTurnConfiguration(sections: updatedSections).normalized
+    }
+
+    func addingRule(_ rule: YourTurnRuleDefinition, toSectionID sectionID: UUID) -> YourTurnConfiguration {
+        var updatedSections = sections
+        if let i = updatedSections.firstIndex(where: { $0.id == sectionID }) {
+            updatedSections[i].rules.append(rule)
+        }
+        return YourTurnConfiguration(sections: updatedSections).normalized
+    }
+
+    func duplicatingRule(id: UUID) -> YourTurnConfiguration {
+        var updatedSections = sections
+        for i in updatedSections.indices {
+            if let j = updatedSections[i].rules.firstIndex(where: { $0.id == id }) {
+                var dup = updatedSections[i].rules[j]
+                dup.id = UUID()
+                updatedSections[i].rules.insert(dup, at: j + 1)
+                return YourTurnConfiguration(sections: updatedSections).normalized
+            }
+        }
+        return self
+    }
+
+    // MARK: - Section CRUD
+
+    func replacing(_ section: YourTurnSection) -> YourTurnConfiguration {
+        var updatedSections = sections
+        if let i = updatedSections.firstIndex(where: { $0.id == section.id }) {
+            updatedSections[i] = section
+        }
+        return YourTurnConfiguration(sections: updatedSections)
+    }
+
+    func addingSection(_ section: YourTurnSection) -> YourTurnConfiguration {
+        YourTurnConfiguration(sections: sections + [section])
+    }
+
+    func removingSection(id: UUID) -> YourTurnConfiguration {
+        YourTurnConfiguration(sections: sections.filter { $0.id != id })
+    }
+
+    func movingSection(id: UUID, direction: Int) -> YourTurnConfiguration {
+        var updatedSections = sections
+        guard let index = updatedSections.firstIndex(where: { $0.id == id }) else {
+            return self
+        }
+        let newIndex = index + direction
+        guard newIndex >= 0, newIndex < updatedSections.count else {
+            return self
+        }
+        updatedSections.swapAt(index, newIndex)
+        return YourTurnConfiguration(sections: updatedSections)
     }
 }
 
@@ -5645,6 +5889,50 @@ enum YourTurnPolicy {
         }
     }
 
+    struct SectionResult: Equatable {
+        let name: String
+        let items: [AttentionItem]
+    }
+
+    static func matchingItemsBySection(
+        in items: [AttentionItem],
+        configuration: YourTurnConfiguration,
+        acknowledgedWorkflows: [String: AcknowledgedWorkflowState] = [:]
+    ) -> [SectionResult] {
+        var seen = Set<String>()
+        var results = [SectionResult]()
+
+        for section in configuration.sections {
+            let sectionRules = section.enabledRules.map(\.normalized)
+            guard !sectionRules.isEmpty else { continue }
+
+            var sectionItems = [AttentionItem]()
+
+            for item in items {
+                guard !item.isHistoricalLogEntry else { continue }
+                guard !seen.contains(item.id) else { continue }
+
+                if let ack = acknowledgedWorkflows[item.subjectKey],
+                   item.type.isWorkflowActivityType,
+                   ack.coversRunID(item.latestSourceID) {
+                    continue
+                }
+
+                let derivedFacts = facts(for: item)
+                if sectionRules.contains(where: { matches(item, facts: derivedFacts, rule: $0) }) {
+                    seen.insert(item.id)
+                    sectionItems.append(item)
+                }
+            }
+
+            if !sectionItems.isEmpty {
+                results.append(SectionResult(name: section.name, items: sectionItems))
+            }
+        }
+
+        return results
+    }
+
     static func matchingRules(
         for item: AttentionItem,
         configuration: YourTurnConfiguration
@@ -5685,9 +5973,12 @@ enum YourTurnPolicy {
         facts: YourTurnFacts,
         condition: YourTurnCondition
     ) -> Bool {
+        let expandedRelationships = condition.relationshipValues.reduce(into: Set<YourTurnViewerRelationship>()) {
+            $0.formUnion($1.expandedRelationships)
+        }
         let baseMatch: Bool = switch condition.kind {
         case .relationship:
-            !facts.relationships.intersection(condition.relationshipValues).isEmpty
+            !facts.relationships.intersection(expandedRelationships).isEmpty
         case .signal:
             !facts.signals.intersection(condition.signalValues).isEmpty
         case .viewerReview:

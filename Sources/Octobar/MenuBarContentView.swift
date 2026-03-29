@@ -64,7 +64,7 @@ struct MenuBarContentView: View {
 
     private var yourTurnList: some View {
         Group {
-            if model.yourTurnItems.isEmpty {
+            if model.yourTurnSections.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle")
                         .font(.title3)
@@ -78,28 +78,36 @@ struct MenuBarContentView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 2) {
-                        ForEach(model.yourTurnItems.prefix(20)) { item in
-                            Button {
-                                openURL(item.url)
-                            } label: {
-                                HStack(alignment: .top, spacing: 10) {
-                                    eventBadge(for: item)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(item.title)
-                                            .font(.callout.weight(.medium))
-                                            .lineLimit(1)
-                                        Text(itemContext(for: item))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                .padding(.vertical, 6)
+                        ForEach(model.yourTurnSections, id: \.name) { section in
+                            Text(section.name)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
                                 .padding(.horizontal, 8)
+                                .padding(.top, section.name == model.yourTurnSections.first?.name ? 0 : 8)
+
+                            ForEach(section.items.prefix(10)) { item in
+                                Button {
+                                    openURL(item.url)
+                                } label: {
+                                    HStack(alignment: .top, spacing: 10) {
+                                        eventBadge(for: item)
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(item.title)
+                                                .font(.callout.weight(.medium))
+                                                .lineLimit(1)
+                                            Text(itemContext(for: item))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 8)
+                                }
+                                .buttonStyle(.plain)
+                                .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 10)
                             }
-                            .buttonStyle(.plain)
-                            .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 10)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)

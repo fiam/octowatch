@@ -331,22 +331,6 @@ struct AttentionWindowView: View {
         Set(model.yourTurnItems.map(\.subjectKey))
     }
 
-    private var scopedYourTurnItems: [AttentionItem] {
-        guard inboxMode == .inbox else {
-            return []
-        }
-
-        return model.yourTurnItems
-    }
-
-    private var yourTurnItemsInCurrentStream: [AttentionItem] {
-        visibleItems.filter { yourTurnSubjectKeys.contains($0.subjectKey) }
-    }
-
-    private var displayedYourTurnItems: [AttentionItem] {
-        yourTurnItemsInCurrentStream
-    }
-
     private var displayedOtherItems: [AttentionItem] {
         guard inboxMode == .inbox else {
             return visibleItems
@@ -358,14 +342,19 @@ struct AttentionWindowView: View {
     private var displayedSections: [SidebarSectionDescriptor] {
         var sections = [SidebarSectionDescriptor]()
 
-        if !displayedYourTurnItems.isEmpty {
-            sections.append(
-                SidebarSectionDescriptor(
-                    id: "your-turn",
-                    title: "Your Turn",
-                    items: displayedYourTurnItems
+        if inboxMode == .inbox {
+            let visibleKeys = Set(visibleItems.map(\.subjectKey))
+            for section in model.yourTurnSections {
+                let items = section.items.filter { visibleKeys.contains($0.subjectKey) }
+                guard !items.isEmpty else { continue }
+                sections.append(
+                    SidebarSectionDescriptor(
+                        id: "section:\(section.name)",
+                        title: section.name,
+                        items: items
+                    )
                 )
-            )
+            }
         }
 
         if !displayedOtherItems.isEmpty {
@@ -947,9 +936,9 @@ struct AttentionWindowView: View {
 
         let totalItemCount = scopedItems.count
         let unreadCount = scopedItems.filter(\.isUnread).count
-        let yourTurnCount = scopedYourTurnItems.count
+        let yourTurnCount = model.yourTurnItems.count
         let displayedCount = displayedItems.count
-        let displayedYourTurnCount = displayedYourTurnItems.count
+        let displayedYourTurnCount = model.yourTurnItems.count
         let itemLabel = itemCountLabel(for: totalItemCount)
         let unreadLabel = unreadCount == 1
             ? "1 unread"

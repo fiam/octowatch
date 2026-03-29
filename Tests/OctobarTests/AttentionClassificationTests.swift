@@ -767,6 +767,7 @@ final class AttentionClassificationTests: XCTestCase {
             updateKey: "run:42:workflowFailed",
             latestSourceID: "run:42",
             type: .workflowFailed,
+            secondaryIndicatorType: .authoredPullRequest,
             title: "CI failed",
             subtitle: "example/repo",
             repository: "example/repo",
@@ -803,6 +804,7 @@ final class AttentionClassificationTests: XCTestCase {
             updateKey: "run:99:workflowFailed",
             latestSourceID: "run:99",
             type: .workflowFailed,
+            secondaryIndicatorType: .authoredPullRequest,
             title: "CI failed again",
             subtitle: "example/repo",
             repository: "example/repo",
@@ -2183,7 +2185,8 @@ final class AttentionClassificationTests: XCTestCase {
 
         XCTAssertEqual(
             Set(matches.map(\.id)),
-            Set(["authored-failed", "assigned-open", "workflow-reviewed", "workflow-merged-only"])
+            Set(["authored-failed", "assigned-open", "workflow-reviewed"]),
+            "Workflow without relationship should not match any section"
         )
     }
 
@@ -2511,9 +2514,10 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertTrue(matches.isEmpty)
     }
 
-    func testWorkflowRulesOnlyOfferSignalConditions() {
-        XCTAssertEqual(YourTurnItemKind.workflow.availableConditionKinds, [.signal])
-        XCTAssertTrue(YourTurnItemKind.workflow.availableRelationships.isEmpty)
+    func testWorkflowRulesOfferRelationshipAndSignalConditions() {
+        XCTAssertEqual(YourTurnItemKind.workflow.availableConditionKinds, [.relationship, .signal])
+        XCTAssertFalse(YourTurnItemKind.workflow.availableRelationships.isEmpty)
+        XCTAssertTrue(YourTurnItemKind.workflow.availableRelationships.contains(.interacted))
     }
 
     func testPullRequestContextBadgesStayEmptyWithoutWorkflowAttention() {
