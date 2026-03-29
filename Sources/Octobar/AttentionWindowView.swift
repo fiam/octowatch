@@ -3194,10 +3194,12 @@ private struct PullRequestPostMergeWorkflowRow: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 10)
+        .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 12)
         .help(
             workflow.workflowApprovalTarget == nil
                 ? "Open workflow run on GitHub"
