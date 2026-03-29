@@ -4790,6 +4790,24 @@ struct TeamMembershipCache: Codable, Hashable, Sendable {
     }
 }
 
+struct AcknowledgedWorkflowState: Codable, Hashable, Sendable {
+    let subjectKey: String
+    let acknowledgedRunIDs: Set<String>
+    let acknowledgedAt: Date
+
+    func coversRunID(_ runID: String) -> Bool {
+        acknowledgedRunIDs.contains(runID)
+    }
+
+    func adding(runID: String) -> AcknowledgedWorkflowState {
+        AcknowledgedWorkflowState(
+            subjectKey: subjectKey,
+            acknowledgedRunIDs: acknowledgedRunIDs.union([runID]),
+            acknowledgedAt: Date()
+        )
+    }
+}
+
 struct IgnoredAttentionSubject: Identifiable, Hashable, Codable, Sendable {
     let ignoreKey: String
     let title: String
@@ -5607,11 +5625,18 @@ enum YourTurnPolicy {
 
     static func matchingItems(
         in items: [AttentionItem],
-        configuration: YourTurnConfiguration
+        configuration: YourTurnConfiguration,
+        acknowledgedWorkflows: [String: AcknowledgedWorkflowState] = [:]
     ) -> [AttentionItem] {
         let enabledRules = configuration.enabledRules
         return items.filter { item in
             guard !item.isHistoricalLogEntry else {
+                return false
+            }
+
+            if let ack = acknowledgedWorkflows[item.subjectKey],
+               item.type.isWorkflowActivityType,
+               ack.coversRunID(item.latestSourceID) {
                 return false
             }
 

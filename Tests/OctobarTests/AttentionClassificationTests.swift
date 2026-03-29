@@ -760,6 +760,90 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testAcknowledgedWorkflowExcludedFromYourTurn() {
+        let item = AttentionItem(
+            id: "run:42",
+            subjectKey: "https://github.com/example/repo/pull/1",
+            updateKey: "run:42:workflowFailed",
+            latestSourceID: "run:42",
+            type: .workflowFailed,
+            title: "CI failed",
+            subtitle: "example/repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 100),
+            url: URL(string: "https://github.com/example/repo/actions/runs/42")!
+        )
+
+        let matchesBeforeAck = YourTurnPolicy.matchingItems(
+            in: [item],
+            configuration: .default
+        )
+        XCTAssertEqual(matchesBeforeAck.count, 1, "Should match before acknowledge")
+
+        let acknowledged: [String: AcknowledgedWorkflowState] = [
+            item.subjectKey: AcknowledgedWorkflowState(
+                subjectKey: item.subjectKey,
+                acknowledgedRunIDs: ["run:42"],
+                acknowledgedAt: Date()
+            )
+        ]
+
+        let matchesAfterAck = YourTurnPolicy.matchingItems(
+            in: [item],
+            configuration: .default,
+            acknowledgedWorkflows: acknowledged
+        )
+        XCTAssertTrue(matchesAfterAck.isEmpty, "Should be excluded after acknowledge")
+    }
+
+    func testAcknowledgedWorkflowReappearsOnNewRun() {
+        let item = AttentionItem(
+            id: "run:99",
+            subjectKey: "https://github.com/example/repo/pull/1",
+            updateKey: "run:99:workflowFailed",
+            latestSourceID: "run:99",
+            type: .workflowFailed,
+            title: "CI failed again",
+            subtitle: "example/repo",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 200),
+            url: URL(string: "https://github.com/example/repo/actions/runs/99")!
+        )
+
+        let acknowledged: [String: AcknowledgedWorkflowState] = [
+            item.subjectKey: AcknowledgedWorkflowState(
+                subjectKey: item.subjectKey,
+                acknowledgedRunIDs: ["run:42"],
+                acknowledgedAt: Date()
+            )
+        ]
+
+        let matches = YourTurnPolicy.matchingItems(
+            in: [item],
+            configuration: .default,
+            acknowledgedWorkflows: acknowledged
+        )
+        XCTAssertEqual(
+            matches.count, 1,
+            "New run ID should not be covered by old acknowledgement"
+        )
+    }
+
+    func testAcknowledgedWorkflowStateCoversRunID() {
+        let state = AcknowledgedWorkflowState(
+            subjectKey: "test",
+            acknowledgedRunIDs: ["run:1", "run:2"],
+            acknowledgedAt: Date()
+        )
+
+        XCTAssertTrue(state.coversRunID("run:1"))
+        XCTAssertTrue(state.coversRunID("run:2"))
+        XCTAssertFalse(state.coversRunID("run:3"))
+
+        let updated = state.adding(runID: "run:3")
+        XCTAssertTrue(updated.coversRunID("run:3"))
+    }
+
     func testAttentionTypeDefaultStreamMapsDirectWorkSeparately() {
         XCTAssertEqual(AttentionItemType.comment.defaultStream, .notifications)
         XCTAssertEqual(AttentionItemType.authoredPullRequest.defaultStream, .pullRequests)

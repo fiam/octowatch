@@ -53,8 +53,10 @@ final class AppModel: ObservableObject {
     private let teamMembershipStoreKey = "team-membership-cache-v1"
     private let postMergeWatchStoreKey = "post-merge-watches-v1"
     private let mergeMethodPreferenceStoreKey = "merge-method-preferences-v1"
+    private let acknowledgedWorkflowsStoreKey = "acknowledged-workflows-v1"
     private let attentionUpdateHistoryStoreKey = "attention-update-history-v1"
     private let client = GitHubClient()
+    private let workflowRunCache = WorkflowRunCache()
     private let notifier = UserNotifier()
     private let pullRequestFocusCacheTTL: TimeInterval = 300
     private let focusedPullRequestWatchIntervalSeconds = 5
@@ -83,6 +85,7 @@ final class AppModel: ObservableObject {
     private var watchedPullRequestKey: String?
     private var watchedPullRequestState: PullRequestLiveWatchState?
     private var ignoredItemsByKey = [String: IgnoredAttentionSubject]()
+    private var acknowledgedWorkflows = [String: AcknowledgedWorkflowState]()
     private var mergeMethodPreferenceByRepository = [String: PullRequestMergeMethod]()
     private var ignoreUndoDismissTask: Task<Void, Never>?
     private var readStateBySubjectKey: [String: Date] = [:]
@@ -150,6 +153,7 @@ final class AppModel: ObservableObject {
             key: legacyIgnoredSubjectStoreKey
         )
         syncIgnoredItems()
+        loadAcknowledgedWorkflows()
 
         if let launchFixture = LaunchFixture.load(from: ProcessInfo.processInfo.environment) {
             applyLaunchFixture(launchFixture)
@@ -777,6 +781,22 @@ final class AppModel: ObservableObject {
         updateReadState(for: [item], isUnread: !item.isUnread)
     }
 
+    func acknowledgeWorkflow(for item: AttentionItem) {
+        let key = item.subjectKey
+        let runID = item.latestSourceID
+        if let existing = acknowledgedWorkflows[key] {
+            acknowledgedWorkflows[key] = existing.adding(runID: runID)
+        } else {
+            acknowledgedWorkflows[key] = AcknowledgedWorkflowState(
+                subjectKey: key,
+                acknowledgedRunIDs: [runID],
+                acknowledgedAt: Date()
+            )
+        }
+        persistAcknowledgedWorkflows()
+        refreshYourTurnItems()
+    }
+
     func ignore(_ item: AttentionItem) {
         ignore([item])
     }
@@ -1023,7 +1043,8 @@ final class AppModel: ObservableObject {
                 token: token,
                 preferredLogin: userLogin,
                 notificationScanState: notificationScanState,
-                teamMembershipCache: teamMembershipCache
+                teamMembershipCache: teamMembershipCache,
+                workflowRunCache: workflowRunCache
             )
             userLogin = snapshot.login
             replaceRateLimitState(with: snapshot.rateLimits)
@@ -1031,7 +1052,16 @@ final class AppModel: ObservableObject {
             teamMembershipCache = snapshot.teamMembershipCache.normalized
             persistNotificationScanState()
             persistTeamMembershipCache()
-            latestSnapshotAttentionItems = snapshot.attentionItems
+            let snapshotWorkflowSubjectKeys = Set(
+                snapshot.attentionItems
+                    .filter { $0.type.isWorkflowActivityType }
+                    .map(\.subjectKey)
+            )
+            let preservedSupplementalItems = latestSnapshotAttentionItems.filter { item in
+                item.id.hasPrefix(AttentionSubjectRefresh.localSupplementalItemIDPrefix)
+                    && !snapshotWorkflowSubjectKeys.contains(item.subjectKey)
+            }
+            latestSnapshotAttentionItems = snapshot.attentionItems + preservedSupplementalItems
             reconcileVisibleContentFromSnapshot()
             lastUpdated = Date()
             lastError = nil
@@ -1486,6 +1516,25 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(payload, forKey: mergeMethodPreferenceStoreKey)
     }
 
+    private func persistAcknowledgedWorkflows() {
+        if let data = try? JSONEncoder().encode(Array(acknowledgedWorkflows.values)) {
+            UserDefaults.standard.set(data, forKey: acknowledgedWorkflowsStoreKey)
+        }
+    }
+
+    private func loadAcknowledgedWorkflows() {
+        guard let data = UserDefaults.standard.data(forKey: acknowledgedWorkflowsStoreKey),
+              let states = try? JSONDecoder().decode([AcknowledgedWorkflowState].self, from: data)
+        else { return }
+
+        let cutoff = Date().addingTimeInterval(-30 * 24 * 60 * 60)
+        acknowledgedWorkflows = Dictionary(
+            uniqueKeysWithValues: states
+                .filter { $0.acknowledgedAt > cutoff }
+                .map { ($0.subjectKey, $0) }
+        )
+    }
+
     private func syncIgnoredItems() {
         ignoredItems = ignoredItemsByKey.values.sorted { lhs, rhs in
             if lhs.ignoredAt == rhs.ignoredAt {
@@ -1611,7 +1660,8 @@ final class AppModel: ObservableObject {
     private func refreshYourTurnItems() {
         yourTurnItems = YourTurnPolicy.matchingItems(
             in: attentionItems,
-            configuration: yourTurnConfiguration
+            configuration: yourTurnConfiguration,
+            acknowledgedWorkflows: acknowledgedWorkflows
         )
     }
 

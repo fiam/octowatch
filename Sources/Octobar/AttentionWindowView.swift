@@ -1288,6 +1288,17 @@ struct AttentionWindowView: View {
             Divider()
         }
 
+        let workflowItems = items.filter { $0.type.isWorkflowActivityType }
+        if !workflowItems.isEmpty {
+            Button {
+                for item in workflowItems {
+                    model.acknowledgeWorkflow(for: item)
+                }
+            } label: {
+                Label("Mark as Handled", systemImage: "checkmark.circle")
+            }
+        }
+
         Button {
             ignoreSelection(items)
         } label: {

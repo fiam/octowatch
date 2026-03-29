@@ -41,7 +41,7 @@ struct GitHubClient {
     private let authoredPullRequestLimit = 12
     private let trackedPullRequestLimit = 20
     private let trackedIssueLimit = 20
-    private let workflowCandidateLimit = 8
+    private let workflowCandidateLimit = 50
     private let workflowRunLimit = 20
 
     init(session: URLSession = .shared) {
@@ -308,7 +308,8 @@ struct GitHubClient {
         token: String,
         preferredLogin: String?,
         notificationScanState: NotificationScanState,
-        teamMembershipCache: TeamMembershipCache
+        teamMembershipCache: TeamMembershipCache,
+        workflowRunCache: WorkflowRunCache
     ) async throws -> GitHubSnapshot {
         let observer = GitHubRateLimitObserver()
         let login = try await resolveLogin(
@@ -365,10 +366,12 @@ struct GitHubClient {
             trackedPullRequests: trackedPullRequests,
             openAuthoredIssues: openAuthoredPullRequests
         )
+        workflowRunCache.pruneOlderThan(Date(timeIntervalSinceNow: -300))
         let workflowRuns = try await fetchWatchedWorkflowRuns(
             token: token,
             login: login,
             candidates: workflowCandidates,
+            cache: workflowRunCache,
             observer: observer
         )
 
@@ -3907,19 +3910,28 @@ struct GitHubClient {
         token: String,
         login: String,
         candidates: [WorkflowWatchCandidate],
+        cache: WorkflowRunCache,
         observer: GitHubRateLimitObserver
     ) async throws -> [ActionRunSummary] {
 
         return await withTaskGroup(of: [ActionRunSummary].self) { group in
             for candidate in candidates {
+                let key = candidate.key
+                if let entry = cache.cached(for: key), entry.allTerminal {
+                    group.addTask { entry.runs }
+                    continue
+                }
+
                 group.addTask {
                     do {
-                        return try await fetchWorkflowRuns(
+                        let runs = try await fetchWorkflowRuns(
                             token: token,
                             login: login,
                             candidate: candidate,
                             observer: observer
                         )
+                        cache.store(runs, for: key)
+                        return runs
                     } catch {
                         return []
                     }
@@ -6499,6 +6511,48 @@ private enum PredictedPostMergeWorkflowOutcome {
     case matched(PredictedPostMergeWorkflow)
     case issue(PullRequestPostMergeWorkflowEvaluationIssue)
     case ignored
+}
+
+final class WorkflowRunCache: @unchecked Sendable {
+    struct Entry {
+        let runs: [ActionRunSummary]
+        let fetchedAt: Date
+        let allTerminal: Bool
+    }
+
+    private var entries: [String: Entry] = [:]
+    private let lock = NSLock()
+
+    func cached(for key: String) -> Entry? {
+        lock.withLock { entries[key] }
+    }
+
+    func store(_ runs: [ActionRunSummary], for key: String) {
+        let allTerminal = runs.allSatisfy { run in
+            run.type == .workflowSucceeded || run.type == .workflowFailed
+        }
+        lock.withLock {
+            entries[key] = Entry(runs: runs, fetchedAt: Date(), allTerminal: allTerminal)
+        }
+    }
+
+    func invalidate(_ key: String) {
+        lock.withLock { entries[key] = nil }
+    }
+
+    func invalidateAll(matching keys: Set<String>) {
+        lock.withLock {
+            for key in keys {
+                entries[key] = nil
+            }
+        }
+    }
+
+    func pruneOlderThan(_ date: Date) {
+        lock.withLock {
+            entries = entries.filter { $0.value.fetchedAt >= date }
+        }
+    }
 }
 
 private struct GitHubAPIError: Decodable {
