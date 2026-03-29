@@ -176,126 +176,17 @@ struct MenuBarContentView: View {
         )
 
         RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(iconBackground(for: item.type))
+            .fill(item.type.badgeBackground)
             .frame(width: 24, height: 24)
             .overlay {
                 Image(systemName: item.type.iconName)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(iconColor(for: item.type))
+                    .foregroundStyle(item.type.badgeForeground)
             }
             .help(helpText)
             .accessibilityLabel(helpText)
     }
 
-    private func iconColor(for itemType: AttentionItemType) -> Color {
-        switch itemType {
-        case .assignedPullRequest:
-            return .blue
-        case .authoredPullRequest:
-            return .teal
-        case .reviewedPullRequest:
-            return .indigo
-        case .commentedPullRequest:
-            return .cyan
-        case .readyToMerge:
-            return .green
-        case .pullRequestMergeConflicts:
-            return .orange
-        case .pullRequestFailedChecks:
-            return .red
-        case .assignedIssue:
-            return .orange
-        case .authoredIssue:
-            return .brown
-        case .commentedIssue:
-            return .secondary
-        case .comment, .reviewComment:
-            return .secondary
-        case .mention:
-            return .purple
-        case .teamMention:
-            return .pink
-        case .newCommitsAfterComment:
-            return .teal
-        case .newCommitsAfterReview:
-            return .cyan
-        case .reviewRequested:
-            return .indigo
-        case .teamReviewRequested:
-            return .mint
-        case .reviewApproved:
-            return .green
-        case .reviewChangesRequested:
-            return .orange
-        case .pullRequestStateChanged:
-            return .brown
-        case .ciActivity:
-            return .teal
-        case .workflowRunning:
-            return .blue
-        case .workflowSucceeded:
-            return .green
-        case .workflowFailed:
-            return .red
-        case .workflowApprovalRequired:
-            return .orange
-        }
-    }
-
-    private func iconBackground(for itemType: AttentionItemType) -> Color {
-        switch itemType {
-        case .assignedPullRequest:
-            return .blue.opacity(0.14)
-        case .authoredPullRequest:
-            return .teal.opacity(0.14)
-        case .reviewedPullRequest:
-            return .indigo.opacity(0.14)
-        case .commentedPullRequest:
-            return .cyan.opacity(0.16)
-        case .readyToMerge:
-            return .green.opacity(0.16)
-        case .pullRequestMergeConflicts:
-            return .orange.opacity(0.16)
-        case .pullRequestFailedChecks:
-            return .red.opacity(0.14)
-        case .assignedIssue:
-            return .orange.opacity(0.16)
-        case .authoredIssue:
-            return .brown.opacity(0.16)
-        case .commentedIssue:
-            return .secondary.opacity(0.12)
-        case .comment, .reviewComment:
-            return .secondary.opacity(0.12)
-        case .mention:
-            return .purple.opacity(0.14)
-        case .teamMention:
-            return .pink.opacity(0.14)
-        case .newCommitsAfterComment:
-            return .teal.opacity(0.14)
-        case .newCommitsAfterReview:
-            return .cyan.opacity(0.16)
-        case .reviewRequested:
-            return .indigo.opacity(0.14)
-        case .teamReviewRequested:
-            return .mint.opacity(0.18)
-        case .reviewApproved:
-            return .green.opacity(0.14)
-        case .reviewChangesRequested:
-            return .orange.opacity(0.14)
-        case .pullRequestStateChanged:
-            return .brown.opacity(0.14)
-        case .ciActivity:
-            return .teal.opacity(0.14)
-        case .workflowRunning:
-            return .blue.opacity(0.14)
-        case .workflowSucceeded:
-            return .green.opacity(0.14)
-        case .workflowFailed:
-            return .red.opacity(0.14)
-        case .workflowApprovalRequired:
-            return .orange.opacity(0.14)
-        }
-    }
 }
 
 struct BotAccountChip: View {
