@@ -602,6 +602,11 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func cachedPullRequestFocus(for item: AttentionItem) -> PullRequestFocus? {
+        let cacheKey = item.ignoreKey
+        return pullRequestFocusCache[cacheKey]?.focus
+    }
+
     func fetchPullRequestFocus(
         for item: AttentionItem,
         force: Bool = false

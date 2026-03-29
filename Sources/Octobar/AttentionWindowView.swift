@@ -505,8 +505,15 @@ struct AttentionWindowView: View {
 
                 if selectionChanged {
                     cancelAutoMarkReadTask()
-                    pullRequestFocusState = .idle
                     reviewMergeState = .idle
+
+                    if let newItem = displayedItems.first(where: { normalizedSelection.contains($0.id) }),
+                       let cached = model.cachedPullRequestFocus(for: newItem) {
+                        pullRequestFocusState = .loaded(cached)
+                    } else {
+                        pullRequestFocusState = .idle
+                    }
+
                     armAutoMarkReadForCurrentSelection()
                     updateWatchedPullRequestSelection()
                 }
@@ -1367,8 +1374,14 @@ struct AttentionWindowView: View {
         }
 
         let expectedItemID = item.id
+        let cachedFocus = model.cachedPullRequestFocus(for: item)
+
         await MainActor.run {
-            pullRequestFocusState = .loading
+            if let cachedFocus {
+                pullRequestFocusState = .loaded(cachedFocus)
+            } else {
+                pullRequestFocusState = .loading
+            }
         }
 
         do {
@@ -1379,7 +1392,11 @@ struct AttentionWindowView: View {
                 }
 
                 if let focus {
-                    pullRequestFocusState = .loaded(focus)
+                    if focus != cachedFocus {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            pullRequestFocusState = .loaded(focus)
+                        }
+                    }
                 } else {
                     pullRequestFocusState = .idle
                 }
@@ -1390,7 +1407,9 @@ struct AttentionWindowView: View {
                     return
                 }
 
-                pullRequestFocusState = .failed(error.localizedDescription)
+                if cachedFocus == nil {
+                    pullRequestFocusState = .failed(error.localizedDescription)
+                }
             }
         }
     }
