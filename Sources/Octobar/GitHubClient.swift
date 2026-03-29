@@ -148,6 +148,20 @@ struct GitHubClient {
               }
             }
           }
+          comments(first: 100) {
+            nodes {
+              id
+              bodyHTML
+              createdAt
+              url
+              author {
+                __typename
+                login
+                avatarUrl
+                url
+              }
+            }
+          }
           reviewThreads(first: 50) {
             nodes {
               id
@@ -160,6 +174,7 @@ struct GitHubClient {
                 nodes {
                   id
                   body
+                  bodyHTML
                   createdAt
                   url
                   outdated
@@ -176,7 +191,9 @@ struct GitHubClient {
           }
           reviews(last: 50) {
             nodes {
+              id
               state
+              bodyHTML
               submittedAt
               url
               author {
@@ -1480,6 +1497,7 @@ struct GitHubClient {
             statusSummary: statusSummary,
             postMergeWorkflowPreview: postMergeWorkflowPreview,
             sections: sections,
+            timeline: buildPullRequestTimeline(from: pullRequest),
             actions: actions,
             reviewMergeAction: reviewMergeAction,
             emptyStateTitle: focusEmptyStateTitle(
@@ -2125,6 +2143,83 @@ struct GitHubClient {
         case .generic:
             return "Octowatch could not find any stronger PR-specific focus items here yet."
         }
+    }
+
+    private func buildPullRequestTimeline(
+        from pullRequest: PullRequestFocusGraphQLPullRequest
+    ) -> [PullRequestTimelineEntry] {
+        var entries = [PullRequestTimelineEntry]()
+
+        for node in pullRequest.comments.nodes {
+            guard let comment = node else { continue }
+            entries.append(PullRequestTimelineEntry(
+                id: "comment:\(comment.id)",
+                kind: .comment,
+                author: comment.author.map(attentionActor(from:)),
+                bodyHTML: comment.bodyHTML.isEmpty ? nil : comment.bodyHTML,
+                timestamp: comment.createdAt,
+                url: comment.url
+            ))
+        }
+
+        for node in pullRequest.reviews.nodes {
+            guard let review = node else { continue }
+            let hasBody = review.bodyHTML.map { !$0.isEmpty } ?? false
+            entries.append(PullRequestTimelineEntry(
+                id: "review:\(review.id)",
+                kind: .review(state: review.state),
+                author: review.author.map(attentionActor(from:)),
+                bodyHTML: hasBody ? review.bodyHTML : nil,
+                timestamp: review.submittedAt,
+                url: review.url
+            ))
+        }
+
+        for node in pullRequest.reviewThreads.nodes {
+            guard let thread = node else { continue }
+            let comments = thread.comments.nodes.compactMap { $0 }
+            guard let firstComment = comments.first else { continue }
+
+            let threadComments = comments.map { comment in
+                PullRequestTimelineThreadComment(
+                    id: comment.id,
+                    author: comment.author.map(attentionActor(from:)),
+                    bodyHTML: comment.bodyHTML.isEmpty ? nil : comment.bodyHTML,
+                    timestamp: comment.createdAt,
+                    url: comment.url,
+                    isOutdated: comment.outdated,
+                    isViewerAuthor: comment.viewerDidAuthor
+                )
+            }
+
+            entries.append(PullRequestTimelineEntry(
+                id: "thread:\(thread.id)",
+                kind: .reviewThread(
+                    path: thread.path,
+                    line: thread.line,
+                    isResolved: thread.isResolved,
+                    isOutdated: thread.isOutdated,
+                    comments: threadComments
+                ),
+                author: firstComment.author.map(attentionActor(from:)),
+                bodyHTML: nil,
+                timestamp: firstComment.createdAt,
+                url: firstComment.url
+            ))
+        }
+
+        return entries.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    private func attentionActor(
+        from actor: PullRequestFocusGraphQLActor
+    ) -> AttentionActor {
+        AttentionActor(
+            login: actor.login,
+            avatarURL: actor.avatarURL,
+            profileURL: actor.url,
+            isBot: actor.isBotAccount
+        )
     }
 
     private func pullRequestFocusThread(
@@ -5413,6 +5508,7 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
     let reviewRequests: PullRequestFocusGraphQLReviewRequestConnection
     let author: PullRequestFocusGraphQLActor?
     let mergedBy: PullRequestFocusGraphQLActor?
+    let comments: PullRequestFocusGraphQLConnection<PullRequestFocusGraphQLIssueComment>
     let timelineItems: PullRequestFocusGraphQLConnection<PullRequestFocusGraphQLAssignedEvent>
     let reviewThreads: PullRequestFocusGraphQLConnection<PullRequestFocusGraphQLReviewThread>
     let reviews: PullRequestFocusGraphQLConnection<PullRequestFocusGraphQLReview>
@@ -5439,6 +5535,7 @@ private struct PullRequestFocusGraphQLPullRequest: Decodable {
         case reviewRequests
         case author
         case mergedBy
+        case comments
         case timelineItems
         case reviewThreads
         case reviews
@@ -5573,9 +5670,18 @@ private struct PullRequestFocusGraphQLAssignedEvent: Decodable {
     }
 }
 
+private struct PullRequestFocusGraphQLIssueComment: Decodable {
+    let id: String
+    let bodyHTML: String
+    let createdAt: Date
+    let url: URL
+    let author: PullRequestFocusGraphQLActor?
+}
+
 private struct PullRequestFocusGraphQLReviewComment: Decodable {
     let id: String
     let body: String
+    let bodyHTML: String
     let createdAt: Date
     let url: URL
     let outdated: Bool
@@ -5584,7 +5690,9 @@ private struct PullRequestFocusGraphQLReviewComment: Decodable {
 }
 
 private struct PullRequestFocusGraphQLReview: Decodable {
+    let id: String
     let state: String
+    let bodyHTML: String?
     let submittedAt: Date
     let url: URL
     let author: PullRequestFocusGraphQLActor?

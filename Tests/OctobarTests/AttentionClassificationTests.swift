@@ -1644,6 +1644,7 @@ final class AttentionClassificationTests: XCTestCase {
             statusSummary: nil,
             postMergeWorkflowPreview: previousPreview,
             sections: [],
+            timeline: [],
             actions: [],
             reviewMergeAction: nil,
             emptyStateTitle: "Done",
@@ -1664,6 +1665,7 @@ final class AttentionClassificationTests: XCTestCase {
             statusSummary: nil,
             postMergeWorkflowPreview: nil,
             sections: [],
+            timeline: [],
             actions: [],
             reviewMergeAction: nil,
             emptyStateTitle: "Done",
@@ -2483,6 +2485,7 @@ final class AttentionClassificationTests: XCTestCase {
                 evaluationIssues: []
             ),
             sections: [],
+            timeline: [],
             actions: [],
             reviewMergeAction: nil,
             emptyStateTitle: "",

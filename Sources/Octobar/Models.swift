@@ -1680,6 +1680,7 @@ struct PullRequestFocus: Hashable, Sendable {
     let statusSummary: PullRequestStatusSummary?
     let postMergeWorkflowPreview: PullRequestPostMergeWorkflowPreview?
     let sections: [PullRequestFocusSection]
+    let timeline: [PullRequestTimelineEntry]
     let actions: [AttentionAction]
     let reviewMergeAction: PullRequestReviewMergeAction?
     let emptyStateTitle: String
@@ -1697,6 +1698,37 @@ struct PullRequestFocus: Hashable, Sendable {
             excluding: currentSourceType
         )
     }
+}
+
+struct PullRequestTimelineEntry: Identifiable, Hashable, Sendable {
+    let id: String
+    let kind: Kind
+    let author: AttentionActor?
+    let bodyHTML: String?
+    let timestamp: Date
+    let url: URL?
+
+    enum Kind: Hashable, Sendable {
+        case comment
+        case review(state: String)
+        case reviewThread(
+            path: String?,
+            line: Int?,
+            isResolved: Bool,
+            isOutdated: Bool,
+            comments: [PullRequestTimelineThreadComment]
+        )
+    }
+}
+
+struct PullRequestTimelineThreadComment: Identifiable, Hashable, Sendable {
+    let id: String
+    let author: AttentionActor?
+    let bodyHTML: String?
+    let timestamp: Date
+    let url: URL?
+    let isOutdated: Bool
+    let isViewerAuthor: Bool
 }
 
 enum PullRequestPostMergeWorkflowStatus: Hashable, Sendable {
@@ -2652,6 +2684,7 @@ extension PullRequestFocus {
             statusSummary: statusSummary,
             postMergeWorkflowPreview: postMergeWorkflowPreview,
             sections: sections,
+            timeline: timeline,
             actions: actions,
             reviewMergeAction: reviewMergeAction?.applyingPreferredMergeMethod(mergeMethod),
             emptyStateTitle: emptyStateTitle,
@@ -2675,6 +2708,7 @@ extension PullRequestFocus {
             statusSummary: statusSummary,
             postMergeWorkflowPreview: postMergeWorkflowPreview,
             sections: sections,
+            timeline: timeline,
             actions: actions,
             reviewMergeAction: reviewMergeAction,
             emptyStateTitle: emptyStateTitle,

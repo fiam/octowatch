@@ -1785,6 +1785,7 @@ private struct AttentionDetailView: View {
             PullRequestFocusView(
                 focus: focus,
                 sourceItem: item,
+                viewerLogin: viewerLogin,
                 referenceDate: referenceDate,
                 reviewMergeState: reviewMergeState,
                 onOpenURL: onOpenURL,
@@ -2080,6 +2081,7 @@ private struct AttentionUpdateRow: View {
 private struct PullRequestFocusView: View {
     let focus: PullRequestFocus
     let sourceItem: AttentionItem
+    let viewerLogin: String?
     let referenceDate: Date
     let reviewMergeState: PullRequestReviewMergeState
     let onOpenURL: (URL) -> Void
@@ -2092,6 +2094,7 @@ private struct PullRequestFocusView: View {
     init(
         focus: PullRequestFocus,
         sourceItem: AttentionItem,
+        viewerLogin: String?,
         referenceDate: Date,
         reviewMergeState: PullRequestReviewMergeState,
         onOpenURL: @escaping (URL) -> Void,
@@ -2101,6 +2104,7 @@ private struct PullRequestFocusView: View {
     ) {
         self.focus = focus
         self.sourceItem = sourceItem
+        self.viewerLogin = viewerLogin
         self.referenceDate = referenceDate
         self.reviewMergeState = reviewMergeState
         self.onOpenURL = onOpenURL
@@ -2337,8 +2341,17 @@ private struct PullRequestFocusView: View {
                 }
             }
 
-            if focus.sections.isEmpty {
-                if focus.statusSummary == nil {
+            if let descriptionHTML = focus.descriptionHTML {
+                DetailCard(title: "Description") {
+                    PullRequestDescriptionView(
+                        html: descriptionHTML,
+                        baseURL: focus.reference.pullRequestURL
+                    )
+                }
+            }
+
+            if focus.timeline.isEmpty {
+                if focus.sections.isEmpty, focus.statusSummary == nil {
                     DetailCard {
                         HStack(alignment: .top, spacing: 14) {
                             Image(systemName: emptyStateIconName)
@@ -2359,27 +2372,23 @@ private struct PullRequestFocusView: View {
                     }
                 }
             } else {
-                ForEach(focus.sections) { section in
-                    DetailCard(title: section.title) {
-                        VStack(alignment: .leading, spacing: 14) {
-                            ForEach(section.items) { entry in
-                                PullRequestFocusEntryRow(
-                                    entry: entry,
-                                    referenceDate: referenceDate,
-                                    onOpenURL: onOpenURL
-                                )
+                DetailCard(title: "Timeline") {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(focus.timeline) { entry in
+                            PullRequestTimelineEntryView(
+                                entry: entry,
+                                viewerLogin: viewerLogin,
+                                baseURL: focus.reference.pullRequestURL,
+                                referenceDate: referenceDate,
+                                onOpenURL: onOpenURL
+                            )
+
+                            if entry.id != focus.timeline.last?.id {
+                                Divider()
+                                    .padding(.vertical, 12)
                             }
                         }
                     }
-                }
-            }
-
-            if let descriptionHTML = focus.descriptionHTML {
-                DetailCard(title: "Description") {
-                    PullRequestDescriptionView(
-                        html: descriptionHTML,
-                        baseURL: focus.reference.pullRequestURL
-                    )
                 }
             }
         }
@@ -2555,6 +2564,273 @@ private struct PullRequestStatusSummaryCard: View {
 
     private var accentColor: Color {
         color(for: summary.accent)
+    }
+}
+
+private struct PullRequestTimelineEntryView: View {
+    let entry: PullRequestTimelineEntry
+    let viewerLogin: String?
+    let baseURL: URL
+    let referenceDate: Date
+    let onOpenURL: (URL) -> Void
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            switch entry.kind {
+            case .comment:
+                commentView
+            case let .review(state):
+                reviewView(state: state)
+            case let .reviewThread(path, line, isResolved, isOutdated, comments):
+                reviewThreadView(
+                    path: path,
+                    line: line,
+                    isResolved: isResolved,
+                    isOutdated: isOutdated,
+                    comments: comments
+                )
+            }
+        }
+    }
+
+    private var commentView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            authorRow(icon: "text.bubble", accent: .secondary)
+
+            if let bodyHTML = entry.bodyHTML {
+                PullRequestDescriptionView(html: bodyHTML, baseURL: baseURL)
+            }
+        }
+    }
+
+    private func reviewView(state: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
+                authorRow(icon: reviewIcon(for: state), accent: reviewColor(for: state))
+
+                reviewStatePill(state: state)
+            }
+
+            if let bodyHTML = entry.bodyHTML {
+                PullRequestDescriptionView(html: bodyHTML, baseURL: baseURL)
+            }
+        }
+    }
+
+    private func reviewThreadView(
+        path: String?,
+        line: Int?,
+        isResolved: Bool,
+        isOutdated: Bool,
+        comments: [PullRequestTimelineThreadComment]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: "doc.text")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                if let path {
+                    let label = line.map { "\(path):\($0)" } ?? path
+                    Text(label)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
+
+                if isResolved {
+                    Text("Resolved")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.green.opacity(0.12)))
+                }
+
+                if isOutdated {
+                    Text("Outdated")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.orange.opacity(0.12)))
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(comments) { comment in
+                    VStack(alignment: .leading, spacing: 6) {
+                        threadCommentAuthorRow(comment: comment)
+
+                        if let bodyHTML = comment.bodyHTML {
+                            PullRequestDescriptionView(html: bodyHTML, baseURL: baseURL)
+                        }
+                    }
+                    .padding(.vertical, 10)
+                    .padding(.leading, 12)
+                    .overlay(alignment: .leading) {
+                        Rectangle()
+                            .fill(Color(nsColor: .separatorColor).opacity(0.4))
+                            .frame(width: 2)
+                    }
+
+                    if comment.id != comments.last?.id {
+                        Divider()
+                            .padding(.leading, 12)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func authorRow(icon: String, accent: Color) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            if let author = entry.author {
+                avatarView(for: author)
+
+                let actorLabel = AttentionViewerPresentationPolicy.actorPresentation(
+                    for: author,
+                    viewerLogin: viewerLogin
+                )
+                Text(actorLabel.label)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+            }
+
+            Text("·")
+                .foregroundStyle(.secondary)
+
+            Text(Self.relativeFormatter.localizedString(
+                for: entry.timestamp,
+                relativeTo: referenceDate
+            ))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            if let url = entry.url {
+                Button { onOpenURL(url) } label: {
+                    Image(systemName: "arrow.up.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .appLinkHover()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func threadCommentAuthorRow(comment: PullRequestTimelineThreadComment) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            if let author = comment.author {
+                avatarView(for: author)
+
+                let actorLabel = AttentionViewerPresentationPolicy.actorPresentation(
+                    for: author,
+                    viewerLogin: viewerLogin
+                )
+                Text(actorLabel.label)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            }
+
+            Text("·")
+                .foregroundStyle(.secondary)
+
+            Text(Self.relativeFormatter.localizedString(
+                for: comment.timestamp,
+                relativeTo: referenceDate
+            ))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            if let url = comment.url {
+                Button { onOpenURL(url) } label: {
+                    Image(systemName: "arrow.up.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .appLinkHover()
+            }
+        }
+    }
+
+    private func avatarView(for actor: AttentionActor) -> some View {
+        Group {
+            if let avatarURL = actor.avatarURL {
+                AsyncImage(url: avatarURL) { phase in
+                    switch phase {
+                    case let .success(image):
+                        image.resizable().interpolation(.high).scaledToFill()
+                    default:
+                        avatarPlaceholder
+                    }
+                }
+            } else {
+                avatarPlaceholder
+            }
+        }
+        .frame(width: 22, height: 22)
+        .clipShape(Circle())
+        .overlay { Circle().stroke(Color.primary.opacity(0.08), lineWidth: 1) }
+    }
+
+    private var avatarPlaceholder: some View {
+        Circle()
+            .fill(Color.secondary.opacity(0.12))
+            .overlay {
+                Image(systemName: "person.crop.circle.fill")
+                    .foregroundStyle(.secondary)
+                    .font(.caption2)
+            }
+    }
+
+    private func reviewStatePill(state: String) -> some View {
+        let (label, color) = reviewPresentation(for: state)
+        return Text(label)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(color.opacity(0.12)))
+    }
+
+    private func reviewIcon(for state: String) -> String {
+        switch state.uppercased() {
+        case "APPROVED": return "checkmark.circle"
+        case "CHANGES_REQUESTED": return "exclamationmark.bubble"
+        case "COMMENTED": return "text.bubble"
+        case "DISMISSED": return "xmark.circle"
+        default: return "text.bubble"
+        }
+    }
+
+    private func reviewColor(for state: String) -> Color {
+        switch state.uppercased() {
+        case "APPROVED": return .green
+        case "CHANGES_REQUESTED": return .orange
+        default: return .secondary
+        }
+    }
+
+    private func reviewPresentation(for state: String) -> (String, Color) {
+        switch state.uppercased() {
+        case "APPROVED": return ("Approved", .green)
+        case "CHANGES_REQUESTED": return ("Changes requested", .orange)
+        case "COMMENTED": return ("Reviewed", .secondary)
+        case "DISMISSED": return ("Dismissed", .secondary)
+        case "PENDING": return ("Pending", .secondary)
+        default: return (state, .secondary)
+        }
     }
 }
 
