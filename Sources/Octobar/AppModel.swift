@@ -37,8 +37,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var notifyOnSelfTriggeredUpdates = false
     @Published private(set) var pullRequestWatchRevision = 0
     @Published private(set) var showsDebugRateLimitDetails = false
-    @Published private(set) var needsActionConfiguration: NeedsActionConfiguration = .default
-    @Published private(set) var needsActionItems: [AttentionItem] = []
+    @Published private(set) var yourTurnConfiguration: YourTurnConfiguration = .default
+    @Published private(set) var yourTurnItems: [AttentionItem] = []
 
     private let readStateStoreKey = "attention-subject-read-state-v2"
     private let ignoredSubjectStoreKey = "ignored-attention-subjects-v2"
@@ -47,8 +47,8 @@ final class AppModel: ObservableObject {
     private let autoMarkReadStoreKey = "auto-mark-read-setting-v1"
     private let notifyOnSelfTriggeredUpdatesStoreKey = "notify-on-self-triggered-updates-v1"
     private let debugRateLimitDetailsStoreKey = "debug-rate-limit-details-v1"
-    private let needsActionConfigurationStoreKey = "needs-action-configuration-v2"
-    private let legacyNeedsActionConfigurationStoreKey = "needs-action-configuration-v1"
+    private let yourTurnConfigurationStoreKey = "needs-action-configuration-v2"
+    private let legacyYourTurnConfigurationStoreKey = "needs-action-configuration-v1"
     private let notificationScanStateStoreKey = "notification-scan-state-v1"
     private let teamMembershipStoreKey = "team-membership-cache-v1"
     private let postMergeWatchStoreKey = "post-merge-watches-v1"
@@ -113,10 +113,10 @@ final class AppModel: ObservableObject {
             from: UserDefaults.standard,
             key: debugRateLimitDetailsStoreKey
         )
-        needsActionConfiguration = Self.loadNeedsActionConfiguration(
+        yourTurnConfiguration = Self.loadYourTurnConfiguration(
             from: UserDefaults.standard,
-            key: needsActionConfigurationStoreKey,
-            legacyKey: legacyNeedsActionConfigurationStoreKey
+            key: yourTurnConfigurationStoreKey,
+            legacyKey: legacyYourTurnConfigurationStoreKey
         )
         notificationScanState = Self.loadNotificationScanState(
             from: UserDefaults.standard,
@@ -270,62 +270,62 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(value, forKey: notifyOnSelfTriggeredUpdatesStoreKey)
     }
 
-    func setNeedsActionRuleEnabled(_ ruleID: UUID, isEnabled: Bool) {
-        guard let existingRule = needsActionConfiguration.rules.first(where: { $0.id == ruleID }) else {
+    func setYourTurnRuleEnabled(_ ruleID: UUID, isEnabled: Bool) {
+        guard let existingRule = yourTurnConfiguration.rules.first(where: { $0.id == ruleID }) else {
             return
         }
 
         var updatedRule = existingRule
         updatedRule.isEnabled = isEnabled
-        let updatedConfiguration = needsActionConfiguration.replacing(updatedRule)
-        guard updatedConfiguration != needsActionConfiguration else {
+        let updatedConfiguration = yourTurnConfiguration.replacing(updatedRule)
+        guard updatedConfiguration != yourTurnConfiguration else {
             return
         }
 
-        needsActionConfiguration = updatedConfiguration
-        refreshNeedsActionItems()
-        persistNeedsActionConfiguration()
+        yourTurnConfiguration = updatedConfiguration
+        refreshYourTurnItems()
+        persistYourTurnConfiguration()
     }
 
     @discardableResult
-    func saveNeedsActionRule(_ rule: NeedsActionRuleDefinition) -> NeedsActionRuleDefinition {
+    func saveYourTurnRule(_ rule: YourTurnRuleDefinition) -> YourTurnRuleDefinition {
         let normalizedRule = rule.normalized
-        let updatedConfiguration = needsActionConfiguration.replacing(normalizedRule)
-        needsActionConfiguration = updatedConfiguration
-        refreshNeedsActionItems()
-        persistNeedsActionConfiguration()
+        let updatedConfiguration = yourTurnConfiguration.replacing(normalizedRule)
+        yourTurnConfiguration = updatedConfiguration
+        refreshYourTurnItems()
+        persistYourTurnConfiguration()
         return normalizedRule
     }
 
-    func duplicateNeedsActionRule(_ ruleID: UUID) {
-        guard let existingRule = needsActionConfiguration.rules.first(where: { $0.id == ruleID }) else {
+    func duplicateYourTurnRule(_ ruleID: UUID) {
+        guard let existingRule = yourTurnConfiguration.rules.first(where: { $0.id == ruleID }) else {
             return
         }
 
         var duplicatedRule = existingRule
         duplicatedRule.id = UUID()
-        _ = saveNeedsActionRule(duplicatedRule)
+        _ = saveYourTurnRule(duplicatedRule)
     }
 
-    func deleteNeedsActionRule(_ ruleID: UUID) {
-        let updatedConfiguration = needsActionConfiguration.removingRule(id: ruleID)
-        guard updatedConfiguration != needsActionConfiguration else {
+    func deleteYourTurnRule(_ ruleID: UUID) {
+        let updatedConfiguration = yourTurnConfiguration.removingRule(id: ruleID)
+        guard updatedConfiguration != yourTurnConfiguration else {
             return
         }
 
-        needsActionConfiguration = updatedConfiguration
-        refreshNeedsActionItems()
-        persistNeedsActionConfiguration()
+        yourTurnConfiguration = updatedConfiguration
+        refreshYourTurnItems()
+        persistYourTurnConfiguration()
     }
 
-    func resetNeedsActionRules() {
-        guard needsActionConfiguration != .default else {
+    func resetYourTurnRules() {
+        guard yourTurnConfiguration != .default else {
             return
         }
 
-        needsActionConfiguration = .default
-        refreshNeedsActionItems()
-        persistNeedsActionConfiguration()
+        yourTurnConfiguration = .default
+        refreshYourTurnItems()
+        persistYourTurnConfiguration()
     }
 
     func rateLimitBucketSummary(
@@ -400,7 +400,7 @@ final class AppModel: ObservableObject {
         issueDashboardLastUpdated = nil
         pullRequestDashboardLastError = nil
         issueDashboardLastError = nil
-        needsActionItems = []
+        yourTurnItems = []
         userLogin = nil
         lastUpdated = nil
         lastError = nil
@@ -1437,13 +1437,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func persistNeedsActionConfiguration() {
+    private func persistYourTurnConfiguration() {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
-        if let data = try? encoder.encode(needsActionConfiguration.normalized) {
-            UserDefaults.standard.set(data, forKey: needsActionConfigurationStoreKey)
-            UserDefaults.standard.removeObject(forKey: legacyNeedsActionConfigurationStoreKey)
+        if let data = try? encoder.encode(yourTurnConfiguration.normalized) {
+            UserDefaults.standard.set(data, forKey: yourTurnConfigurationStoreKey)
+            UserDefaults.standard.removeObject(forKey: legacyYourTurnConfigurationStoreKey)
         }
     }
 
@@ -1531,7 +1531,7 @@ final class AppModel: ObservableObject {
             .filteringIgnoredSubjects(ignoredKeys)
         issueDashboard = latestSnapshotIssueDashboard
             .filteringIgnoredSubjects(ignoredKeys)
-        refreshNeedsActionItems()
+        refreshYourTurnItems()
     }
 
     private func applyPullRequestFocusSubjectRefresh(_ refresh: AttentionSubjectRefresh) {
@@ -1603,10 +1603,10 @@ final class AppModel: ObservableObject {
         ignoreUndoState = nil
     }
 
-    private func refreshNeedsActionItems() {
-        needsActionItems = NeedsActionPolicy.matchingItems(
+    private func refreshYourTurnItems() {
+        yourTurnItems = YourTurnPolicy.matchingItems(
             in: attentionItems,
-            configuration: needsActionConfiguration
+            configuration: yourTurnConfiguration
         )
     }
 
@@ -1790,22 +1790,22 @@ final class AppModel: ObservableObject {
         AutoMarkReadSetting.normalized(rawValue: defaults.object(forKey: key) as? Int ?? 3)
     }
 
-    private static func loadNeedsActionConfiguration(
+    private static func loadYourTurnConfiguration(
         from defaults: UserDefaults,
         key: String,
         legacyKey: String
-    ) -> NeedsActionConfiguration {
+    ) -> YourTurnConfiguration {
         if let data = defaults.data(forKey: key),
-            let configuration = try? JSONDecoder().decode(NeedsActionConfiguration.self, from: data) {
+            let configuration = try? JSONDecoder().decode(YourTurnConfiguration.self, from: data) {
             return configuration.normalized
         }
 
         if let data = defaults.data(forKey: legacyKey),
             let legacyConfiguration = try? JSONDecoder().decode(
-                LegacyNeedsActionConfiguration.self,
+                LegacyYourTurnConfiguration.self,
                 from: data
             ) {
-            return NeedsActionConfiguration.migrated(from: legacyConfiguration)
+            return YourTurnConfiguration.migrated(from: legacyConfiguration)
         }
 
         return .default
@@ -1929,9 +1929,9 @@ final class AppModel: ObservableObject {
         issueDashboardLastUpdated = nil
         pullRequestDashboardLastError = nil
         issueDashboardLastError = nil
-        needsActionItems = NeedsActionPolicy.matchingItems(
+        yourTurnItems = YourTurnPolicy.matchingItems(
             in: fixture.attentionItems,
-            configuration: needsActionConfiguration
+            configuration: yourTurnConfiguration
         )
         lastUpdated = fixture.lastUpdated
         lastError = nil

@@ -5,7 +5,6 @@ struct MenuBarContentView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
-    @State private var workflowApprovalSheetRequest: WorkflowApprovalSheetRequest?
 
     private let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -18,38 +17,34 @@ struct MenuBarContentView: View {
             header
 
             if model.hasToken {
-                attentionList
+                yourTurnList
             } else {
                 tokenSetup
             }
 
-            if let lastError = model.lastError {
-                Text(lastError)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-            }
+            footer
         }
         .padding(12)
-        .frame(width: 420)
+        .frame(width: 360)
         .onReceive(NotificationCenter.default.publisher(for: .performMainWindowOpen)) { _ in
             openWindow(id: AppSceneID.mainWindow)
         }
         .onReceive(NotificationCenter.default.publisher(for: .performSettingsOpen)) { _ in
             openSettings()
         }
-        .sheet(item: $workflowApprovalSheetRequest) { request in
-            WorkflowPendingDeploymentReviewSheet(
-                model: model,
-                request: request,
-                onOpenGitHub: { url in
-                    openURL(url)
-                }
-            )
-        }
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            let count = model.yourTurnItems.count
+            Text("Your Turn")
+                .font(.headline)
+            if count > 0 {
+                Text("\(count)")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
             Spacer()
 
             if model.isRefreshing {
@@ -57,130 +52,88 @@ struct MenuBarContentView: View {
                     .controlSize(.small)
             }
 
-            windowButton
+            Button(action: requestMainWindow) {
+                Image(systemName: "macwindow")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .appInteractiveHover(backgroundOpacity: 0.08, cornerRadius: 8)
+            .help("Open Octowatch")
         }
     }
 
-    private var windowButton: some View {
-        Button(action: requestMainWindow) {
-            Image(systemName: "macwindow")
-                .font(.system(size: 13, weight: .semibold))
-        }
-        .buttonStyle(.plain)
-        .appInteractiveHover(backgroundOpacity: 0.08, cornerRadius: 8)
-        .help("Open Octowatch")
-    }
-
-    private var attentionList: some View {
+    private var yourTurnList: some View {
         Group {
-            if model.actionableAttentionItems.isEmpty {
-                Text("Inbox is clear right now.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if model.yourTurnItems.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle")
+                        .font(.title3)
+                        .foregroundStyle(.green)
+                    Text("Nothing waiting on you")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 12)
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(model.actionableAttentionItems.prefix(30)) { item in
-                            HStack(alignment: .top, spacing: 10) {
-                                eventBadge(for: item)
-
-                                Button {
-                                    model.toggleReadState(for: item)
-                                } label: {
-                                    Image(systemName: item.isUnread ? "circle.fill" : "circle")
-                                        .font(.system(size: 8))
-                                        .frame(width: 12)
-                                        .foregroundStyle(item.isUnread ? .blue : .secondary)
-                                }
-                                .buttonStyle(.plain)
-                                .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 8)
-                                .help(item.isUnread ? "Mark as read" : "Mark as unread")
-
-                                Button {
-                                    model.markItemAsRead(item)
-                                    openURL(item.url)
-                                } label: {
-                                    let contextSubtitle = AttentionViewerPresentationPolicy.listContextSubtitle(
-                                        subtitle: item.subtitle,
-                                        actor: item.actor,
-                                        repository: item.repository,
-                                        viewerLogin: model.viewerLogin,
-                                        hidesRepository: false
-                                    )
-
-                                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(model.yourTurnItems.prefix(20)) { item in
+                            Button {
+                                openURL(item.url)
+                            } label: {
+                                HStack(alignment: .top, spacing: 10) {
+                                    eventBadge(for: item)
+                                    VStack(alignment: .leading, spacing: 3) {
                                         Text(item.title)
-                                            .font(item.isUnread ? .callout.weight(.semibold) : .callout)
-                                            .lineLimit(2)
-
-                                        if let contextSubtitle {
-                                            Text(contextSubtitle)
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-
-                                        HStack(alignment: .center, spacing: 6) {
-                                            if let actor = item.actor {
-                                                let actorPresentation =
-                                                    AttentionViewerPresentationPolicy.actorPresentation(
-                                                        for: actor,
-                                                        viewerLogin: model.viewerLogin
-                                                    )
-
-                                                HStack(alignment: .center, spacing: 6) {
-                                                    ActorAvatarView(actor: actor)
-
-                                                    Text(actorPresentation.label)
-                                                        .font(.caption.weight(.medium))
-                                                        .foregroundStyle(.secondary)
-                                                        .lineLimit(1)
-
-                                                    if actorPresentation.showsBotBadge {
-                                                        BotAccountChip(
-                                                            login: actor.login,
-                                                            compact: true
-                                                        )
-                                                    }
-                                                }
-                                            }
-
-                                            Spacer(minLength: 8)
-
-                                            RelativeTimestampText(
-                                                date: item.timestamp,
-                                                formatter: relativeFormatter
-                                            )
-                                        }
+                                            .font(.callout.weight(.medium))
+                                            .lineLimit(1)
+                                        Text(itemContext(for: item))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 }
-                                .buttonStyle(.plain)
-                                .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 10)
-
-                                if let workflowApprovalRequest = WorkflowApprovalSheetRequest(item: item) {
-                                    Button {
-                                        model.markItemAsRead(item)
-                                        workflowApprovalSheetRequest = workflowApprovalRequest
-                                    } label: {
-                                        Image(systemName: "hand.raised")
-                                            .font(.system(size: 12, weight: .semibold))
-                                            .foregroundStyle(.secondary)
-                                            .padding(6)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 8)
-                                    .help("Review pending deployments")
-                                }
+                                .padding(.vertical, 6)
+                                .padding(.horizontal, 8)
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .buttonStyle(.plain)
+                            .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 10)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 320)
             }
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            if let lastError = model.lastError {
+                Text(lastError)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+            } else if model.lastUpdated != nil {
+                TimelineView(.periodic(from: .now, by: 15)) { context in
+                    Text("Updated \(relativeFormatter.localizedString(for: model.lastUpdated ?? .now, relativeTo: context.date))")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Spacer()
+
+            Button(action: requestSettings) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .appInteractiveHover(backgroundOpacity: 0.08, cornerRadius: 6)
+            .help("Settings")
         }
     }
 
@@ -197,6 +150,14 @@ struct MenuBarContentView: View {
             }
             .appInteractiveHover()
         }
+    }
+
+    private func itemContext(for item: AttentionItem) -> String {
+        let typeSummary = item.type.nativeNotificationTitle
+        if let repo = item.repository {
+            return "\(repo) · \(typeSummary)"
+        }
+        return typeSummary
     }
 
     private func requestSettings() {
@@ -222,38 +183,8 @@ struct MenuBarContentView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(iconColor(for: item.type))
             }
-            .overlay(alignment: .bottomTrailing) {
-                if let secondaryType = item.secondaryIndicatorType {
-                    Circle()
-                        .fill(Color(NSColor.windowBackgroundColor))
-                        .frame(width: 12, height: 12)
-                        .overlay {
-                            Circle()
-                                .fill(iconBackground(for: secondaryType))
-                            Image(systemName: compactSecondaryIconName(for: secondaryType))
-                                .font(.system(size: 5, weight: .bold))
-                                .foregroundStyle(iconColor(for: secondaryType))
-                        }
-                        .offset(x: 3, y: 3)
-                }
-            }
             .help(helpText)
             .accessibilityLabel(helpText)
-    }
-
-    private func compactSecondaryIconName(for itemType: AttentionItemType) -> String {
-        switch itemType {
-        case .workflowApprovalRequired:
-            return "hand.raised.fill"
-        case .workflowRunning:
-            return "clock.fill"
-        case .workflowSucceeded:
-            return "checkmark"
-        case .workflowFailed:
-            return "xmark"
-        default:
-            return itemType.iconName
-        }
     }
 
     private func iconColor(for itemType: AttentionItemType) -> Color {
@@ -334,8 +265,7 @@ struct MenuBarContentView: View {
         case .commentedIssue:
             return .secondary.opacity(0.12)
         case .comment, .reviewComment:
-            return .secondary
-                .opacity(0.12)
+            return .secondary.opacity(0.12)
         case .mention:
             return .purple.opacity(0.14)
         case .teamMention:
@@ -364,20 +294,6 @@ struct MenuBarContentView: View {
             return .red.opacity(0.14)
         case .workflowApprovalRequired:
             return .orange.opacity(0.14)
-        }
-    }
-}
-
-private struct RelativeTimestampText: View {
-    let date: Date
-    let formatter: RelativeDateTimeFormatter
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            Text(formatter.localizedString(for: date, relativeTo: context.date))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize()
         }
     }
 }

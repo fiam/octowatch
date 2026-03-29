@@ -10,8 +10,8 @@ struct SettingsView: View {
     @Environment(\.openWindow) private var openWindow
     @FocusState private var tokenFieldFocused: Bool
     @State private var selectedTokenSource: TokenSource = .personalAccessToken
-    @State private var editingNeedsActionRule: NeedsActionRuleDefinition?
-    @State private var showsResetNeedsActionRulesConfirmation = false
+    @State private var editingYourTurnRule: YourTurnRuleDefinition?
+    @State private var showsResetYourTurnRulesConfirmation = false
 
     var body: some View {
         ZStack {
@@ -41,25 +41,25 @@ struct SettingsView: View {
                 selectedTokenSource = .githubCLI
             }
         }
-        .sheet(item: $editingNeedsActionRule) { rule in
-            NeedsActionRuleEditorSheet(
+        .sheet(item: $editingYourTurnRule) { rule in
+            YourTurnRuleEditorSheet(
                 initialRule: rule,
                 onSave: { updatedRule in
-                    editingNeedsActionRule = nil
-                    model.saveNeedsActionRule(updatedRule)
+                    editingYourTurnRule = nil
+                    model.saveYourTurnRule(updatedRule)
                 },
                 onCancel: {
-                    editingNeedsActionRule = nil
+                    editingYourTurnRule = nil
                 }
             )
         }
         .confirmationDialog(
-            "Reset Needs Action Rules?",
-            isPresented: $showsResetNeedsActionRulesConfirmation,
+            "Reset Your Turn Rules?",
+            isPresented: $showsResetYourTurnRulesConfirmation,
             titleVisibility: .visible
         ) {
             Button("Reset Defaults", role: .destructive) {
-                model.resetNeedsActionRules()
+                model.resetYourTurnRules()
             }
 
             Button("Cancel", role: .cancel) {}
@@ -248,7 +248,7 @@ struct SettingsView: View {
         settingsCard {
             cardIntro(
                 title: "Inbox",
-                message: "Choose how the inbox handles read state, self-triggered notifications, and the Needs Action section."
+                message: "Choose how the inbox handles read state, self-triggered notifications, and the Your Turn section."
             ) {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(.blue.gradient)
@@ -305,30 +305,30 @@ struct SettingsView: View {
                 .padding(.leading, 20)
 
             settingsRow(
-                title: "Needs Action Rules",
-                subtitle: "Build the rules that decide what appears in the Needs Action section."
+                title: "Your Turn Rules",
+                subtitle: "Build the rules that decide what appears in the Your Turn section."
             ) {
                 HStack(spacing: 10) {
                     Button("Reset Defaults") {
-                        showsResetNeedsActionRulesConfirmation = true
+                        showsResetYourTurnRulesConfirmation = true
                     }
                     .appInteractiveHover()
 
                     Button("Add Rule") {
-                        editingNeedsActionRule = NeedsActionRuleDefinition.newCustom()
+                        editingYourTurnRule = YourTurnRuleDefinition.newCustom()
                     }
                     .buttonStyle(.borderedProminent)
                     .appInteractiveHover()
                 }
             }
 
-            ForEach(Array(model.needsActionConfiguration.rules.enumerated()), id: \.element.id) { index, rule in
+            ForEach(Array(model.yourTurnConfiguration.rules.enumerated()), id: \.element.id) { index, rule in
                 if index > 0 {
                     Divider()
                         .padding(.leading, 20)
                 }
 
-                needsActionRuleRow(rule)
+                yourTurnRuleRow(rule)
             }
         }
     }
@@ -414,7 +414,7 @@ struct SettingsView: View {
         return "Open a separate window to restore hidden pull requests and issues without crowding settings."
     }
 
-    private func needsActionRuleRow(_ rule: NeedsActionRuleDefinition) -> some View {
+    private func yourTurnRuleRow(_ rule: YourTurnRuleDefinition) -> some View {
         settingsRow(
             title: rule.summary,
             subtitle: ""
@@ -424,28 +424,28 @@ struct SettingsView: View {
                     rule.summary,
                     isOn: Binding(
                         get: {
-                            model.needsActionConfiguration.rules
+                            model.yourTurnConfiguration.rules
                                 .first(where: { $0.id == rule.id })?
                                 .isEnabled ?? rule.isEnabled
                         },
-                        set: { model.setNeedsActionRuleEnabled(rule.id, isEnabled: $0) }
+                        set: { model.setYourTurnRuleEnabled(rule.id, isEnabled: $0) }
                     )
                 )
                 .labelsHidden()
                 .toggleStyle(.switch)
 
                 Button("Edit") {
-                    editingNeedsActionRule = rule
+                    editingYourTurnRule = rule
                 }
                 .appInteractiveHover()
 
                 Menu {
                     Button("Duplicate") {
-                        model.duplicateNeedsActionRule(rule.id)
+                        model.duplicateYourTurnRule(rule.id)
                     }
 
                     Button("Delete", role: .destructive) {
-                        model.deleteNeedsActionRule(rule.id)
+                        model.deleteYourTurnRule(rule.id)
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -575,17 +575,17 @@ struct SettingsView: View {
     }
 }
 
-private struct NeedsActionRuleEditorSheet: View {
+private struct YourTurnRuleEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
 
-    @State private var draft: NeedsActionRuleDefinition
+    @State private var draft: YourTurnRuleDefinition
 
-    let onSave: (NeedsActionRuleDefinition) -> Void
+    let onSave: (YourTurnRuleDefinition) -> Void
     let onCancel: () -> Void
 
     init(
-        initialRule: NeedsActionRuleDefinition,
-        onSave: @escaping (NeedsActionRuleDefinition) -> Void,
+        initialRule: YourTurnRuleDefinition,
+        onSave: @escaping (YourTurnRuleDefinition) -> Void,
         onCancel: @escaping () -> Void
     ) {
         _draft = State(initialValue: initialRule.normalized)
@@ -594,10 +594,10 @@ private struct NeedsActionRuleEditorSheet: View {
     }
 
     private func addCondition(
-        _ kind: NeedsActionConditionKind,
+        _ kind: YourTurnConditionKind,
         after index: Int? = nil
     ) {
-        let newCondition = NeedsActionCondition.default(
+        let newCondition = YourTurnCondition.default(
             for: kind,
             itemKind: draft.itemKind
         )
@@ -614,7 +614,7 @@ private struct NeedsActionRuleEditorSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Needs Action Rule")
+                        Text("Your Turn Rule")
                             .font(.title2.weight(.semibold))
 
                         Text("Build a rule for the work that should rise to the top when it needs something from you.")
@@ -628,14 +628,14 @@ private struct NeedsActionRuleEditorSheet: View {
                             Text("Show")
 
                             Picker("Item Type", selection: $draft.itemKind) {
-                                ForEach(NeedsActionItemKind.allCases, id: \.self) { itemKind in
+                                ForEach(YourTurnItemKind.allCases, id: \.self) { itemKind in
                                     Text(itemKind.pluralTitle).tag(itemKind)
                                 }
                             }
                             .labelsHidden()
                             .fixedSize()
 
-                            Text("in Needs Action if all of the following conditions are met:")
+                            Text("in Your Turn if all of the following conditions are met:")
                                 .fixedSize(horizontal: false, vertical: true)
                         }
 
@@ -663,7 +663,7 @@ private struct NeedsActionRuleEditorSheet: View {
                                 .padding(16)
                             } else {
                                 ForEach(Array(draft.conditions.enumerated()), id: \.element.id) { index, _ in
-                                    NeedsActionConditionEditor(
+                                    YourTurnConditionEditor(
                                         condition: $draft.conditions[index],
                                         itemKind: draft.itemKind,
                                         onAddCondition: { kind in
@@ -688,7 +688,7 @@ private struct NeedsActionRuleEditorSheet: View {
                         }
 
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Shows in Needs Action:")
+                            Text("Shows in Your Turn:")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
 
@@ -745,11 +745,11 @@ private struct NeedsActionRuleEditorSheet: View {
     }
 }
 
-private struct NeedsActionConditionEditor: View {
-    @Binding var condition: NeedsActionCondition
+private struct YourTurnConditionEditor: View {
+    @Binding var condition: YourTurnCondition
 
-    let itemKind: NeedsActionItemKind
-    let onAddCondition: (NeedsActionConditionKind) -> Void
+    let itemKind: YourTurnItemKind
+    let onAddCondition: (YourTurnConditionKind) -> Void
     let onRemove: () -> Void
 
     private var title: String {
@@ -816,7 +816,7 @@ private struct NeedsActionConditionEditor: View {
                 }
             case .viewerReview:
                 Picker("Your Review", selection: $condition.viewerReviewValue) {
-                    ForEach(NeedsActionViewerReviewCondition.allCases, id: \.self) { reviewCondition in
+                    ForEach(YourTurnViewerReviewCondition.allCases, id: \.self) { reviewCondition in
                         Text(reviewCondition.title).tag(reviewCondition)
                     }
                 }
@@ -872,7 +872,7 @@ private struct NeedsActionConditionEditor: View {
     }
 
     private func relationshipBinding(
-        for relationship: NeedsActionViewerRelationship
+        for relationship: YourTurnViewerRelationship
     ) -> Binding<Bool> {
         Binding(
             get: { condition.relationshipValues.contains(relationship) },
@@ -886,7 +886,7 @@ private struct NeedsActionConditionEditor: View {
         )
     }
 
-    private func signalBinding(for signal: NeedsActionSignal) -> Binding<Bool> {
+    private func signalBinding(for signal: YourTurnSignal) -> Binding<Bool> {
         Binding(
             get: { condition.signalValues.contains(signal) },
             set: { isEnabled in

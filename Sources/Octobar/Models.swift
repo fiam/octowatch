@@ -4877,7 +4877,7 @@ struct IgnoreUndoState: Identifiable, Hashable, Sendable {
     }
 }
 
-enum NeedsActionItemKind: String, Codable, CaseIterable, Hashable, Sendable {
+enum YourTurnItemKind: String, Codable, CaseIterable, Hashable, Sendable {
     case pullRequest
     case issue
     case workflow
@@ -4908,7 +4908,7 @@ enum NeedsActionItemKind: String, Codable, CaseIterable, Hashable, Sendable {
         "\(title) Rule"
     }
 
-    var availableConditionKinds: [NeedsActionConditionKind] {
+    var availableConditionKinds: [YourTurnConditionKind] {
         switch self {
         case .pullRequest:
             return [.relationship, .signal, .viewerReview]
@@ -4919,7 +4919,7 @@ enum NeedsActionItemKind: String, Codable, CaseIterable, Hashable, Sendable {
         }
     }
 
-    var availableRelationships: [NeedsActionViewerRelationship] {
+    var availableRelationships: [YourTurnViewerRelationship] {
         switch self {
         case .pullRequest:
             return [.authored, .assigned, .reviewed, .commented]
@@ -4930,7 +4930,7 @@ enum NeedsActionItemKind: String, Codable, CaseIterable, Hashable, Sendable {
         }
     }
 
-    var availableSignals: [NeedsActionSignal] {
+    var availableSignals: [YourTurnSignal] {
         switch self {
         case .pullRequest:
             return [.readyToMerge, .mergeConflicts, .failedChecks]
@@ -4942,7 +4942,7 @@ enum NeedsActionItemKind: String, Codable, CaseIterable, Hashable, Sendable {
     }
 }
 
-enum NeedsActionMatchMode: String, Codable, CaseIterable, Hashable, Sendable {
+enum YourTurnMatchMode: String, Codable, CaseIterable, Hashable, Sendable {
     case all
     case any
 
@@ -4957,7 +4957,7 @@ enum NeedsActionMatchMode: String, Codable, CaseIterable, Hashable, Sendable {
 
 }
 
-enum NeedsActionConditionKind: String, Codable, CaseIterable, Hashable, Sendable {
+enum YourTurnConditionKind: String, Codable, CaseIterable, Hashable, Sendable {
     case relationship
     case signal
     case viewerReview
@@ -4974,7 +4974,7 @@ enum NeedsActionConditionKind: String, Codable, CaseIterable, Hashable, Sendable
     }
 }
 
-enum NeedsActionViewerRelationship: String, Codable, CaseIterable, Hashable, Sendable {
+enum YourTurnViewerRelationship: String, Codable, CaseIterable, Hashable, Sendable {
     case authored
     case assigned
     case reviewed
@@ -4994,7 +4994,7 @@ enum NeedsActionViewerRelationship: String, Codable, CaseIterable, Hashable, Sen
     }
 }
 
-enum NeedsActionSignal: String, Codable, CaseIterable, Hashable, Sendable {
+enum YourTurnSignal: String, Codable, CaseIterable, Hashable, Sendable {
     case readyToMerge
     case mergeConflicts
     case failedChecks
@@ -5020,7 +5020,7 @@ enum NeedsActionSignal: String, Codable, CaseIterable, Hashable, Sendable {
     }
 }
 
-enum NeedsActionViewerReviewCondition: String, Codable, CaseIterable, Hashable, Sendable {
+enum YourTurnViewerReviewCondition: String, Codable, CaseIterable, Hashable, Sendable {
     case missing
     case present
 
@@ -5034,13 +5034,13 @@ enum NeedsActionViewerReviewCondition: String, Codable, CaseIterable, Hashable, 
     }
 }
 
-struct NeedsActionCondition: Identifiable, Codable, Hashable, Sendable {
+struct YourTurnCondition: Identifiable, Codable, Hashable, Sendable {
     var id: UUID
-    var kind: NeedsActionConditionKind
+    var kind: YourTurnConditionKind
     var isNegated: Bool
-    var relationshipValues: Set<NeedsActionViewerRelationship>
-    var signalValues: Set<NeedsActionSignal>
-    var viewerReviewValue: NeedsActionViewerReviewCondition
+    var relationshipValues: Set<YourTurnViewerRelationship>
+    var signalValues: Set<YourTurnSignal>
+    var viewerReviewValue: YourTurnViewerReviewCondition
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -5053,11 +5053,11 @@ struct NeedsActionCondition: Identifiable, Codable, Hashable, Sendable {
 
     init(
         id: UUID,
-        kind: NeedsActionConditionKind,
+        kind: YourTurnConditionKind,
         isNegated: Bool,
-        relationshipValues: Set<NeedsActionViewerRelationship>,
-        signalValues: Set<NeedsActionSignal>,
-        viewerReviewValue: NeedsActionViewerReviewCondition
+        relationshipValues: Set<YourTurnViewerRelationship>,
+        signalValues: Set<YourTurnSignal>,
+        viewerReviewValue: YourTurnViewerReviewCondition
     ) {
         self.id = id
         self.kind = kind
@@ -5070,28 +5070,28 @@ struct NeedsActionCondition: Identifiable, Codable, Hashable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
-        kind = try container.decode(NeedsActionConditionKind.self, forKey: .kind)
+        kind = try container.decode(YourTurnConditionKind.self, forKey: .kind)
         isNegated = try container.decodeIfPresent(Bool.self, forKey: .isNegated) ?? false
         relationshipValues = try container.decodeIfPresent(
-            Set<NeedsActionViewerRelationship>.self,
+            Set<YourTurnViewerRelationship>.self,
             forKey: .relationshipValues
         ) ?? []
         signalValues = try container.decodeIfPresent(
-            Set<NeedsActionSignal>.self,
+            Set<YourTurnSignal>.self,
             forKey: .signalValues
         ) ?? []
         viewerReviewValue = try container.decodeIfPresent(
-            NeedsActionViewerReviewCondition.self,
+            YourTurnViewerReviewCondition.self,
             forKey: .viewerReviewValue
         ) ?? .missing
     }
 
     static func relationship(
-        _ values: Set<NeedsActionViewerRelationship>,
+        _ values: Set<YourTurnViewerRelationship>,
         isNegated: Bool = false,
         id: UUID = UUID()
-    ) -> NeedsActionCondition {
-        NeedsActionCondition(
+    ) -> YourTurnCondition {
+        YourTurnCondition(
             id: id,
             kind: .relationship,
             isNegated: isNegated,
@@ -5102,11 +5102,11 @@ struct NeedsActionCondition: Identifiable, Codable, Hashable, Sendable {
     }
 
     static func signal(
-        _ values: Set<NeedsActionSignal>,
+        _ values: Set<YourTurnSignal>,
         isNegated: Bool = false,
         id: UUID = UUID()
-    ) -> NeedsActionCondition {
-        NeedsActionCondition(
+    ) -> YourTurnCondition {
+        YourTurnCondition(
             id: id,
             kind: .signal,
             isNegated: isNegated,
@@ -5117,11 +5117,11 @@ struct NeedsActionCondition: Identifiable, Codable, Hashable, Sendable {
     }
 
     static func viewerReview(
-        _ value: NeedsActionViewerReviewCondition,
+        _ value: YourTurnViewerReviewCondition,
         isNegated: Bool = false,
         id: UUID = UUID()
-    ) -> NeedsActionCondition {
-        NeedsActionCondition(
+    ) -> YourTurnCondition {
+        YourTurnCondition(
             id: id,
             kind: .viewerReview,
             isNegated: isNegated,
@@ -5132,10 +5132,10 @@ struct NeedsActionCondition: Identifiable, Codable, Hashable, Sendable {
     }
 
     static func `default`(
-        for kind: NeedsActionConditionKind,
-        itemKind: NeedsActionItemKind,
+        for kind: YourTurnConditionKind,
+        itemKind: YourTurnItemKind,
         id: UUID = UUID()
-    ) -> NeedsActionCondition {
+    ) -> YourTurnCondition {
         switch kind {
         case .relationship:
             let value = itemKind.availableRelationships.first ?? .authored
@@ -5148,7 +5148,7 @@ struct NeedsActionCondition: Identifiable, Codable, Hashable, Sendable {
         }
     }
 
-    func normalized(for itemKind: NeedsActionItemKind) -> NeedsActionCondition? {
+    func normalized(for itemKind: YourTurnItemKind) -> YourTurnCondition? {
         switch kind {
         case .relationship:
             let filtered = relationshipValues.intersection(itemKind.availableRelationships)
@@ -5186,7 +5186,7 @@ struct NeedsActionCondition: Identifiable, Codable, Hashable, Sendable {
         summaryPhrase(for: nil)
     }
 
-    func summaryPhrase(for itemKind: NeedsActionItemKind?) -> String {
+    func summaryPhrase(for itemKind: YourTurnItemKind?) -> String {
         switch kind {
         case .relationship:
             let phrases = relationshipValues
@@ -5221,8 +5221,8 @@ struct NeedsActionCondition: Identifiable, Codable, Hashable, Sendable {
     }
 
     private func relationshipPhrase(
-        for relationship: NeedsActionViewerRelationship,
-        itemKind: NeedsActionItemKind?,
+        for relationship: YourTurnViewerRelationship,
+        itemKind: YourTurnItemKind?,
         isNegated: Bool
     ) -> String {
         switch relationship {
@@ -5248,8 +5248,8 @@ struct NeedsActionCondition: Identifiable, Codable, Hashable, Sendable {
     }
 
     private func signalPhrase(
-        for signal: NeedsActionSignal,
-        itemKind: NeedsActionItemKind?,
+        for signal: YourTurnSignal,
+        itemKind: YourTurnItemKind?,
         isNegated: Bool
     ) -> String {
         switch signal {
@@ -5276,16 +5276,16 @@ struct NeedsActionCondition: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
-struct NeedsActionRuleDefinition: Identifiable, Codable, Hashable, Sendable {
+struct YourTurnRuleDefinition: Identifiable, Codable, Hashable, Sendable {
     var id: UUID
     var name: String
-    var itemKind: NeedsActionItemKind
-    var matchMode: NeedsActionMatchMode
-    var conditions: [NeedsActionCondition]
+    var itemKind: YourTurnItemKind
+    var matchMode: YourTurnMatchMode
+    var conditions: [YourTurnCondition]
     var isEnabled: Bool
 
-    static func newCustom() -> NeedsActionRuleDefinition {
-        NeedsActionRuleDefinition(
+    static func newCustom() -> YourTurnRuleDefinition {
+        YourTurnRuleDefinition(
             id: UUID(),
             name: "New Rule",
             itemKind: .pullRequest,
@@ -5297,9 +5297,9 @@ struct NeedsActionRuleDefinition: Identifiable, Codable, Hashable, Sendable {
         )
     }
 
-    var normalized: NeedsActionRuleDefinition {
+    var normalized: YourTurnRuleDefinition {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return NeedsActionRuleDefinition(
+        return YourTurnRuleDefinition(
             id: id,
             name: trimmedName.isEmpty ? itemKind.defaultRuleName : trimmedName,
             itemKind: itemKind,
@@ -5341,18 +5341,18 @@ struct NeedsActionRuleDefinition: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
-struct LegacyNeedsActionConfiguration: Codable, Hashable, Sendable {
-    var enabledRules: Set<NeedsActionRule>
+struct LegacyYourTurnConfiguration: Codable, Hashable, Sendable {
+    var enabledRules: Set<YourTurnRule>
 }
 
-struct NeedsActionFacts: Hashable, Sendable {
-    let itemKinds: Set<NeedsActionItemKind>
-    let relationships: Set<NeedsActionViewerRelationship>
-    let signals: Set<NeedsActionSignal>
+struct YourTurnFacts: Hashable, Sendable {
+    let itemKinds: Set<YourTurnItemKind>
+    let relationships: Set<YourTurnViewerRelationship>
+    let signals: Set<YourTurnSignal>
     let hasViewerReview: Bool
 }
 
-enum NeedsActionRule: String, Codable, CaseIterable, Hashable, Sendable {
+enum YourTurnRule: String, Codable, CaseIterable, Hashable, Sendable {
     case authoredReadyToMerge
     case authoredMergeConflicts
     case authoredFailedChecks
@@ -5418,10 +5418,10 @@ enum NeedsActionRule: String, Codable, CaseIterable, Hashable, Sendable {
         }
     }
 
-    fileprivate var defaultDefinition: NeedsActionRuleDefinition {
+    fileprivate var defaultDefinition: YourTurnRuleDefinition {
         switch self {
         case .authoredReadyToMerge:
-            return NeedsActionRuleDefinition(
+            return YourTurnRuleDefinition(
                 id: stableID,
                 name: title,
                 itemKind: .pullRequest,
@@ -5433,7 +5433,7 @@ enum NeedsActionRule: String, Codable, CaseIterable, Hashable, Sendable {
                 isEnabled: true
             )
         case .authoredMergeConflicts:
-            return NeedsActionRuleDefinition(
+            return YourTurnRuleDefinition(
                 id: stableID,
                 name: title,
                 itemKind: .pullRequest,
@@ -5445,7 +5445,7 @@ enum NeedsActionRule: String, Codable, CaseIterable, Hashable, Sendable {
                 isEnabled: true
             )
         case .authoredFailedChecks:
-            return NeedsActionRuleDefinition(
+            return YourTurnRuleDefinition(
                 id: stableID,
                 name: title,
                 itemKind: .pullRequest,
@@ -5457,7 +5457,7 @@ enum NeedsActionRule: String, Codable, CaseIterable, Hashable, Sendable {
                 isEnabled: true
             )
         case .assignedPullRequestsWithoutReview:
-            return NeedsActionRuleDefinition(
+            return YourTurnRuleDefinition(
                 id: stableID,
                 name: title,
                 itemKind: .pullRequest,
@@ -5468,7 +5468,7 @@ enum NeedsActionRule: String, Codable, CaseIterable, Hashable, Sendable {
                 isEnabled: true
             )
         case .relatedWorkflowFailed:
-            return NeedsActionRuleDefinition(
+            return YourTurnRuleDefinition(
                 id: stableID,
                 name: title,
                 itemKind: .workflow,
@@ -5479,7 +5479,7 @@ enum NeedsActionRule: String, Codable, CaseIterable, Hashable, Sendable {
                 isEnabled: true
             )
         case .relatedWorkflowApprovalRequired:
-            return NeedsActionRuleDefinition(
+            return YourTurnRuleDefinition(
                 id: stableID,
                 name: title,
                 itemKind: .workflow,
@@ -5490,7 +5490,7 @@ enum NeedsActionRule: String, Codable, CaseIterable, Hashable, Sendable {
                 isEnabled: true
             )
         case .assignedIssues:
-            return NeedsActionRuleDefinition(
+            return YourTurnRuleDefinition(
                 id: stableID,
                 name: title,
                 itemKind: .issue,
@@ -5504,26 +5504,26 @@ enum NeedsActionRule: String, Codable, CaseIterable, Hashable, Sendable {
     }
 }
 
-struct NeedsActionConfiguration: Codable, Hashable, Sendable {
-    var rules: [NeedsActionRuleDefinition]
+struct YourTurnConfiguration: Codable, Hashable, Sendable {
+    var rules: [YourTurnRuleDefinition]
 
-    static let `default` = NeedsActionConfiguration(
-        rules: NeedsActionRule.allCases.map(\.defaultDefinition)
+    static let `default` = YourTurnConfiguration(
+        rules: YourTurnRule.allCases.map(\.defaultDefinition)
     )
 
-    var normalized: NeedsActionConfiguration {
-        NeedsActionConfiguration(
+    var normalized: YourTurnConfiguration {
+        YourTurnConfiguration(
             rules: rules.map(\.normalized)
         )
     }
 
-    var enabledRules: [NeedsActionRuleDefinition] {
+    var enabledRules: [YourTurnRuleDefinition] {
         normalized.rules.filter(\.isEnabled)
     }
 
-    static func migrated(from legacy: LegacyNeedsActionConfiguration) -> NeedsActionConfiguration {
-        NeedsActionConfiguration(
-            rules: NeedsActionRule.allCases.map { rule in
+    static func migrated(from legacy: LegacyYourTurnConfiguration) -> YourTurnConfiguration {
+        YourTurnConfiguration(
+            rules: YourTurnRule.allCases.map { rule in
                 var definition = rule.defaultDefinition
                 definition.isEnabled = legacy.enabledRules.contains(rule)
                 return definition
@@ -5531,7 +5531,7 @@ struct NeedsActionConfiguration: Codable, Hashable, Sendable {
         ).normalized
     }
 
-    func replacing(_ rule: NeedsActionRuleDefinition) -> NeedsActionConfiguration {
+    func replacing(_ rule: YourTurnRuleDefinition) -> YourTurnConfiguration {
         var updatedRules = rules
         if let index = updatedRules.firstIndex(where: { $0.id == rule.id }) {
             updatedRules[index] = rule
@@ -5539,11 +5539,11 @@ struct NeedsActionConfiguration: Codable, Hashable, Sendable {
             updatedRules.append(rule)
         }
 
-        return NeedsActionConfiguration(rules: updatedRules).normalized
+        return YourTurnConfiguration(rules: updatedRules).normalized
     }
 
-    func removingRule(id: UUID) -> NeedsActionConfiguration {
-        NeedsActionConfiguration(
+    func removingRule(id: UUID) -> YourTurnConfiguration {
+        YourTurnConfiguration(
             rules: rules.filter { $0.id != id }
         ).normalized
     }
@@ -5564,7 +5564,7 @@ enum AttentionItemVisibilityPolicy {
     }
 }
 
-enum NeedsActionPolicy {
+enum YourTurnPolicy {
     private static let selfReviewTypes: Set<AttentionItemType> = [
         .reviewApproved,
         .reviewChangesRequested,
@@ -5573,7 +5573,7 @@ enum NeedsActionPolicy {
 
     static func matchingItems(
         in items: [AttentionItem],
-        configuration: NeedsActionConfiguration
+        configuration: YourTurnConfiguration
     ) -> [AttentionItem] {
         let enabledRules = configuration.enabledRules
         return items.filter { item in
@@ -5588,8 +5588,8 @@ enum NeedsActionPolicy {
 
     static func matchingRules(
         for item: AttentionItem,
-        configuration: NeedsActionConfiguration
-    ) -> [NeedsActionRuleDefinition] {
+        configuration: YourTurnConfiguration
+    ) -> [YourTurnRuleDefinition] {
         let facts = facts(for: item)
         return configuration.enabledRules.filter { rule in
             matches(item, facts: facts, rule: rule)
@@ -5598,8 +5598,8 @@ enum NeedsActionPolicy {
 
     private static func matches(
         _ item: AttentionItem,
-        facts: NeedsActionFacts,
-        rule: NeedsActionRuleDefinition
+        facts: YourTurnFacts,
+        rule: YourTurnRuleDefinition
     ) -> Bool {
         let normalizedRule = rule.normalized
 
@@ -5623,8 +5623,8 @@ enum NeedsActionPolicy {
     }
 
     private static func matches(
-        facts: NeedsActionFacts,
-        condition: NeedsActionCondition
+        facts: YourTurnFacts,
+        condition: YourTurnCondition
     ) -> Bool {
         let baseMatch: Bool = switch condition.kind {
         case .relationship:
@@ -5653,8 +5653,8 @@ enum NeedsActionPolicy {
         }
     }
 
-    private static func facts(for item: AttentionItem) -> NeedsActionFacts {
-        let signals = item.currentUpdateTypes.reduce(into: Set<NeedsActionSignal>()) { partialResult, type in
+    private static func facts(for item: AttentionItem) -> YourTurnFacts {
+        let signals = item.currentUpdateTypes.reduce(into: Set<YourTurnSignal>()) { partialResult, type in
             switch type {
             case .readyToMerge:
                 partialResult.insert(.readyToMerge)
@@ -5674,7 +5674,7 @@ enum NeedsActionPolicy {
         }
 
         let relationships = relationshipTypes(in: item).reduce(
-            into: Set<NeedsActionViewerRelationship>()
+            into: Set<YourTurnViewerRelationship>()
         ) { partialResult, type in
             switch type {
             case .authoredPullRequest, .authoredIssue:
@@ -5690,7 +5690,7 @@ enum NeedsActionPolicy {
             }
         }
 
-        var itemKinds = Set<NeedsActionItemKind>()
+        var itemKinds = Set<YourTurnItemKind>()
         let isOpenSubject = item.subjectResolution == nil || item.subjectResolution == .open
 
         if item.currentUpdateTypes.contains(where: \.isWorkflowActivityType) {
@@ -5704,7 +5704,7 @@ enum NeedsActionPolicy {
             itemKinds.insert(.issue)
         }
 
-        return NeedsActionFacts(
+        return YourTurnFacts(
             itemKinds: itemKinds,
             relationships: relationships,
             signals: signals,

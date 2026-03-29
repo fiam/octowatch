@@ -2,93 +2,43 @@ import AppKit
 import SwiftUI
 
 struct AttentionWindowView: View {
-    private enum InboxScope: String, CaseIterable, Identifiable {
-        case focus
-        case pullRequests
-        case issues
-        case workflows
-        case notifications
+    private enum InboxMode: String, CaseIterable, Identifiable {
+        case inbox
+        case browse
 
         var id: String { rawValue }
 
-        var section: AttentionSection? {
+        var title: String {
             switch self {
-            case .focus:
-                return nil
-            case .pullRequests:
-                return .pullRequests
-            case .issues:
-                return .issues
-            case .workflows:
-                return .workflows
-            case .notifications:
-                return .notifications
+            case .inbox:
+                return "Inbox"
+            case .browse:
+                return "Browse"
             }
         }
+    }
+
+    private enum BrowseScope: String, CaseIterable, Identifiable {
+        case pullRequests
+        case issues
+
+        var id: String { rawValue }
 
         var title: String {
-            if let section {
-                return section.title
+            switch self {
+            case .pullRequests:
+                return "My PRs"
+            case .issues:
+                return "My Issues"
             }
-
-            return "Focus"
-        }
-
-        var iconName: String {
-            if let section {
-                return section.iconName
-            }
-
-            return "scope"
         }
 
         var itemNoun: String {
-            if let section {
-                return section.itemNoun
-            }
-
-            return "item"
-        }
-
-        var emptyTitle: String {
-            if let section {
-                return section.emptyTitle
-            }
-
-            return "Focus is clear"
-        }
-
-        var emptyUnreadTitle: String {
-            if let section {
-                return section.emptyUnreadTitle
-            }
-
-            return "No unread items"
-        }
-
-        var focusedSectionTitle: String {
-            if let section {
-                return section.focusedSectionTitle
-            }
-
-            return "Focus"
-        }
-
-        var supportsUnreadFilter: Bool {
             switch self {
-            case .focus, .workflows, .notifications:
-                return true
-            case .pullRequests, .issues:
-                return false
-            }
-        }
-
-        var supportsNeedsActionSection: Bool {
-            switch self {
-            case .focus, .workflows, .notifications:
-                return true
-            case .pullRequests, .issues:
-                return false
+            case .pullRequests:
+                return "pull request"
+            case .issues:
+                return "issue"
             }
         }
     }
@@ -104,7 +54,8 @@ struct AttentionWindowView: View {
     @Environment(\.openURL) private var openURL
 
     @State private var selectedItemIDs = Set<AttentionItem.ID>()
-    @State private var inboxScope: InboxScope = .focus
+    @State private var inboxMode: InboxMode = .inbox
+    @State private var browseScope: BrowseScope = .pullRequests
     @State private var pullRequestDashboardFilter: PullRequestDashboardFilter = .created
     @State private var issueDashboardFilter: IssueDashboardFilter = .assigned
     @State private var showsUnreadOnly = false
@@ -147,7 +98,13 @@ struct AttentionWindowView: View {
         .onChange(of: showsUnreadOnly) { _, _ in
             syncSelection()
         }
-        .onChange(of: inboxScope) { _, _ in
+        .onChange(of: inboxMode) { _, _ in
+            syncSelection()
+            Task {
+                await loadDashboardIfNeeded()
+            }
+        }
+        .onChange(of: browseScope) { _, _ in
             syncSelection()
             Task {
                 await loadDashboardIfNeeded()
@@ -276,41 +233,47 @@ struct AttentionWindowView: View {
             return true
         }
 
-        switch inboxScope {
-        case .focus, .workflows, .notifications:
+        switch inboxMode {
+        case .inbox:
             return model.hasToken &&
                 model.lastUpdated == nil &&
                 model.isRefreshing &&
                 displayedItems.isEmpty &&
                 currentError == nil
-        case .pullRequests:
-            return model.hasToken &&
-                model.pullRequestDashboardLastUpdated == nil &&
-                model.isPullRequestDashboardRefreshing &&
-                displayedItems.isEmpty &&
-                currentError == nil
-        case .issues:
-            return model.hasToken &&
-                model.issueDashboardLastUpdated == nil &&
-                model.isIssueDashboardRefreshing &&
-                displayedItems.isEmpty &&
-                currentError == nil
+        case .browse:
+            switch browseScope {
+            case .pullRequests:
+                return model.hasToken &&
+                    model.pullRequestDashboardLastUpdated == nil &&
+                    model.isPullRequestDashboardRefreshing &&
+                    displayedItems.isEmpty &&
+                    currentError == nil
+            case .issues:
+                return model.hasToken &&
+                    model.issueDashboardLastUpdated == nil &&
+                    model.isIssueDashboardRefreshing &&
+                    displayedItems.isEmpty &&
+                    currentError == nil
+            }
         }
     }
 
     private var scopedItems: [AttentionItem] {
-        switch inboxScope {
-        case .focus, .workflows, .notifications:
-            return model.combinedAttentionItems.filter(matchesAttentionScope)
-        case .pullRequests:
-            return model.pullRequestDashboardItems(for: pullRequestDashboardFilter)
-        case .issues:
-            return model.issueDashboardItems(for: issueDashboardFilter)
+        switch inboxMode {
+        case .inbox:
+            return model.combinedAttentionItems
+        case .browse:
+            switch browseScope {
+            case .pullRequests:
+                return model.pullRequestDashboardItems(for: pullRequestDashboardFilter)
+            case .issues:
+                return model.issueDashboardItems(for: issueDashboardFilter)
+            }
         }
     }
 
     private var visibleItems: [AttentionItem] {
-        guard inboxScope.supportsUnreadFilter, showsUnreadOnly else {
+        guard inboxMode == .inbox, showsUnreadOnly else {
             return scopedItems
         }
 
@@ -333,24 +296,30 @@ struct AttentionWindowView: View {
     }
 
     private var loadingTitle: String {
-        switch inboxScope {
-        case .focus, .workflows, .notifications:
+        switch inboxMode {
+        case .inbox:
             return "Refreshing inbox…"
-        case .pullRequests:
-            return "Refreshing pull requests…"
-        case .issues:
-            return "Refreshing issues…"
+        case .browse:
+            switch browseScope {
+            case .pullRequests:
+                return "Refreshing pull requests…"
+            case .issues:
+                return "Refreshing issues…"
+            }
         }
     }
 
     private var loadingSubtitle: String {
-        switch inboxScope {
-        case .focus, .workflows, .notifications:
+        switch inboxMode {
+        case .inbox:
             return "Fetching the latest GitHub activity."
-        case .pullRequests:
-            return "Loading your pull request dashboard."
-        case .issues:
-            return "Loading your issue dashboard."
+        case .browse:
+            switch browseScope {
+            case .pullRequests:
+                return "Loading your pull request dashboard."
+            case .issues:
+                return "Loading your issue dashboard."
+            }
         }
     }
 
@@ -358,78 +327,66 @@ struct AttentionWindowView: View {
         displayedSections.flatMap(\.items)
     }
 
-    private var needsActionSubjectKeys: Set<String> {
-        Set(model.needsActionItems.map(\.subjectKey))
+    private var yourTurnSubjectKeys: Set<String> {
+        Set(model.yourTurnItems.map(\.subjectKey))
     }
 
-    private var scopedNeedsActionItems: [AttentionItem] {
-        guard inboxScope.supportsNeedsActionSection else {
+    private var scopedYourTurnItems: [AttentionItem] {
+        guard inboxMode == .inbox else {
             return []
         }
 
-        return model.needsActionItems.filter(matchesAttentionScope)
+        return model.yourTurnItems
     }
 
-    private var needsActionItemsInCurrentStream: [AttentionItem] {
-        visibleItems.filter { needsActionSubjectKeys.contains($0.subjectKey) }
+    private var yourTurnItemsInCurrentStream: [AttentionItem] {
+        visibleItems.filter { yourTurnSubjectKeys.contains($0.subjectKey) }
     }
 
-    private var displayedNeedsActionItems: [AttentionItem] {
-        needsActionItemsInCurrentStream
+    private var displayedYourTurnItems: [AttentionItem] {
+        yourTurnItemsInCurrentStream
     }
 
     private var displayedOtherItems: [AttentionItem] {
-        guard inboxScope.supportsNeedsActionSection else {
+        guard inboxMode == .inbox else {
             return visibleItems
         }
 
-        return visibleItems.filter { !needsActionSubjectKeys.contains($0.subjectKey) }
+        return visibleItems.filter { !yourTurnSubjectKeys.contains($0.subjectKey) }
     }
 
     private var displayedSections: [SidebarSectionDescriptor] {
         var sections = [SidebarSectionDescriptor]()
 
-        if !displayedNeedsActionItems.isEmpty {
+        if !displayedYourTurnItems.isEmpty {
             sections.append(
                 SidebarSectionDescriptor(
-                    id: "needs-action",
-                    title: "Needs Action",
-                    items: displayedNeedsActionItems
+                    id: "your-turn",
+                    title: "Your Turn",
+                    items: displayedYourTurnItems
                 )
             )
         }
 
-        switch inboxScope {
-        case .focus:
-            let sectionOrder: [AttentionSection] = [.pullRequests, .issues, .workflows, .notifications]
-            for section in sectionOrder {
-                let items = displayedOtherItems.filter {
-                    AttentionSectionPolicy.section(for: $0) == section
-                }
-                guard !items.isEmpty else {
-                    continue
-                }
-
+        if !displayedOtherItems.isEmpty {
+            switch inboxMode {
+            case .inbox:
                 sections.append(
                     SidebarSectionDescriptor(
-                        id: section.rawValue,
-                        title: section.title,
-                        items: items
+                        id: "recent",
+                        title: "Recent",
+                        items: displayedOtherItems
+                    )
+                )
+            case .browse:
+                sections.append(
+                    SidebarSectionDescriptor(
+                        id: browseScope.rawValue,
+                        title: currentSectionTitle,
+                        items: displayedOtherItems
                     )
                 )
             }
-        case .pullRequests, .issues, .workflows, .notifications:
-            guard !displayedOtherItems.isEmpty else {
-                return sections
-            }
-
-            sections.append(
-                SidebarSectionDescriptor(
-                    id: inboxScope.rawValue,
-                    title: currentSectionTitle,
-                    items: displayedOtherItems
-                )
-            )
         }
 
         return sections
@@ -469,57 +426,72 @@ struct AttentionWindowView: View {
     }
 
     private var currentSectionTitle: String {
-        switch inboxScope {
-        case .focus, .workflows, .notifications:
-            return inboxScope.focusedSectionTitle
-        case .pullRequests:
-            return "\(pullRequestDashboardFilter.title) Pull Requests"
-        case .issues:
-            return "\(issueDashboardFilter.title) Issues"
+        switch inboxMode {
+        case .inbox:
+            return "Inbox"
+        case .browse:
+            switch browseScope {
+            case .pullRequests:
+                return "\(pullRequestDashboardFilter.title) Pull Requests"
+            case .issues:
+                return "\(issueDashboardFilter.title) Issues"
+            }
         }
     }
 
     private var dashboardLoadTaskID: String {
-        switch inboxScope {
-        case .pullRequests:
-            return "pr#\(model.lastUpdated?.timeIntervalSince1970 ?? 0)#\(model.pullRequestDashboardLastUpdated?.timeIntervalSince1970 ?? 0)"
-        case .issues:
-            return "issue#\(model.lastUpdated?.timeIntervalSince1970 ?? 0)#\(model.issueDashboardLastUpdated?.timeIntervalSince1970 ?? 0)"
-        case .focus, .workflows, .notifications:
-            return inboxScope.rawValue
+        switch inboxMode {
+        case .browse:
+            switch browseScope {
+            case .pullRequests:
+                return "pr#\(model.lastUpdated?.timeIntervalSince1970 ?? 0)#\(model.pullRequestDashboardLastUpdated?.timeIntervalSince1970 ?? 0)"
+            case .issues:
+                return "issue#\(model.lastUpdated?.timeIntervalSince1970 ?? 0)#\(model.issueDashboardLastUpdated?.timeIntervalSince1970 ?? 0)"
+            }
+        case .inbox:
+            return "inbox"
         }
     }
 
     private var isScopeRefreshing: Bool {
-        switch inboxScope {
-        case .focus, .workflows, .notifications:
+        switch inboxMode {
+        case .inbox:
             return model.isRefreshing
-        case .pullRequests:
-            return model.isPullRequestDashboardRefreshing
-        case .issues:
-            return model.isIssueDashboardRefreshing
+        case .browse:
+            switch browseScope {
+            case .pullRequests:
+                return model.isPullRequestDashboardRefreshing
+            case .issues:
+                return model.isIssueDashboardRefreshing
+            }
         }
     }
 
     private var currentError: String? {
-        switch inboxScope {
-        case .focus, .workflows, .notifications:
+        switch inboxMode {
+        case .inbox:
             return model.lastError
-        case .pullRequests:
-            return model.pullRequestDashboardLastError
-        case .issues:
-            return model.issueDashboardLastError
+        case .browse:
+            switch browseScope {
+            case .pullRequests:
+                return model.pullRequestDashboardLastError
+            case .issues:
+                return model.issueDashboardLastError
+            }
         }
     }
 
     private func currentLastUpdatedText(relativeTo referenceDate: Date) -> String {
-        switch inboxScope {
-        case .focus, .workflows, .notifications:
+        switch inboxMode {
+        case .inbox:
             return model.relativeLastUpdated(relativeTo: referenceDate)
-        case .pullRequests:
-            return model.relativePullRequestDashboardLastUpdated(relativeTo: referenceDate)
-        case .issues:
-            return model.relativeIssueDashboardLastUpdated(relativeTo: referenceDate)
+        case .browse:
+            switch browseScope {
+            case .pullRequests:
+                return model.relativePullRequestDashboardLastUpdated(relativeTo: referenceDate)
+            case .issues:
+                return model.relativeIssueDashboardLastUpdated(relativeTo: referenceDate)
+            }
         }
     }
 
@@ -588,8 +560,7 @@ struct AttentionWindowView: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .center, spacing: 12) {
-                    Text("Inbox")
-                        .font(.title2.weight(.semibold))
+                    scopeControls
 
                     Spacer()
 
@@ -611,11 +582,19 @@ struct AttentionWindowView: View {
                     .help("Refresh")
                 }
 
-                scopeControls
+                HStack(alignment: .center, spacing: 8) {
+                    Text(summaryLine)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
 
-                Text(summaryLine)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    if inboxMode == .inbox {
+                        unreadFilterButton
+                    }
+                }
+
+                if inboxMode == .browse {
+                    dashboardFilterControls
+                }
 
                 Text(currentLastUpdatedText(relativeTo: context.date))
                     .font(.caption)
@@ -659,90 +638,86 @@ struct AttentionWindowView: View {
         }
     }
 
+    private enum ScopeTab: String, CaseIterable, Identifiable {
+        case inbox
+        case myPRs
+        case myIssues
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .inbox: return "Inbox"
+            case .myPRs: return "My PRs"
+            case .myIssues: return "My Issues"
+            }
+        }
+
+        var iconName: String {
+            switch self {
+            case .inbox: return "tray"
+            case .myPRs: return "arrow.triangle.pull"
+            case .myIssues: return "exclamationmark.circle"
+            }
+        }
+    }
+
+    private var activeScopeTab: ScopeTab {
+        switch inboxMode {
+        case .inbox: return .inbox
+        case .browse:
+            return browseScope == .pullRequests ? .myPRs : .myIssues
+        }
+    }
+
+    private func selectScopeTab(_ tab: ScopeTab) {
+        switch tab {
+        case .inbox:
+            inboxMode = .inbox
+        case .myPRs:
+            inboxMode = .browse
+            browseScope = .pullRequests
+        case .myIssues:
+            inboxMode = .browse
+            browseScope = .issues
+        }
+    }
+
+    @ViewBuilder
     private var scopeControls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if inboxScope.supportsUnreadFilter {
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .center, spacing: 10) {
-                        scopeFilterRow
-                        unreadFilterButton
-                    }
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        scopeFilterRow
-                        unreadFilterButton
-                    }
-                }
-            } else {
-                scopeFilterRow
-            }
-
-            if showsDashboardFilters {
-                dashboardFilterControls
-            }
-        }
-    }
-
-    private var showsDashboardFilters: Bool {
-        switch inboxScope {
-        case .pullRequests, .issues:
-            return true
-        case .focus, .workflows, .notifications:
-            return false
-        }
-    }
-
-    private var scopeFilterRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(InboxScope.allCases) { scope in
-                    Button {
-                        inboxScope = scope
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: scope.iconName)
-                                .imageScale(.small)
-
-                            Text(scope.title)
-                                .font(.subheadline.weight(.medium))
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .foregroundStyle(inboxScope == scope ? .white : .primary)
+        HStack(spacing: 0) {
+            ForEach(ScopeTab.allCases) { tab in
+                let isActive = activeScopeTab == tab
+                Button {
+                    selectScopeTab(tab)
+                } label: {
+                    Label(tab.title, systemImage: tab.iconName)
+                        .font(.subheadline.weight(.medium))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .foregroundStyle(isActive ? .white : .primary)
                         .background(
                             Capsule(style: .continuous)
-                                .fill(
-                                    inboxScope == scope
-                                        ? Color.accentColor
-                                        : Color(nsColor: .controlBackgroundColor)
-                                )
+                                .fill(isActive ? Color.accentColor : Color.clear)
                         )
-                        .overlay(
-                            Capsule(style: .continuous)
-                                .stroke(
-                                    inboxScope == scope
-                                        ? Color.accentColor.opacity(0.85)
-                                        : Color(nsColor: .separatorColor).opacity(0.45),
-                                    lineWidth: 1
-                                )
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .appInteractiveHover(
-                        backgroundOpacity: inboxScope == scope ? 0 : 0.08,
-                        cornerRadius: 999
-                    )
-                    .accessibilityLabel("Show \(scope.title)")
                 }
+                .buttonStyle(.plain)
             }
-            .padding(.vertical, 1)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(3)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 1)
+        )
     }
 
     @ViewBuilder
     private var dashboardFilterControls: some View {
-        switch inboxScope {
+        switch browseScope {
         case .pullRequests:
             dashboardFilterRow(title: "Pull Request Filters") {
                 ForEach(PullRequestDashboardFilter.allCases) { filter in
@@ -765,8 +740,6 @@ struct AttentionWindowView: View {
                     }
                 }
             }
-        case .focus, .workflows, .notifications:
-            EmptyView()
         }
     }
 
@@ -917,36 +890,26 @@ struct AttentionWindowView: View {
     }
 
     private var emptyStateView: some View {
-        let title = inboxScope.supportsUnreadFilter && showsUnreadOnly
-            ? inboxScope.emptyUnreadTitle
-            : inboxScope.emptyTitle
+        let title: String
         let description: String
 
-        if inboxScope.supportsUnreadFilter && showsUnreadOnly {
-            description = switch inboxScope {
-            case .focus:
-                "Everything currently in the inbox has been marked read."
-            case .pullRequests:
-                "Everything in the pull request view has been marked read."
-            case .issues:
-                "Everything in the issue view has been marked read."
-            case .workflows:
-                "Everything in the workflow view has been marked read."
-            case .notifications:
-                "Everything in the notifications view has been marked read."
+        switch inboxMode {
+        case .inbox:
+            if showsUnreadOnly {
+                title = "No unread items"
+                description = "Everything currently in the inbox has been marked read."
+            } else {
+                title = "Inbox is clear"
+                description = "Octowatch is watching GitHub, but there is nothing actionable right now."
             }
-        } else {
-            description = switch inboxScope {
-            case .focus:
-                "Octowatch is watching GitHub, but there is nothing actionable right now."
+        case .browse:
+            switch browseScope {
             case .pullRequests:
-                "There are no open pull requests in the \(pullRequestDashboardFilter.title) view."
+                title = "No pull requests"
+                description = "There are no open pull requests in the \(pullRequestDashboardFilter.title) view."
             case .issues:
-                "There are no open issues in the \(issueDashboardFilter.title) view."
-            case .workflows:
-                "There are no workflow items matching the current inbox view."
-            case .notifications:
-                "There are no GitHub notifications matching the current inbox view."
+                title = "No issues"
+                description = "There are no open issues in the \(issueDashboardFilter.title) view."
             }
         }
 
@@ -958,28 +921,28 @@ struct AttentionWindowView: View {
     }
 
     private var summaryLine: String {
-        switch inboxScope {
-        case .pullRequests:
-            return dashboardSummaryLine(
-                count: scopedItems.count,
-                noun: "pull request",
-                filterTitle: pullRequestDashboardFilter.title
-            )
-        case .issues:
-            return dashboardSummaryLine(
-                count: scopedItems.count,
-                noun: "issue",
-                filterTitle: issueDashboardFilter.title
-            )
-        case .focus, .workflows, .notifications:
-            break
+        if inboxMode == .browse {
+            switch browseScope {
+            case .pullRequests:
+                return dashboardSummaryLine(
+                    count: scopedItems.count,
+                    noun: "pull request",
+                    filterTitle: pullRequestDashboardFilter.title
+                )
+            case .issues:
+                return dashboardSummaryLine(
+                    count: scopedItems.count,
+                    noun: "issue",
+                    filterTitle: issueDashboardFilter.title
+                )
+            }
         }
 
         let totalItemCount = scopedItems.count
         let unreadCount = scopedItems.filter(\.isUnread).count
-        let needsActionCount = scopedNeedsActionItems.count
+        let yourTurnCount = scopedYourTurnItems.count
         let displayedCount = displayedItems.count
-        let displayedNeedsActionCount = displayedNeedsActionItems.count
+        let displayedYourTurnCount = displayedYourTurnItems.count
         let itemLabel = itemCountLabel(for: totalItemCount)
         let unreadLabel = unreadCount == 1
             ? "1 unread"
@@ -988,21 +951,21 @@ struct AttentionWindowView: View {
         if showsUnreadOnly {
             let unreadSummary = unreadCountLabel(for: displayedCount)
 
-            guard displayedNeedsActionCount > 0 else {
+            guard displayedYourTurnCount > 0 else {
                 return unreadSummary
             }
 
-            let actionSummary = displayedNeedsActionCount == 1
+            let actionSummary = displayedYourTurnCount == 1
                 ? "1 action item"
-                : "\(displayedNeedsActionCount) action items"
+                : "\(displayedYourTurnCount) action items"
             return "\(unreadSummary) · \(actionSummary)"
         }
 
-        guard needsActionCount > 0 else {
+        guard yourTurnCount > 0 else {
             return "\(itemLabel) · \(unreadLabel)"
         }
 
-        let actionSummary = needsActionCount == 1 ? "1 action item" : "\(needsActionCount) action items"
+        let actionSummary = yourTurnCount == 1 ? "1 action item" : "\(yourTurnCount) action items"
         return "\(actionSummary) · \(itemLabel) · \(unreadLabel)"
     }
 
@@ -1092,55 +1055,55 @@ struct AttentionWindowView: View {
         return selection.intersection(displayedItemIDs)
     }
 
-    private func matchesAttentionScope(_ item: AttentionItem) -> Bool {
-        guard let section = inboxScope.section else {
-            return true
-        }
-
-        return AttentionSectionPolicy.section(for: item) == section
-    }
-
     private func itemCountLabel(for count: Int) -> String {
-        let noun = count == 1 ? inboxScope.itemNoun : "\(inboxScope.itemNoun)s"
+        let noun = count == 1 ? "item" : "items"
         return "\(count) \(noun)"
     }
 
     private func unreadCountLabel(for count: Int) -> String {
-        let noun = count == 1 ? inboxScope.itemNoun : "\(inboxScope.itemNoun)s"
+        let noun = count == 1 ? "item" : "items"
         return "Showing \(count) unread \(noun)"
     }
 
     private func loadDashboardIfNeeded() async {
-        switch inboxScope {
+        guard inboxMode == .browse else {
+            return
+        }
+
+        switch browseScope {
         case .pullRequests:
             await model.ensurePullRequestDashboardLoaded()
         case .issues:
             await model.ensureIssueDashboardLoaded()
-        case .focus, .workflows, .notifications:
-            break
         }
     }
 
     private func refreshCurrentScope() {
         Task {
-            switch inboxScope {
-            case .pullRequests:
-                await model.refreshPullRequestDashboard(force: true)
-            case .issues:
-                await model.refreshIssueDashboard(force: true)
-            case .focus, .workflows, .notifications:
+            switch inboxMode {
+            case .browse:
+                switch browseScope {
+                case .pullRequests:
+                    await model.refreshPullRequestDashboard(force: true)
+                case .issues:
+                    await model.refreshIssueDashboard(force: true)
+                }
+            case .inbox:
                 await model.forceRefresh()
             }
         }
     }
 
     private func refreshSelection(_ item: AttentionItem) async {
-        switch inboxScope {
-        case .pullRequests:
-            await model.refreshPullRequestDashboard(force: true)
-        case .issues:
-            await model.refreshIssueDashboard(force: true)
-        case .focus, .workflows, .notifications:
+        switch inboxMode {
+        case .browse:
+            switch browseScope {
+            case .pullRequests:
+                await model.refreshPullRequestDashboard(force: true)
+            case .issues:
+                await model.refreshIssueDashboard(force: true)
+            }
+        case .inbox:
             await model.forceRefresh(item: item)
         }
     }

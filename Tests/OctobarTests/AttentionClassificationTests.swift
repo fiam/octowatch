@@ -654,7 +654,7 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
-    func testFocusWorkflowSupplementalItemsPromoteMergedPullRequestsIntoNeedsAction() {
+    func testFocusWorkflowSupplementalItemsPromoteMergedPullRequestsIntoYourTurn() {
         let reference = PullRequestReference(owner: "example", name: "repo", number: 42)
         let subjectURL = reference.pullRequestURL
         let workflowURL = URL(string: "https://github.com/example/repo/actions/runs/99")!
@@ -702,7 +702,7 @@ final class AttentionClassificationTests: XCTestCase {
             to: [mergedItem]
         )
         let combined = AttentionCombinedViewPolicy.collapsingDuplicates(in: refreshed)
-        let matches = NeedsActionPolicy.matchingItems(
+        let matches = YourTurnPolicy.matchingItems(
             in: combined,
             configuration: .default
         )
@@ -2038,7 +2038,7 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
-    func testNeedsActionPolicyMatchesConfiguredAuthoredAndWorkflowSignals() {
+    func testYourTurnPolicyMatchesConfiguredAuthoredAndWorkflowSignals() {
         let authoredFailedChecks = AttentionItem(
             id: "authored-failed",
             subjectKey: "https://github.com/example/repo/pull/1",
@@ -2085,7 +2085,7 @@ final class AttentionClassificationTests: XCTestCase {
             url: URL(string: "https://github.com/example/repo/pull/4")!
         )
 
-        let matches = NeedsActionPolicy.matchingItems(
+        let matches = YourTurnPolicy.matchingItems(
             in: [
                 authoredFailedChecks,
                 assignedWithoutReview,
@@ -2101,7 +2101,7 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
-    func testNeedsActionPolicyIncludesAssignedPullRequestsAfterYourReview() {
+    func testYourTurnPolicyIncludesAssignedPullRequestsAfterYourReview() {
         let reviewedAssigned = AttentionItem(
             id: "assigned-reviewed",
             subjectKey: "https://github.com/example/repo/pull/5",
@@ -2127,7 +2127,7 @@ final class AttentionClassificationTests: XCTestCase {
             )
         )
 
-        let matches = NeedsActionPolicy.matchingItems(
+        let matches = YourTurnPolicy.matchingItems(
             in: [reviewedAssigned],
             configuration: .default
         )
@@ -2135,7 +2135,7 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(matches.map(\.id), ["assigned-reviewed"])
     }
 
-    func testNeedsActionPolicyMatchesWorkflowRulesOnPullRequestRowsWithCurrentWorkflowUpdates() {
+    func testYourTurnPolicyMatchesWorkflowRulesOnPullRequestRowsWithCurrentWorkflowUpdates() {
         let pullRequestRow = AttentionItem(
             id: "workflow-running-pr-row",
             subjectKey: "https://github.com/example/repo/pull/5",
@@ -2150,9 +2150,9 @@ final class AttentionClassificationTests: XCTestCase {
             currentUpdateTypes: [.reviewApproved, .workflowRunning]
         )
 
-        let configuration = NeedsActionConfiguration(
+        let configuration = YourTurnConfiguration(
             rules: [
-                NeedsActionRuleDefinition(
+                YourTurnRuleDefinition(
                     id: UUID(uuidString: "DA89CBCC-8D4F-45A3-84F4-35EE5CCB65B0")!,
                     name: "Queued workflow runs",
                     itemKind: .workflow,
@@ -2165,7 +2165,7 @@ final class AttentionClassificationTests: XCTestCase {
             ]
         )
 
-        let matches = NeedsActionPolicy.matchingItems(
+        let matches = YourTurnPolicy.matchingItems(
             in: [pullRequestRow],
             configuration: configuration
         )
@@ -2173,7 +2173,7 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(matches.map(\.id), ["workflow-running-pr-row"])
     }
 
-    func testNeedsActionPolicyIgnoresHistoricalSignalsOnMergedRows() {
+    func testYourTurnPolicyIgnoresHistoricalSignalsOnMergedRows() {
         let mergedRow = AttentionItem(
             id: "merged-row",
             subjectKey: "https://github.com/example/repo/pull/6",
@@ -2207,7 +2207,7 @@ final class AttentionClassificationTests: XCTestCase {
             )
         )
 
-        let matches = NeedsActionPolicy.matchingItems(
+        let matches = YourTurnPolicy.matchingItems(
             in: [mergedRow],
             configuration: .default
         )
@@ -2215,31 +2215,31 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertTrue(matches.isEmpty)
     }
 
-    func testNeedsActionConfigurationMigratesLegacyEnabledRules() {
-        let migrated = NeedsActionConfiguration.migrated(
-            from: LegacyNeedsActionConfiguration(
+    func testYourTurnConfigurationMigratesLegacyEnabledRules() {
+        let migrated = YourTurnConfiguration.migrated(
+            from: LegacyYourTurnConfiguration(
                 enabledRules: [.authoredFailedChecks, .assignedIssues]
             )
         )
 
-        XCTAssertEqual(migrated.rules.count, NeedsActionRule.allCases.count)
+        XCTAssertEqual(migrated.rules.count, YourTurnRule.allCases.count)
         XCTAssertEqual(
             Set(migrated.rules.filter(\.isEnabled).map(\.name)),
             Set([
-                NeedsActionRule.authoredFailedChecks.title,
-                NeedsActionRule.assignedIssues.title
+                YourTurnRule.authoredFailedChecks.title,
+                YourTurnRule.assignedIssues.title
             ])
         )
         XCTAssertEqual(
             Set(migrated.rules.filter { !$0.isEnabled }.map(\.name)),
-            Set(NeedsActionRule.allCases.map(\.title)).subtracting([
-                NeedsActionRule.authoredFailedChecks.title,
-                NeedsActionRule.assignedIssues.title
+            Set(YourTurnRule.allCases.map(\.title)).subtracting([
+                YourTurnRule.authoredFailedChecks.title,
+                YourTurnRule.assignedIssues.title
             ])
         )
     }
 
-    func testNeedsActionPolicyNormalizesLegacyAnyModeRulesToAllMatch() {
+    func testYourTurnPolicyNormalizesLegacyAnyModeRulesToAllMatch() {
         let authoredFailedChecks = AttentionItem(
             id: "custom-any",
             subjectKey: "https://github.com/example/repo/pull/8",
@@ -2253,9 +2253,9 @@ final class AttentionClassificationTests: XCTestCase {
             url: URL(string: "https://github.com/example/repo/pull/8")!
         )
 
-        let configuration = NeedsActionConfiguration(
+        let configuration = YourTurnConfiguration(
             rules: [
-                NeedsActionRuleDefinition(
+                YourTurnRuleDefinition(
                     id: UUID(uuidString: "8E22174F-2A79-47C7-B319-4A1632B8D8E1")!,
                     name: "Legacy any rule",
                     itemKind: .pullRequest,
@@ -2270,7 +2270,7 @@ final class AttentionClassificationTests: XCTestCase {
         )
 
         let normalizedRule = configuration.normalized.rules.first
-        let matches = NeedsActionPolicy.matchingItems(
+        let matches = YourTurnPolicy.matchingItems(
             in: [authoredFailedChecks],
             configuration: configuration
         )
@@ -2279,7 +2279,7 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertTrue(matches.isEmpty)
     }
 
-    func testNeedsActionPolicySupportsNegatedConditions() {
+    func testYourTurnPolicySupportsNegatedConditions() {
         let assignedItem = AttentionItem(
             id: "negated-condition",
             subjectKey: "https://github.com/example/repo/pull/9",
@@ -2291,9 +2291,9 @@ final class AttentionClassificationTests: XCTestCase {
             url: URL(string: "https://github.com/example/repo/pull/9")!
         )
 
-        let configuration = NeedsActionConfiguration(
+        let configuration = YourTurnConfiguration(
             rules: [
-                NeedsActionRuleDefinition(
+                YourTurnRuleDefinition(
                     id: UUID(uuidString: "D3F96B5F-90DA-4EE6-8A12-62A5A8A9F4C1")!,
                     name: "PRs not assigned to me",
                     itemKind: .pullRequest,
@@ -2306,7 +2306,7 @@ final class AttentionClassificationTests: XCTestCase {
             ]
         )
 
-        let matches = NeedsActionPolicy.matchingItems(
+        let matches = YourTurnPolicy.matchingItems(
             in: [assignedItem],
             configuration: configuration
         )
@@ -2314,7 +2314,7 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertTrue(matches.isEmpty)
     }
 
-    func testNeedsActionPolicyIncludesOpenAssignedWorkflowRowsForDefaultAssignedRule() {
+    func testYourTurnPolicyIncludesOpenAssignedWorkflowRowsForDefaultAssignedRule() {
         let workflowRow = AttentionItem(
             id: "workflow-success",
             subjectKey: "https://github.com/example/repo/pull/10",
@@ -2329,7 +2329,7 @@ final class AttentionClassificationTests: XCTestCase {
             subjectResolution: .open
         )
 
-        let matches = NeedsActionPolicy.matchingItems(
+        let matches = YourTurnPolicy.matchingItems(
             in: [workflowRow],
             configuration: .default
         )
@@ -2337,7 +2337,7 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(matches.map(\.id), ["workflow-success"])
     }
 
-    func testNeedsActionPolicyKeepsAssignedRelationshipOnUnifiedWorkflowRows() {
+    func testYourTurnPolicyKeepsAssignedRelationshipOnUnifiedWorkflowRows() {
         let url = URL(string: "https://github.com/example/repo/pull/12")!
         let assignedItem = AttentionItem(
             id: "assigned-pr",
@@ -2374,7 +2374,7 @@ final class AttentionClassificationTests: XCTestCase {
         let combined = AttentionCombinedViewPolicy.collapsingDuplicates(
             in: [assignedItem, authoredItem, workflowItem]
         )
-        let matches = NeedsActionPolicy.matchingItems(
+        let matches = YourTurnPolicy.matchingItems(
             in: combined,
             configuration: .default
         )
@@ -2387,7 +2387,7 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(matches.map(\.id), [url.absoluteString])
     }
 
-    func testNeedsActionPolicyExcludesMergedWorkflowRowsFromPullRequestRules() {
+    func testYourTurnPolicyExcludesMergedWorkflowRowsFromPullRequestRules() {
         let workflowRow = AttentionItem(
             id: "workflow-merged",
             subjectKey: "https://github.com/example/repo/pull/11",
@@ -2402,9 +2402,9 @@ final class AttentionClassificationTests: XCTestCase {
             subjectResolution: .merged
         )
 
-        let configuration = NeedsActionConfiguration(
+        let configuration = YourTurnConfiguration(
             rules: [
-                NeedsActionRuleDefinition(
+                YourTurnRuleDefinition(
                     id: UUID(uuidString: "B60C7FD6-C385-49B6-A18F-69F9308604E2")!,
                     name: "Assigned pull requests",
                     itemKind: .pullRequest,
@@ -2417,7 +2417,7 @@ final class AttentionClassificationTests: XCTestCase {
             ]
         )
 
-        let matches = NeedsActionPolicy.matchingItems(
+        let matches = YourTurnPolicy.matchingItems(
             in: [workflowRow],
             configuration: configuration
         )
@@ -2426,8 +2426,8 @@ final class AttentionClassificationTests: XCTestCase {
     }
 
     func testWorkflowRulesOnlyOfferSignalConditions() {
-        XCTAssertEqual(NeedsActionItemKind.workflow.availableConditionKinds, [.signal])
-        XCTAssertTrue(NeedsActionItemKind.workflow.availableRelationships.isEmpty)
+        XCTAssertEqual(YourTurnItemKind.workflow.availableConditionKinds, [.signal])
+        XCTAssertTrue(YourTurnItemKind.workflow.availableRelationships.isEmpty)
     }
 
     func testPullRequestContextBadgesStayEmptyWithoutWorkflowAttention() {
