@@ -1416,109 +1416,45 @@ private struct AttentionSidebarRow: View {
     let relativeTimestamp: String
     let onOpenWorkflowApproval: (WorkflowApprovalSheetRequest) -> Void
 
-    private let maximumDisplayedLabels = 2
-
-    private var displayedLabels: [GitHubLabel] {
-        Array(item.labels.prefix(maximumDisplayedLabels))
-    }
-
-    private var hiddenLabelCount: Int {
-        max(0, item.labels.count - displayedLabels.count)
-    }
-
-    private var sidebarContextSubtitle: String? {
-        AttentionViewerPresentationPolicy.listContextSubtitle(
-            subtitle: item.subtitle,
-            actor: item.actor,
-            repository: item.repository,
-            viewerLogin: viewerLogin,
-            hidesRepository: true
-        )
-    }
-
-    private var workflowApprovalRequest: WorkflowApprovalSheetRequest? {
-        WorkflowApprovalSheetRequest(item: item)
+    private var contextLine: String {
+        let typeSummary = item.type.nativeNotificationTitle
+        if let repo = item.repository {
+            return "\(repo) · \(typeSummary)"
+        }
+        return typeSummary
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 10) {
             Circle()
                 .fill(.blue)
                 .frame(width: 8, height: 8)
                 .opacity(item.isUnread ? 1 : 0)
-                .padding(.top, 6)
-                .frame(width: 10)
 
             EventBadge(type: item.type, secondaryType: item.secondaryIndicatorType)
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
-                    .font(.headline)
-                    .lineLimit(2)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
                     .accessibilityIdentifier("sidebar-item-title-\(item.id)")
                     .accessibilityValue(item.isUnread ? "unread" : "read")
 
-                if let sidebarContextSubtitle {
-                    Text(sidebarContextSubtitle)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
+                HStack(spacing: 0) {
+                    Text(contextLine)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
 
-                if item.repository != nil || !displayedLabels.isEmpty || hiddenLabelCount > 0 {
-                    MetadataWrapLayout(horizontalSpacing: 4, verticalSpacing: 4) {
-                        if let repository = item.repository {
-                            Text(repository)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-
-                        ForEach(displayedLabels) { label in
-                            GitHubLabelChip(
-                                label: label,
-                                actionURL: nil,
-                                onOpenURL: { _ in },
-                                compact: true
-                            )
-                        }
-
-                        if hiddenLabelCount > 0 {
-                            SidebarOverflowChip(count: hiddenLabelCount)
-                        }
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    if let actor = item.actor {
-                        AttentionActorChip(actor: actor, viewerLogin: viewerLogin)
-                    }
+                    Spacer(minLength: 8)
 
                     Text(relativeTimestamp)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .fixedSize()
                 }
-            }
-
-            Spacer(minLength: 8)
-
-            if let workflowApprovalRequest {
-                Button {
-                    onOpenWorkflowApproval(workflowApprovalRequest)
-                } label: {
-                    Image(systemName: "hand.raised")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(6)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .appInteractiveHover(backgroundOpacity: 0.08, cornerRadius: 8)
-                .help("Review pending deployments")
-                .padding(.top, 2)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 5)
     }
 }
 
