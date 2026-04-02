@@ -6,12 +6,6 @@ struct MenuBarContentView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
 
-    private let relativeFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter
-    }()
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
@@ -37,7 +31,7 @@ struct MenuBarContentView: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             let count = model.inboxSectionItems.count
-            Text("Your Turn")
+            Text("Inbox")
                 .font(.headline)
             if count > 0 {
                 Text("\(count)")
@@ -69,7 +63,7 @@ struct MenuBarContentView: View {
                     Image(systemName: "checkmark.circle")
                         .font(.title3)
                         .foregroundStyle(.green)
-                    Text("Nothing waiting on you")
+                    Text("Nothing in the inbox")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -117,31 +111,17 @@ struct MenuBarContentView: View {
         }
     }
 
+    @ViewBuilder
     private var footer: some View {
-        HStack {
-            if let lastError = model.lastError {
+        if let lastError = model.lastError {
+            HStack {
                 Text(lastError)
                     .font(.caption2)
                     .foregroundStyle(.red)
                     .lineLimit(1)
-            } else if model.lastUpdated != nil {
-                TimelineView(.periodic(from: .now, by: 15)) { context in
-                    Text("Updated \(relativeFormatter.localizedString(for: model.lastUpdated ?? .now, relativeTo: context.date))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
 
-            Spacer()
-
-            Button(action: requestSettings) {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                Spacer()
             }
-            .buttonStyle(.plain)
-            .appInteractiveHover(backgroundOpacity: 0.08, cornerRadius: 6)
-            .help("Settings")
         }
     }
 

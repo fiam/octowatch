@@ -3,18 +3,52 @@ import Combine
 import SwiftUI
 import UserNotifications
 
+struct MenuBarStatusPresentation: Equatable {
+    let imageName: String
+    let fallbackSymbolName: String
+    let toolTip: String
+
+    init(inboxSections: [InboxSectionPolicy.SectionResult]) {
+        let items = inboxSections.flatMap(\.items)
+        let unreadCount = items.filter(\.isUnread).count
+
+        if unreadCount > 0 {
+            imageName = "MenuBarIconAlert"
+            fallbackSymbolName = "bell.badge.fill"
+            toolTip = Self.tooltip(itemCount: unreadCount, prefix: "unread")
+        } else if items.isEmpty {
+            imageName = "MenuBarIcon"
+            fallbackSymbolName = "bell"
+            toolTip = "Octowatch"
+        } else {
+            imageName = "MenuBarIcon"
+            fallbackSymbolName = "bell"
+            toolTip = Self.tooltip(itemCount: items.count)
+        }
+    }
+
+    private static func tooltip(itemCount: Int, prefix: String? = nil) -> String {
+        let itemLabel = itemCount == 1 ? "item" : "items"
+        let prefixText = prefix.map { "\($0) " } ?? ""
+        return "\(itemCount) \(prefixText)\(itemLabel) in your inbox."
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSPopoverDelegate {
-    private struct StatusPresentation: Equatable {
-        let imageName: String
-        let toolTip: String
+    private enum MenuBarPopoverMetrics {
+        static let width: CGFloat = 360
+        static let minHeight: CGFloat = 120
+        static let maxHeight: CGFloat = 520
     }
 
     private let model = AppModel.shared
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
+    private var popoverHostingController: NSHostingController<MenuBarContentView>?
     private var modelChangeCancellable: AnyCancellable?
-    private var lastStatusPresentation: StatusPresentation?
+    private var popoverLayoutChangeCancellable: AnyCancellable?
+    private var lastStatusPresentation: MenuBarStatusPresentation?
     private weak var mainWindow: NSWindow?
     private weak var settingsWindow: NSWindow?
     private var localPopoverEventMonitor: Any?
@@ -37,10 +71,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         popover.delegate = self
         popover.behavior = .transient
         popover.animates = true
-        popover.contentSize = NSSize(width: 420, height: 520)
-        popover.contentViewController = NSHostingController(
+        let hostingController = NSHostingController(
             rootView: MenuBarContentView(model: model)
         )
+        if #available(macOS 13.0, *) {
+            hostingController.sizingOptions = [.preferredContentSize]
+        }
+        popoverHostingController = hostingController
+        popover.contentViewController = hostingController
+        updatePopoverContentSize()
         // Make sure SwiftUI observers are active before first context-menu action.
         _ = popover.contentViewController?.view
     }
@@ -62,10 +101,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func observeModelChanges() {
-        modelChangeCancellable = model.$attentionItems
+        modelChangeCancellable = model.$inboxSections
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.updateStatusItemButton()
+            }
+
+        popoverLayoutChangeCancellable = model.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.updatePopoverContentSize()
+                }
             }
     }
 
@@ -108,32 +155,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
 
-        let hasUnread = model.unreadCount > 0
-        let imageName = hasUnread ? "MenuBarIconAlert" : "MenuBarIcon"
-
-        let toolTip: String
-        if hasUnread {
-            toolTip = "\(model.unreadCount) unread GitHub items."
-        } else if model.actionableCount > 0 {
-            toolTip = "\(model.actionableCount) GitHub items need attention."
-        } else {
-            toolTip = "Octowatch"
-        }
-        let presentation = StatusPresentation(
-            imageName: imageName,
-            toolTip: toolTip
-        )
+        let presentation = MenuBarStatusPresentation(inboxSections: model.inboxSections)
 
         guard presentation != lastStatusPresentation else {
             return
         }
 
         button.image = statusItemImage(
-            named: imageName,
-            fallbackSymbolName: hasUnread ? "bell.badge.fill" : "bell"
+            named: presentation.imageName,
+            fallbackSymbolName: presentation.fallbackSymbolName
         )
         button.title = ""
-        button.toolTip = toolTip
+        button.toolTip = presentation.toolTip
 
         lastStatusPresentation = presentation
     }
@@ -222,8 +255,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
 
+        updatePopoverContentSize()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         installPopoverDismissMonitors()
+    }
+
+    private func updatePopoverContentSize() {
+        guard let hostingController = popoverHostingController else {
+            return
+        }
+
+        hostingController.view.layoutSubtreeIfNeeded()
+
+        let fittingWidth = MenuBarPopoverMetrics.width
+        var fittingSize = hostingController.sizeThatFits(
+            in: NSSize(width: fittingWidth, height: .greatestFiniteMagnitude)
+        )
+
+        if !fittingSize.width.isFinite || fittingSize.width <= 0 {
+            fittingSize.width = fittingWidth
+        }
+
+        if !fittingSize.height.isFinite || fittingSize.height <= 0 {
+            fittingSize.height = MenuBarPopoverMetrics.minHeight
+        }
+
+        let contentSize = NSSize(
+            width: fittingWidth,
+            height: min(
+                max(ceil(fittingSize.height), MenuBarPopoverMetrics.minHeight),
+                MenuBarPopoverMetrics.maxHeight
+            )
+        )
+
+        guard popover.contentSize != contentSize else {
+            return
+        }
+
+        popover.contentSize = contentSize
     }
 
     @objc
