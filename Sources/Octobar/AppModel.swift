@@ -32,6 +32,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var isValidatingToken = false
     @Published private(set) var ignoredItems: [IgnoredAttentionSubject] = []
     @Published private(set) var ignoreUndoState: IgnoreUndoState?
+    @Published private(set) var snoozedItems: [SnoozedAttentionSubject] = []
+    @Published private(set) var snoozeUndoState: SnoozeUndoState?
     @Published private(set) var pollIntervalSeconds = 60
     @Published private(set) var autoMarkReadSetting: AutoMarkReadSetting = .threeSeconds
     @Published private(set) var notifyOnSelfTriggeredUpdates = false
@@ -47,6 +49,7 @@ final class AppModel: ObservableObject {
     private let readStateStoreKey = "attention-subject-read-state-v2"
     private let ignoredSubjectStoreKey = "ignored-attention-subjects-v2"
     private let legacyIgnoredSubjectStoreKey = "ignored-attention-subjects-v1"
+    private let snoozedSubjectStoreKey = "snoozed-attention-subjects-v1"
     private let pollIntervalStoreKey = "poll-interval-seconds-v1"
     private let autoMarkReadStoreKey = "auto-mark-read-setting-v1"
     private let notifyOnSelfTriggeredUpdatesStoreKey = "notify-on-self-triggered-updates-v1"
@@ -89,9 +92,12 @@ final class AppModel: ObservableObject {
     private var watchedPullRequestKey: String?
     private var watchedPullRequestState: PullRequestLiveWatchState?
     private var ignoredItemsByKey = [String: IgnoredAttentionSubject]()
+    private var snoozedItemsByKey = [String: SnoozedAttentionSubject]()
     private var acknowledgedWorkflows = [String: AcknowledgedWorkflowState]()
     private var mergeMethodPreferenceByRepository = [String: PullRequestMergeMethod]()
     private var ignoreUndoDismissTask: Task<Void, Never>?
+    private var snoozeUndoDismissTask: Task<Void, Never>?
+    private var snoozeWakeTask: Task<Void, Never>?
     private var readStateBySubjectKey: [String: Date] = [:]
     private var updateHistoryBySubjectKey = [String: [AttentionUpdate]]()
     private var suppressedTransitionNotificationKeys = Set<String>()
@@ -156,8 +162,15 @@ final class AppModel: ObservableObject {
             from: UserDefaults.standard,
             key: legacyIgnoredSubjectStoreKey
         )
+        snoozedItemsByKey = Self.loadSnoozedItems(
+            from: UserDefaults.standard,
+            key: snoozedSubjectStoreKey
+        )
         syncIgnoredItems()
+        syncSnoozedItems()
+        persistSnoozedItems()
         loadAcknowledgedWorkflows()
+        scheduleSnoozeWakeIfNeeded()
 
         if let launchFixture = LaunchFixture.load(from: ProcessInfo.processInfo.environment) {
             applyLaunchFixture(launchFixture)
@@ -178,6 +191,8 @@ final class AppModel: ObservableObject {
         watchedPullRequestTask?.cancel()
         queuedPostMergeWatchTask?.cancel()
         ignoreUndoDismissTask?.cancel()
+        snoozeUndoDismissTask?.cancel()
+        snoozeWakeTask?.cancel()
     }
 
     var hasToken: Bool {
@@ -876,6 +891,41 @@ final class AppModel: ObservableObject {
         refreshInboxSections()
     }
 
+    func snooze(_ item: AttentionItem, preset: AttentionSnoozePreset) {
+        snooze([item], preset: preset)
+    }
+
+    func snooze(_ items: [AttentionItem], preset: AttentionSnoozePreset) {
+        let now = Date()
+        let snoozedUntil = preset.snoozedUntil(from: now)
+        var snoozedSummaries = [SnoozedAttentionSubject]()
+        var snoozedKeys = Set<String>()
+
+        for item in items {
+            guard snoozedKeys.insert(item.ignoreKey).inserted else {
+                continue
+            }
+
+            let summary = preferredSnoozedSummary(for: item, snoozedAt: now, snoozedUntil: snoozedUntil)
+            snoozedItemsByKey[item.ignoreKey] = summary
+            snoozedSummaries.append(summary)
+            ignoredItemsByKey[item.ignoreKey] = nil
+        }
+
+        guard !snoozedSummaries.isEmpty else {
+            return
+        }
+
+        syncIgnoredItems()
+        persistIgnoredItems()
+        syncSnoozedItems()
+        persistSnoozedItems()
+        presentSnoozeUndo(for: snoozedSummaries)
+        notifier.removeSubjectNotifications(subjectKeys: Array(snoozedKeys))
+        scheduleSnoozeWakeIfNeeded()
+        reconcileVisibleContentFromSnapshot()
+    }
+
     func ignore(_ item: AttentionItem) {
         ignore([item])
     }
@@ -891,6 +941,7 @@ final class AppModel: ObservableObject {
 
             let summary = preferredIgnoredSummary(for: item)
             ignoredItemsByKey[item.ignoreKey] = summary
+            snoozedItemsByKey[item.ignoreKey] = nil
             ignoredSummaries.append(summary)
         }
 
@@ -900,13 +951,21 @@ final class AppModel: ObservableObject {
 
         syncIgnoredItems()
         persistIgnoredItems()
+        syncSnoozedItems()
+        persistSnoozedItems()
+        trimSnoozeUndoState(removing: ignoredKeys)
         presentIgnoreUndo(for: ignoredSummaries)
         notifier.removeSubjectNotifications(subjectKeys: Array(ignoredKeys))
+        scheduleSnoozeWakeIfNeeded()
         reconcileVisibleContentFromSnapshot()
     }
 
     func unignore(_ ignoredItem: IgnoredAttentionSubject) {
         unignore([ignoredItem])
+    }
+
+    func unsnooze(_ snoozedItem: SnoozedAttentionSubject) {
+        unsnooze([snoozedItem])
     }
 
     func undoRecentIgnore() {
@@ -917,8 +976,20 @@ final class AppModel: ObservableObject {
         unignore(ignoreUndoState.subjects)
     }
 
+    func undoRecentSnooze() {
+        guard let snoozeUndoState else {
+            return
+        }
+
+        unsnooze(snoozeUndoState.subjects)
+    }
+
     func dismissIgnoreUndo() {
         clearIgnoreUndoState()
+    }
+
+    func dismissRecentSnooze() {
+        clearSnoozeUndoState()
     }
 
     private func startPollingIfNeeded() {
@@ -1551,6 +1622,21 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func persistSnoozedItems() {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let payload = snoozedItems.sorted { lhs, rhs in
+            if lhs.snoozedUntil == rhs.snoozedUntil {
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+            return lhs.snoozedUntil < rhs.snoozedUntil
+        }
+
+        if let data = try? encoder.encode(payload) {
+            UserDefaults.standard.set(data, forKey: snoozedSubjectStoreKey)
+        }
+    }
+
     private func persistInboxSectionConfiguration() {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -1623,6 +1709,15 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func syncSnoozedItems() {
+        snoozedItems = snoozedItemsByKey.values.sorted { lhs, rhs in
+            if lhs.snoozedUntil == rhs.snoozedUntil {
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+            return lhs.snoozedUntil < rhs.snoozedUntil
+        }
+    }
+
     private func unignore(_ ignoredItems: [IgnoredAttentionSubject]) {
         let ignoredKeys = Set(ignoredItems.map(\.ignoreKey))
         guard !ignoredKeys.isEmpty else {
@@ -1639,15 +1734,38 @@ final class AppModel: ObservableObject {
         reconcileVisibleContentFromSnapshot()
     }
 
+    private func unsnooze(_ snoozedItems: [SnoozedAttentionSubject]) {
+        let snoozedKeys = Set(snoozedItems.map(\.ignoreKey))
+        guard !snoozedKeys.isEmpty else {
+            return
+        }
+
+        for snoozedKey in snoozedKeys {
+            snoozedItemsByKey[snoozedKey] = nil
+        }
+
+        syncSnoozedItems()
+        persistSnoozedItems()
+        trimSnoozeUndoState(removing: snoozedKeys)
+        scheduleSnoozeWakeIfNeeded()
+        reconcileVisibleContentFromSnapshot()
+    }
+
     private func reconcileVisibleContentFromSnapshot() {
         let ignoredKeys = Set(ignoredItemsByKey.keys)
+        let snoozedKeys = Set(snoozedItemsByKey.keys)
         let visibleItems = AttentionItemVisibilityPolicy
             .excludingIgnoredSubjects(
                 latestSnapshotAttentionItems,
                 ignoredKeys: ignoredKeys
             )
+        let unsnoozedItems = AttentionItemVisibilityPolicy
+            .excludingSnoozedSubjects(
+                visibleItems,
+                snoozedKeys: snoozedKeys
+            )
         let aggregatedItems = AttentionCombinedViewPolicy
-            .collapsingDuplicates(in: visibleItems)
+            .collapsingDuplicates(in: unsnoozedItems)
         let projection = AttentionUpdateHistoryProjection.applying(
             persistedHistoryBySubjectKey: updateHistoryBySubjectKey,
             to: aggregatedItems
@@ -1662,8 +1780,10 @@ final class AppModel: ObservableObject {
         attentionItems = projection.items.map(applyingLocalReadState)
         pullRequestDashboard = latestSnapshotPullRequestDashboard
             .filteringIgnoredSubjects(ignoredKeys)
+            .filteringSnoozedSubjects(snoozedKeys)
         issueDashboard = latestSnapshotIssueDashboard
             .filteringIgnoredSubjects(ignoredKeys)
+            .filteringSnoozedSubjects(snoozedKeys)
         refreshInboxSections()
     }
 
@@ -1690,6 +1810,7 @@ final class AppModel: ObservableObject {
         let expiry = Date().addingTimeInterval(8)
         let ignoreUndoID = ignoredItems.map(\.ignoreKey).sorted().joined(separator: "|")
         ignoreUndoState = IgnoreUndoState(subjects: ignoredItems, expiresAt: expiry)
+        clearSnoozeUndoState()
 
         ignoreUndoDismissTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(8))
@@ -1730,10 +1851,104 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func presentSnoozeUndo(for snoozedItems: [SnoozedAttentionSubject]) {
+        snoozeUndoDismissTask?.cancel()
+
+        let expiry = Date().addingTimeInterval(8)
+        let snoozeUndoID = SnoozeUndoState(subjects: snoozedItems, expiresAt: expiry).id
+        snoozeUndoState = SnoozeUndoState(subjects: snoozedItems, expiresAt: expiry)
+        clearIgnoreUndoState()
+
+        snoozeUndoDismissTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else {
+                return
+            }
+
+            await MainActor.run {
+                guard self?.snoozeUndoState?.id == snoozeUndoID else {
+                    return
+                }
+
+                self?.clearSnoozeUndoState()
+            }
+        }
+    }
+
     private func clearIgnoreUndoState() {
         ignoreUndoDismissTask?.cancel()
         ignoreUndoDismissTask = nil
         ignoreUndoState = nil
+    }
+
+    private func trimSnoozeUndoState(removing snoozedKeys: Set<String>) {
+        guard let snoozeUndoState else {
+            return
+        }
+
+        let remainingSubjects = snoozeUndoState.subjects.filter { subject in
+            !snoozedKeys.contains(subject.ignoreKey)
+        }
+
+        if remainingSubjects.count == snoozeUndoState.subjects.count {
+            return
+        }
+
+        if remainingSubjects.isEmpty {
+            clearSnoozeUndoState()
+        } else {
+            self.snoozeUndoState = SnoozeUndoState(
+                subjects: remainingSubjects,
+                expiresAt: snoozeUndoState.expiresAt
+            )
+        }
+    }
+
+    private func clearSnoozeUndoState() {
+        snoozeUndoDismissTask?.cancel()
+        snoozeUndoDismissTask = nil
+        snoozeUndoState = nil
+    }
+
+    private func scheduleSnoozeWakeIfNeeded() {
+        snoozeWakeTask?.cancel()
+
+        guard let nextWake = snoozedItemsByKey.values.map(\.snoozedUntil).min() else {
+            snoozeWakeTask = nil
+            return
+        }
+
+        let delay = max(nextWake.timeIntervalSinceNow, 0.1)
+        snoozeWakeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else {
+                return
+            }
+
+            await MainActor.run {
+                self?.trimExpiredSnoozedItems(relativeTo: Date())
+            }
+        }
+    }
+
+    private func trimExpiredSnoozedItems(relativeTo referenceDate: Date) {
+        let expiredKeys = snoozedItemsByKey.values
+            .filter { $0.snoozedUntil <= referenceDate }
+            .map(\.ignoreKey)
+        guard !expiredKeys.isEmpty else {
+            scheduleSnoozeWakeIfNeeded()
+            return
+        }
+
+        for expiredKey in expiredKeys {
+            snoozedItemsByKey[expiredKey] = nil
+        }
+
+        syncSnoozedItems()
+        persistSnoozedItems()
+        trimSnoozeUndoState(removing: Set(expiredKeys))
+        scheduleSnoozeWakeIfNeeded()
+        reconcileVisibleContentFromSnapshot()
     }
 
     private func refreshInboxSections() {
@@ -1771,6 +1986,26 @@ final class AppModel: ObservableObject {
         }
 
         return Dictionary(uniqueKeysWithValues: items.map { ($0.ignoreKey, $0) })
+    }
+
+    private static func loadSnoozedItems(
+        from defaults: UserDefaults,
+        key: String
+    ) -> [String: SnoozedAttentionSubject] {
+        guard let data = defaults.data(forKey: key) else {
+            return [:]
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        guard let items = try? decoder.decode([SnoozedAttentionSubject].self, from: data) else {
+            return [:]
+        }
+
+        let now = Date()
+        let activeItems = items.filter { $0.snoozedUntil > now }
+        return Dictionary(uniqueKeysWithValues: activeItems.map { ($0.ignoreKey, $0) })
     }
 
     private static func loadPostMergeWatches(
@@ -1818,6 +2053,35 @@ final class AppModel: ObservableObject {
     }
 
     private func preferredIgnoredSummary(for item: AttentionItem) -> IgnoredAttentionSubject {
+        let summary = preferredAttentionSummary(for: item)
+        return IgnoredAttentionSubject(
+            ignoreKey: summary.ignoreKey,
+            title: summary.title,
+            subtitle: summary.subtitle,
+            url: summary.url,
+            ignoredAt: Date()
+        )
+    }
+
+    private func preferredSnoozedSummary(
+        for item: AttentionItem,
+        snoozedAt: Date,
+        snoozedUntil: Date
+    ) -> SnoozedAttentionSubject {
+        let summary = preferredAttentionSummary(for: item)
+        return SnoozedAttentionSubject(
+            ignoreKey: summary.ignoreKey,
+            title: summary.title,
+            subtitle: summary.subtitle,
+            url: summary.url,
+            snoozedAt: snoozedAt,
+            snoozedUntil: snoozedUntil
+        )
+    }
+
+    private func preferredAttentionSummary(
+        for item: AttentionItem
+    ) -> (ignoreKey: String, title: String, subtitle: String, url: URL) {
         let representative = attentionItems
             .filter { $0.ignoreKey == item.ignoreKey }
             .max { lhs, rhs in
@@ -1831,12 +2095,11 @@ final class AppModel: ObservableObject {
                 return lhsScore < rhsScore
             } ?? item
 
-        return IgnoredAttentionSubject(
+        return (
             ignoreKey: representative.ignoreKey,
             title: representative.title,
             subtitle: representative.subtitle,
-            url: representative.url,
-            ignoredAt: Date()
+            url: representative.url
         )
     }
 
@@ -2079,8 +2342,12 @@ final class AppModel: ObservableObject {
         )
         ignoredItemsByKey = [:]
         ignoredItems = []
+        snoozedItemsByKey = [:]
+        snoozedItems = []
         readStateBySubjectKey = [:]
         updateHistoryBySubjectKey = [:]
+        ignoreUndoState = nil
+        snoozeUndoState = nil
         autoMarkReadSetting = fixture.autoMarkReadSetting
         notifyOnSelfTriggeredUpdates = false
         showsDebugRateLimitDetails = false
@@ -2088,6 +2355,8 @@ final class AppModel: ObservableObject {
         teamMembershipCache = .default
         pullRequestFocusCache = [:]
         suppressedTransitionNotificationKeys = []
+        snoozeWakeTask?.cancel()
+        snoozeWakeTask = nil
     }
 }
 

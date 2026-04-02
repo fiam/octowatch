@@ -1888,6 +1888,65 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testSnoozedSubjectsAreFilteredFromVisibleAttentionItems() {
+        let now = Date()
+        let snoozedKey = "https://github.com/acme/example/pull/42"
+        let keptKey = "https://github.com/acme/example/pull/43"
+        let snoozedPullRequest = AttentionItem(
+            id: "pr:1",
+            subjectKey: snoozedKey,
+            type: .assignedPullRequest,
+            title: "Snoozed PR",
+            subtitle: "#42 · acme/example",
+            timestamp: now,
+            url: URL(string: snoozedKey)!
+        )
+        let snoozedWorkflow = AttentionItem(
+            id: "run:1",
+            subjectKey: snoozedKey,
+            type: .workflowFailed,
+            title: "Snoozed workflow",
+            subtitle: "acme/example · PR #42 · Workflow failed",
+            timestamp: now,
+            url: URL(string: "https://github.com/acme/example/actions/runs/1")!
+        )
+        let keptPullRequest = AttentionItem(
+            id: "pr:2",
+            subjectKey: keptKey,
+            type: .assignedPullRequest,
+            title: "Kept PR",
+            subtitle: "#43 · acme/example",
+            timestamp: now,
+            url: URL(string: keptKey)!
+        )
+
+        let filtered = AttentionItemVisibilityPolicy.excludingSnoozedSubjects(
+            [snoozedPullRequest, snoozedWorkflow, keptPullRequest],
+            snoozedKeys: [snoozedKey]
+        )
+
+        XCTAssertEqual(filtered, [keptPullRequest])
+    }
+
+    func testCanonicalSnoozedPlaceholderBuildsReadableSummary() {
+        let placeholder = SnoozedAttentionSubject.placeholder(
+            for: "https://github.com/acme/example/issues/77",
+            snoozedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            snoozedUntil: Date(timeIntervalSince1970: 1_700_086_400)
+        )
+
+        XCTAssertEqual(
+            placeholder.ignoreKey,
+            "https://github.com/acme/example/issues/77"
+        )
+        XCTAssertEqual(placeholder.title, "Issue #77")
+        XCTAssertEqual(placeholder.subtitle, "acme/example")
+        XCTAssertEqual(
+            placeholder.url.absoluteString,
+            "https://github.com/acme/example/issues/77"
+        )
+    }
+
     func testIgnoreUndoStateUsesIgnoredSubjectIdentity() {
         let subject = IgnoredAttentionSubject(
             ignoreKey: "https://github.com/acme/example/pull/42",
@@ -1902,6 +1961,23 @@ final class AttentionClassificationTests: XCTestCase {
         )
 
         XCTAssertEqual(state.id, subject.id)
+    }
+
+    func testSnoozeUndoStateUsesSubjectIdentityAndWakeTime() {
+        let subject = SnoozedAttentionSubject(
+            ignoreKey: "https://github.com/acme/example/pull/42",
+            title: "Example",
+            subtitle: "acme/example",
+            url: URL(string: "https://github.com/acme/example/pull/42")!,
+            snoozedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            snoozedUntil: Date(timeIntervalSince1970: 1_700_086_400)
+        )
+        let state = SnoozeUndoState(
+            subjects: [subject],
+            expiresAt: Date(timeIntervalSince1970: 1_700_000_008)
+        )
+
+        XCTAssertEqual(state.id, "\(subject.id)#1700086400.0")
     }
 
     func testRateLimitUsesGitHubPollHintWhenHigherThanConfiguredInterval() {

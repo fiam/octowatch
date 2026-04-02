@@ -26,6 +26,7 @@ struct SettingsView: View {
                     pollingCard
                     inboxCard
                     diagnosticsCard
+                    snoozedItemsCard
                     ignoredItemsCard
                 }
                 .padding(28)
@@ -217,6 +218,38 @@ struct SettingsView: View {
             ) {
                 Button("Open Ignored Items") {
                     openWindow(id: AppSceneID.ignoredItemsWindow)
+                }
+                .buttonStyle(.borderedProminent)
+                .appInteractiveHover()
+            }
+        }
+    }
+
+    private var snoozedItemsCard: some View {
+        settingsCard {
+            cardIntro(
+                title: "Snoozed Items",
+                message: snoozedItemsSummary
+            ) {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(.blue.opacity(0.16))
+                    .frame(width: 46, height: 46)
+                    .overlay {
+                        Image(systemName: "moon.zzz")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(.blue)
+                    }
+            }
+
+            Divider()
+                .padding(.horizontal, 20)
+
+            settingsRow(
+                title: "Manage Snoozed Items",
+                subtitle: snoozedItemsManagementSubtitle
+            ) {
+                Button("Open Snoozed Items") {
+                    openWindow(id: AppSceneID.snoozedItemsWindow)
                 }
                 .buttonStyle(.borderedProminent)
                 .appInteractiveHover()
@@ -458,6 +491,25 @@ struct SettingsView: View {
         }
 
         return "Open a separate window to restore hidden pull requests and issues without crowding settings."
+    }
+
+    private var snoozedItemsSummary: String {
+        if model.snoozedItems.isEmpty {
+            return "Review items you temporarily hid until a later time."
+        }
+
+        let count = model.snoozedItems.count
+        return count == 1
+            ? "1 item is currently snoozed."
+            : "\(count) items are currently snoozed."
+    }
+
+    private var snoozedItemsManagementSubtitle: String {
+        if model.snoozedItems.isEmpty {
+            return "Open a separate window to review snoozed pull requests and issues as they accumulate."
+        }
+
+        return "Open a separate window to restore snoozed items before their timer expires."
     }
 
     private func sectionToggleBinding(_ section: InboxSection) -> Binding<Bool> {

@@ -16,6 +16,11 @@ struct OctowatchApp: App {
         }
         .defaultSize(width: 720, height: 520)
 
+        Window("Snoozed Items", id: AppSceneID.snoozedItemsWindow) {
+            SnoozedItemsView(model: model)
+        }
+        .defaultSize(width: 720, height: 520)
+
         Settings {
             SettingsView(model: model)
         }

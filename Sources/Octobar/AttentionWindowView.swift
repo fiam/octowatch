@@ -121,7 +121,7 @@ struct AttentionWindowView: View {
                 armAutoMarkReadForCurrentSelection()
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: model.ignoreUndoState?.id)
+        .animation(.easeInOut(duration: 0.18), value: toastStateAnimationID)
         .task(id: dashboardLoadTaskID) {
             await loadDashboardIfNeeded()
         }
@@ -163,6 +163,14 @@ struct AttentionWindowView: View {
                         .accessibilityLabel(primaryReadActionTitle)
                         .help(primaryReadActionTitle)
                     }
+
+                    Menu {
+                        snoozeMenuContent(for: selectionActionItems)
+                    } label: {
+                        Label("Snooze", systemImage: "moon.zzz")
+                    }
+                    .appInteractiveHover()
+                    .help(selectionActionItems.count == 1 ? "Snooze selected item" : "Snooze selected items")
 
                     Button {
                         ignoreSelection(selectionActionItems)
@@ -215,12 +223,24 @@ struct AttentionWindowView: View {
                 detailPane(relativeTo: referenceDate)
             }
 
-            if let ignoreUndoState = model.ignoreUndoState {
-                IgnoreUndoBanner(
-                    state: ignoreUndoState,
-                    onUndo: model.undoRecentIgnore,
-                    onDismiss: model.dismissIgnoreUndo
-                )
+            if hasVisibleToasts {
+                VStack(alignment: .trailing, spacing: 12) {
+                    if let snoozeUndoState = model.snoozeUndoState {
+                        SnoozeUndoBanner(
+                            state: snoozeUndoState,
+                            onUndo: model.undoRecentSnooze,
+                            onDismiss: model.dismissRecentSnooze
+                        )
+                    }
+
+                    if let ignoreUndoState = model.ignoreUndoState {
+                        IgnoreUndoBanner(
+                            state: ignoreUndoState,
+                            onUndo: model.undoRecentIgnore,
+                            onDismiss: model.dismissIgnoreUndo
+                        )
+                    }
+                }
                 .padding(.trailing, 20)
                 .padding(.bottom, 20)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -395,6 +415,16 @@ struct AttentionWindowView: View {
 
     private var showsReadActions: Bool {
         selectionActionItems.contains(where: \.supportsReadState)
+    }
+
+    private var hasVisibleToasts: Bool {
+        model.snoozeUndoState != nil || model.ignoreUndoState != nil
+    }
+
+    private var toastStateAnimationID: String {
+        let ignoreID = model.ignoreUndoState?.id ?? "none"
+        let snoozeID = model.snoozeUndoState?.id ?? "none"
+        return "\(ignoreID)#\(snoozeID)"
     }
 
     private var primaryReadActionTitle: String {
@@ -1163,6 +1193,11 @@ struct AttentionWindowView: View {
         model.ignore(items)
     }
 
+    private func snoozeSelection(_ items: [AttentionItem], preset: AttentionSnoozePreset) {
+        cancelAutoMarkReadTask()
+        model.snooze(items, preset: preset)
+    }
+
     private func presentWorkflowApprovalSheet(
         _ request: WorkflowApprovalSheetRequest
     ) {
@@ -1277,6 +1312,10 @@ struct AttentionWindowView: View {
             Divider()
         }
 
+        Menu("Snooze") {
+            snoozeMenuContent(for: items)
+        }
+
         let workflowItems = items.filter { $0.type.isWorkflowActivityType }
         if !workflowItems.isEmpty {
             Button {
@@ -1292,6 +1331,17 @@ struct AttentionWindowView: View {
             ignoreSelection(items)
         } label: {
             Label("Ignore", systemImage: "eye.slash")
+        }
+    }
+
+    @ViewBuilder
+    private func snoozeMenuContent(for items: [AttentionItem]) -> some View {
+        ForEach(AttentionSnoozePreset.allCases) { preset in
+            Button {
+                snoozeSelection(items, preset: preset)
+            } label: {
+                Label(preset.title, systemImage: "moon.zzz")
+            }
         }
     }
 
@@ -1811,8 +1861,47 @@ private struct IgnoreUndoBanner: View {
     }
 
     var body: some View {
+        LocalActionUndoBanner(
+            iconName: "eye.slash",
+            title: title,
+            onUndo: onUndo,
+            onDismiss: onDismiss
+        )
+    }
+}
+
+private struct SnoozeUndoBanner: View {
+    let state: SnoozeUndoState
+    let onUndo: () -> Void
+    let onDismiss: () -> Void
+
+    private var title: String {
+        if state.subjects.count == 1, let snoozedItem = state.primarySubject {
+            return "Snoozed \(snoozedItem.title)"
+        }
+
+        return "Snoozed \(state.subjects.count) items"
+    }
+
+    var body: some View {
+        LocalActionUndoBanner(
+            iconName: "moon.zzz",
+            title: title,
+            onUndo: onUndo,
+            onDismiss: onDismiss
+        )
+    }
+}
+
+private struct LocalActionUndoBanner: View {
+    let iconName: String
+    let title: String
+    let onUndo: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "eye.slash")
+            Image(systemName: iconName)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 22, height: 22)

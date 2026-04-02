@@ -103,6 +103,15 @@ struct PullRequestDashboard: Hashable, Sendable {
             reviewRequests: reviewRequests.filter { !ignoredKeys.contains($0.ignoreKey) }
         )
     }
+
+    func filteringSnoozedSubjects(_ snoozedKeys: Set<String>) -> PullRequestDashboard {
+        PullRequestDashboard(
+            created: created.filter { !snoozedKeys.contains($0.ignoreKey) },
+            assigned: assigned.filter { !snoozedKeys.contains($0.ignoreKey) },
+            mentioned: mentioned.filter { !snoozedKeys.contains($0.ignoreKey) },
+            reviewRequests: reviewRequests.filter { !snoozedKeys.contains($0.ignoreKey) }
+        )
+    }
 }
 
 struct IssueDashboard: Hashable, Sendable {
@@ -132,6 +141,14 @@ struct IssueDashboard: Hashable, Sendable {
             created: created.filter { !ignoredKeys.contains($0.ignoreKey) },
             assigned: assigned.filter { !ignoredKeys.contains($0.ignoreKey) },
             mentioned: mentioned.filter { !ignoredKeys.contains($0.ignoreKey) }
+        )
+    }
+
+    func filteringSnoozedSubjects(_ snoozedKeys: Set<String>) -> IssueDashboard {
+        IssueDashboard(
+            created: created.filter { !snoozedKeys.contains($0.ignoreKey) },
+            assigned: assigned.filter { !snoozedKeys.contains($0.ignoreKey) },
+            mentioned: mentioned.filter { !snoozedKeys.contains($0.ignoreKey) }
         )
     }
 }
@@ -4813,6 +4830,143 @@ struct AcknowledgedWorkflowState: Codable, Hashable, Sendable {
     }
 }
 
+enum AttentionSnoozePreset: String, CaseIterable, Identifiable, Hashable, Sendable {
+    case oneHour
+    case tomorrowMorning
+    case oneWeek
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .oneHour:
+            return "For 1 Hour"
+        case .tomorrowMorning:
+            return "Until Tomorrow Morning"
+        case .oneWeek:
+            return "For 1 Week"
+        }
+    }
+
+    func snoozedUntil(
+        from referenceDate: Date = .now,
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> Date {
+        switch self {
+        case .oneHour:
+            return referenceDate.addingTimeInterval(60 * 60)
+        case .tomorrowMorning:
+            let startOfToday = calendar.startOfDay(for: referenceDate)
+            let tomorrow = calendar.date(byAdding: .day, value: 1, to: startOfToday) ?? referenceDate
+            return calendar.date(byAdding: .hour, value: 9, to: tomorrow) ?? tomorrow
+        case .oneWeek:
+            return calendar.date(byAdding: .day, value: 7, to: referenceDate)
+                ?? referenceDate.addingTimeInterval(7 * 24 * 60 * 60)
+        }
+    }
+}
+
+private struct AttentionSubjectPlaceholder {
+    let ignoreKey: String
+    let title: String
+    let subtitle: String
+    let url: URL
+}
+
+private enum AttentionSubjectPlaceholderFactory {
+    static func make(
+        for ignoreKey: String,
+        fallbackTitle: String
+    ) -> AttentionSubjectPlaceholder {
+        if let url = URL(string: ignoreKey),
+            let parsed = make(fromCanonicalURL: url) {
+            return parsed
+        }
+
+        if ignoreKey.hasPrefix("issue:") {
+            let value = String(ignoreKey.dropFirst(6))
+            let components = value.split(separator: "#", maxSplits: 1).map(String.init)
+            if components.count == 2 {
+                let url = URL(string: "https://github.com/\(components[0])/issues/\(components[1])")!
+                return AttentionSubjectPlaceholder(
+                    ignoreKey: url.absoluteString,
+                    title: "Issue #\(components[1])",
+                    subtitle: components[0],
+                    url: url
+                )
+            }
+        }
+
+        if ignoreKey.hasPrefix("pr:") {
+            let value = String(ignoreKey.dropFirst(3))
+            let components = value.split(separator: "#", maxSplits: 1).map(String.init)
+            if components.count == 2 {
+                let url = URL(string: "https://github.com/\(components[0])/pull/\(components[1])")!
+                return AttentionSubjectPlaceholder(
+                    ignoreKey: url.absoluteString,
+                    title: "Pull Request #\(components[1])",
+                    subtitle: components[0],
+                    url: url
+                )
+            }
+        }
+
+        if ignoreKey.hasPrefix("url:"),
+            let url = URL(string: String(ignoreKey.dropFirst(4))),
+            let parsed = make(fromCanonicalURL: url) {
+            return parsed
+        }
+
+        if let url = URL(string: ignoreKey) {
+            return AttentionSubjectPlaceholder(
+                ignoreKey: url.absoluteString,
+                title: fallbackTitle,
+                subtitle: url.host ?? "GitHub",
+                url: url
+            )
+        }
+
+        return AttentionSubjectPlaceholder(
+            ignoreKey: ignoreKey,
+            title: fallbackTitle,
+            subtitle: "GitHub",
+            url: URL(string: "https://github.com")!
+        )
+    }
+
+    private static func make(fromCanonicalURL url: URL) -> AttentionSubjectPlaceholder? {
+        let components = url.pathComponents
+
+        if let pullIndex = components.firstIndex(of: "pull"),
+            pullIndex >= 2,
+            pullIndex + 1 < components.count {
+            let repository = "\(components[pullIndex - 2])/\(components[pullIndex - 1])"
+            let number = components[pullIndex + 1]
+            return AttentionSubjectPlaceholder(
+                ignoreKey: url.absoluteString,
+                title: "Pull Request #\(number)",
+                subtitle: repository,
+                url: url
+            )
+        }
+
+        if let issueIndex = components.firstIndex(of: "issues"),
+            issueIndex >= 2,
+            issueIndex + 1 < components.count {
+            let repository = "\(components[issueIndex - 2])/\(components[issueIndex - 1])"
+            let number = components[issueIndex + 1]
+            return AttentionSubjectPlaceholder(
+                ignoreKey: url.absoluteString,
+                title: "Issue #\(number)",
+                subtitle: repository,
+                url: url
+            )
+        }
+
+        return nil
+    }
+}
+
 struct IgnoredAttentionSubject: Identifiable, Hashable, Codable, Sendable {
     let ignoreKey: String
     let title: String
@@ -4823,101 +4977,51 @@ struct IgnoredAttentionSubject: Identifiable, Hashable, Codable, Sendable {
     var id: String { ignoreKey }
 
     static func placeholder(for ignoreKey: String, ignoredAt: Date = .now) -> IgnoredAttentionSubject {
-        if let url = URL(string: ignoreKey),
-            let parsed = placeholder(fromCanonicalURL: url, ignoredAt: ignoredAt) {
-            return parsed
-        }
-
-        if ignoreKey.hasPrefix("issue:") {
-            let value = String(ignoreKey.dropFirst(6))
-            let components = value.split(separator: "#", maxSplits: 1).map(String.init)
-            if components.count == 2 {
-                let url = URL(string: "https://github.com/\(components[0])/issues/\(components[1])")!
-                return IgnoredAttentionSubject(
-                    ignoreKey: url.absoluteString,
-                    title: "Issue #\(components[1])",
-                    subtitle: components[0],
-                    url: url,
-                    ignoredAt: ignoredAt
-                )
-            }
-        }
-
-        if ignoreKey.hasPrefix("pr:") {
-            let value = String(ignoreKey.dropFirst(3))
-            let components = value.split(separator: "#", maxSplits: 1).map(String.init)
-            if components.count == 2 {
-                let url = URL(string: "https://github.com/\(components[0])/pull/\(components[1])")!
-                return IgnoredAttentionSubject(
-                    ignoreKey: url.absoluteString,
-                    title: "Pull Request #\(components[1])",
-                    subtitle: components[0],
-                    url: url,
-                    ignoredAt: ignoredAt
-                )
-            }
-        }
-
-        if ignoreKey.hasPrefix("url:"),
-            let url = URL(string: String(ignoreKey.dropFirst(4))),
-            let parsed = placeholder(fromCanonicalURL: url, ignoredAt: ignoredAt) {
-            return parsed
-        }
-
-        if let url = URL(string: ignoreKey) {
-            return IgnoredAttentionSubject(
-                ignoreKey: url.absoluteString,
-                title: "Ignored Item",
-                subtitle: url.host ?? "GitHub",
-                url: url,
-                ignoredAt: ignoredAt
-            )
-        }
-
+        let placeholder = AttentionSubjectPlaceholderFactory.make(
+            for: ignoreKey,
+            fallbackTitle: "Ignored Item"
+        )
         return IgnoredAttentionSubject(
-            ignoreKey: ignoreKey,
-            title: "Ignored Item",
-            subtitle: "GitHub",
-            url: URL(string: "https://github.com")!,
+            ignoreKey: placeholder.ignoreKey,
+            title: placeholder.title,
+            subtitle: placeholder.subtitle,
+            url: placeholder.url,
             ignoredAt: ignoredAt
         )
     }
+}
 
-    private static func placeholder(
-        fromCanonicalURL url: URL,
-        ignoredAt: Date
-    ) -> IgnoredAttentionSubject? {
-        let components = url.pathComponents
+struct SnoozedAttentionSubject: Identifiable, Hashable, Codable, Sendable {
+    let ignoreKey: String
+    let title: String
+    let subtitle: String
+    let url: URL
+    let snoozedAt: Date
+    let snoozedUntil: Date
 
-        if let pullIndex = components.firstIndex(of: "pull"),
-            pullIndex >= 2,
-            pullIndex + 1 < components.count {
-            let repository = "\(components[pullIndex - 2])/\(components[pullIndex - 1])"
-            let number = components[pullIndex + 1]
-            return IgnoredAttentionSubject(
-                ignoreKey: url.absoluteString,
-                title: "Pull Request #\(number)",
-                subtitle: repository,
-                url: url,
-                ignoredAt: ignoredAt
-            )
-        }
+    var id: String { ignoreKey }
 
-        if let issueIndex = components.firstIndex(of: "issues"),
-            issueIndex >= 2,
-            issueIndex + 1 < components.count {
-            let repository = "\(components[issueIndex - 2])/\(components[issueIndex - 1])"
-            let number = components[issueIndex + 1]
-            return IgnoredAttentionSubject(
-                ignoreKey: url.absoluteString,
-                title: "Issue #\(number)",
-                subtitle: repository,
-                url: url,
-                ignoredAt: ignoredAt
-            )
-        }
+    var isActive: Bool {
+        snoozedUntil > Date()
+    }
 
-        return nil
+    static func placeholder(
+        for ignoreKey: String,
+        snoozedAt: Date = .now,
+        snoozedUntil: Date
+    ) -> SnoozedAttentionSubject {
+        let placeholder = AttentionSubjectPlaceholderFactory.make(
+            for: ignoreKey,
+            fallbackTitle: "Snoozed Item"
+        )
+        return SnoozedAttentionSubject(
+            ignoreKey: placeholder.ignoreKey,
+            title: placeholder.title,
+            subtitle: placeholder.subtitle,
+            url: placeholder.url,
+            snoozedAt: snoozedAt,
+            snoozedUntil: snoozedUntil
+        )
     }
 }
 
@@ -4930,6 +5034,21 @@ struct IgnoreUndoState: Identifiable, Hashable, Sendable {
     }
 
     var primarySubject: IgnoredAttentionSubject? {
+        subjects.first
+    }
+}
+
+struct SnoozeUndoState: Identifiable, Hashable, Sendable {
+    let subjects: [SnoozedAttentionSubject]
+    let expiresAt: Date
+
+    var id: String {
+        let subjectID = subjects.map(\.ignoreKey).sorted().joined(separator: "|")
+        let wakeID = subjects.map(\.snoozedUntil.timeIntervalSince1970).max() ?? 0
+        return "\(subjectID)#\(wakeID)"
+    }
+
+    var primarySubject: SnoozedAttentionSubject? {
         subjects.first
     }
 }
@@ -5861,6 +5980,13 @@ enum AttentionItemVisibilityPolicy {
         ignoredKeys: Set<String>
     ) -> [AttentionItem] {
         items.filter { !ignoredKeys.contains($0.ignoreKey) }
+    }
+
+    static func excludingSnoozedSubjects(
+        _ items: [AttentionItem],
+        snoozedKeys: Set<String>
+    ) -> [AttentionItem] {
+        items.filter { !snoozedKeys.contains($0.ignoreKey) }
     }
 
     static func excludingHistoricalLogEntries(
