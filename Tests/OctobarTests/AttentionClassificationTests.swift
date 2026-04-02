@@ -1980,6 +1980,83 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(state.id, "\(subject.id)#1700086400.0")
     }
 
+    func testUnreadSessionPolicyKeepsPreviouslyUnreadItemsVisible() {
+        let cachedKeys = AttentionUnreadSessionPolicy.updatingCachedSubjectKeys(
+            [],
+            with: [
+                AttentionItem(
+                    id: "one",
+                    subjectKey: "https://github.com/acme/example/pull/42",
+                    type: .assignedPullRequest,
+                    title: "Unread PR",
+                    subtitle: "#42 · acme/example",
+                    timestamp: Date(),
+                    url: URL(string: "https://github.com/acme/example/pull/42")!,
+                    isUnread: true
+                )
+            ]
+        )
+
+        let filtered = AttentionUnreadSessionPolicy.filteringVisibleItems(
+            [
+                AttentionItem(
+                    id: "one",
+                    subjectKey: "https://github.com/acme/example/pull/42",
+                    type: .assignedPullRequest,
+                    title: "Unread PR",
+                    subtitle: "#42 · acme/example",
+                    timestamp: Date(),
+                    url: URL(string: "https://github.com/acme/example/pull/42")!,
+                    isUnread: false
+                )
+            ],
+            isUnreadFilterActive: true,
+            cachedSubjectKeys: cachedKeys
+        )
+
+        XCTAssertEqual(filtered.map(\.subjectKey), ["https://github.com/acme/example/pull/42"])
+    }
+
+    func testUnreadSessionPolicyAddsNewUnreadItemsAndDropsMissingSubjects() {
+        let cachedKeys: Set<String> = [
+            "https://github.com/acme/example/pull/41",
+            "https://github.com/acme/example/pull/42"
+        ]
+        let updatedKeys = AttentionUnreadSessionPolicy.updatingCachedSubjectKeys(
+            cachedKeys,
+            with: [
+                AttentionItem(
+                    id: "two",
+                    subjectKey: "https://github.com/acme/example/pull/42",
+                    type: .assignedPullRequest,
+                    title: "Still visible",
+                    subtitle: "#42 · acme/example",
+                    timestamp: Date(),
+                    url: URL(string: "https://github.com/acme/example/pull/42")!,
+                    isUnread: false
+                ),
+                AttentionItem(
+                    id: "three",
+                    subjectKey: "https://github.com/acme/example/pull/43",
+                    type: .assignedPullRequest,
+                    title: "New unread",
+                    subtitle: "#43 · acme/example",
+                    timestamp: Date(),
+                    url: URL(string: "https://github.com/acme/example/pull/43")!,
+                    isUnread: true
+                )
+            ]
+        )
+
+        XCTAssertEqual(
+            updatedKeys,
+            [
+                "https://github.com/acme/example/pull/42",
+                "https://github.com/acme/example/pull/43"
+            ]
+        )
+    }
+
     func testRateLimitUsesGitHubPollHintWhenHigherThanConfiguredInterval() {
         let rateLimit = GitHubRateLimit(
             resource: "graphql",

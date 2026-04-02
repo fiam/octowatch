@@ -59,6 +59,7 @@ struct AttentionWindowView: View {
     @State private var pullRequestDashboardFilter: PullRequestDashboardFilter = .created
     @State private var issueDashboardFilter: IssueDashboardFilter = .assigned
     @State private var showsUnreadOnly = false
+    @State private var unreadFilterCachedSubjectKeys = Set<String>()
     @State private var autoMarkReadTask: Task<Void, Never>?
     @State private var autoSelectionTask: Task<Void, Never>?
     @State private var pullRequestFocusState: PullRequestFocusLoadState = .idle
@@ -78,6 +79,7 @@ struct AttentionWindowView: View {
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 940, minHeight: 620)
         .onAppear {
+            syncUnreadFilterCache()
             syncSelection()
             updateWatchedPullRequestSelection()
         }
@@ -87,33 +89,41 @@ struct AttentionWindowView: View {
             model.setWatchedPullRequest(nil)
         }
         .onChange(of: model.attentionItems) { _, _ in
+            syncUnreadFilterCache()
             syncSelection()
         }
         .onChange(of: model.pullRequestDashboard) { _, _ in
+            syncUnreadFilterCache()
             syncSelection()
         }
         .onChange(of: model.issueDashboard) { _, _ in
+            syncUnreadFilterCache()
             syncSelection()
         }
         .onChange(of: showsUnreadOnly) { _, _ in
+            syncUnreadFilterCache()
             syncSelection()
         }
         .onChange(of: inboxMode) { _, _ in
+            syncUnreadFilterCache()
             syncSelection()
             Task {
                 await loadDashboardIfNeeded()
             }
         }
         .onChange(of: browseScope) { _, _ in
+            syncUnreadFilterCache()
             syncSelection()
             Task {
                 await loadDashboardIfNeeded()
             }
         }
         .onChange(of: pullRequestDashboardFilter) { _, _ in
+            syncUnreadFilterCache()
             syncSelection()
         }
         .onChange(of: issueDashboardFilter) { _, _ in
+            syncUnreadFilterCache()
             syncSelection()
         }
         .onChange(of: model.autoMarkReadSetting) { _, _ in
@@ -293,11 +303,15 @@ struct AttentionWindowView: View {
     }
 
     private var visibleItems: [AttentionItem] {
-        guard inboxMode == .inbox, showsUnreadOnly else {
+        guard inboxMode == .inbox else {
             return scopedItems
         }
 
-        return scopedItems.filter(\.isUnread)
+        return AttentionUnreadSessionPolicy.filteringVisibleItems(
+            scopedItems,
+            isUnreadFilterActive: showsUnreadOnly,
+            cachedSubjectKeys: unreadFilterCachedSubjectKeys
+        )
     }
 
     private var loadingContent: some View {
@@ -968,14 +982,27 @@ struct AttentionWindowView: View {
         let unreadCount = scopedItems.filter(\.isUnread).count
         let inboxSectionCount = model.inboxSectionItems.count
         let displayedCount = displayedItems.count
-        let displayedInboxSectionCount = model.inboxSectionItems.count
+        let displayedInboxSectionCount = displayedSections
+            .filter { $0.id != "recent" }
+            .reduce(0) { partialResult, section in
+                partialResult + section.items.count
+            }
         let itemLabel = itemCountLabel(for: totalItemCount)
         let unreadLabel = unreadCount == 1
             ? "1 unread"
             : "\(unreadCount) unread"
 
         if showsUnreadOnly {
-            let unreadSummary = unreadCountLabel(for: displayedCount)
+            let unreadSummary: String
+            if displayedCount == unreadCount {
+                unreadSummary = unreadCountLabel(for: displayedCount)
+            } else {
+                let visibleLabel = itemCountLabel(for: displayedCount)
+                let liveUnreadLabel = unreadCount == 1
+                    ? "1 still unread"
+                    : "\(unreadCount) still unread"
+                unreadSummary = "\(visibleLabel) · \(liveUnreadLabel)"
+            }
 
             guard displayedInboxSectionCount > 0 else {
                 return unreadSummary
@@ -1074,6 +1101,18 @@ struct AttentionWindowView: View {
 
     private func updateWatchedPullRequestSelection() {
         model.setWatchedPullRequest(selectedItem)
+    }
+
+    private func syncUnreadFilterCache() {
+        guard inboxMode == .inbox, showsUnreadOnly else {
+            unreadFilterCachedSubjectKeys = []
+            return
+        }
+
+        unreadFilterCachedSubjectKeys = AttentionUnreadSessionPolicy.updatingCachedSubjectKeys(
+            unreadFilterCachedSubjectKeys,
+            with: scopedItems
+        )
     }
 
     private func normalizeSelection(_ selection: Set<AttentionItem.ID>) -> Set<AttentionItem.ID> {

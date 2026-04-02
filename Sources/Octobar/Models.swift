@@ -5996,6 +5996,33 @@ enum AttentionItemVisibilityPolicy {
     }
 }
 
+enum AttentionUnreadSessionPolicy {
+    static func updatingCachedSubjectKeys(
+        _ cachedSubjectKeys: Set<String>,
+        with items: [AttentionItem]
+    ) -> Set<String> {
+        let currentSubjectKeys = Set(items.map(\.subjectKey))
+        let currentUnreadKeys = Set(items.filter(\.isUnread).map(\.subjectKey))
+        return cachedSubjectKeys
+            .intersection(currentSubjectKeys)
+            .union(currentUnreadKeys)
+    }
+
+    static func filteringVisibleItems(
+        _ items: [AttentionItem],
+        isUnreadFilterActive: Bool,
+        cachedSubjectKeys: Set<String>
+    ) -> [AttentionItem] {
+        guard isUnreadFilterActive else {
+            return items
+        }
+
+        return items.filter { item in
+            item.isUnread || cachedSubjectKeys.contains(item.subjectKey)
+        }
+    }
+}
+
 enum InboxSectionPolicy {
     private static let selfReviewTypes: Set<AttentionItemType> = [
         .reviewApproved,
