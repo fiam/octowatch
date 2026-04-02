@@ -720,6 +720,59 @@ final class AttentionClassificationTests: XCTestCase {
         _ = matches
     }
 
+    func testAggregatedWorkflowSupplementalPullRequestKeepsPullRequestURL() {
+        let reference = PullRequestReference(owner: "example", name: "repo", number: 42)
+        let subjectURL = reference.pullRequestURL
+        let workflowURL = URL(string: "https://github.com/example/repo/actions/runs/99")!
+        let baseItem = AttentionItem(
+            id: "tracked-pr:42",
+            subjectKey: subjectURL.absoluteString,
+            type: .authoredPullRequest,
+            title: "Example PR",
+            subtitle: "example/repo · Authored pull request",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 100),
+            url: subjectURL,
+            subjectResolution: .open
+        )
+        let supplementalItems = PullRequestFocusSupplementalItemPolicy.workflowItems(
+            reference: reference,
+            title: "Example PR",
+            repository: "example/repo",
+            labels: [],
+            resolution: .open,
+            preview: PullRequestPostMergeWorkflowPreview(
+                mode: .observed(branch: "main"),
+                workflows: [
+                    PullRequestPostMergeWorkflow(
+                        id: "run:99",
+                        title: "Promote main",
+                        url: workflowURL,
+                        status: .actionRequired,
+                        timestamp: Date(timeIntervalSince1970: 200)
+                    )
+                ],
+                evaluationIssues: []
+            )
+        )
+
+        let refreshed = AttentionSubjectRefreshPolicy.applying(
+            AttentionSubjectRefresh(
+                subjectKey: subjectURL.absoluteString,
+                labels: [],
+                mergedAt: nil,
+                supplementalItems: supplementalItems
+            ),
+            to: [baseItem]
+        )
+        let combined = AttentionCombinedViewPolicy.collapsingDuplicates(in: refreshed)
+
+        XCTAssertEqual(combined.count, 1)
+        XCTAssertEqual(combined.first?.url, subjectURL)
+        XCTAssertEqual(combined.first?.detail.updates.first?.url, workflowURL)
+        XCTAssertEqual(combined.first?.detail.actions.first?.url, workflowURL)
+    }
+
     func testReadyToMergeOutranksReviewApprovedInAggregation() {
         let subjectURL = URL(string: "https://github.com/example/repo/pull/1")!
         let subjectKey = subjectURL.absoluteString

@@ -3658,11 +3658,15 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             return nil
         }
 
-        if type == .workflowApprovalRequired {
+        if let updateURL = detail.updates.first(where: { $0.type == .workflowApprovalRequired })?.url {
+            return updateURL
+        }
+
+        if type == .workflowApprovalRequired, WorkflowApprovalTarget(url: url) != nil {
             return url
         }
 
-        return detail.updates.first(where: { $0.type == .workflowApprovalRequired })?.url
+        return nil
     }
 
     var workflowApprovalTarget: WorkflowApprovalTarget? {
@@ -4193,6 +4197,7 @@ enum AttentionSubjectViewPolicy {
             }
 
         let focusItem = relationshipItem ?? primaryItem
+        let subjectURL = AttentionItem.subjectReference(fromSubjectKey: subjectKey)?.webURL ?? primaryItem.url
         let detail = AttentionDetail(
             contextPillTitle: primaryItem.detail.contextPillTitle,
             why: primaryItem.detail.why,
@@ -4220,7 +4225,7 @@ enum AttentionSubjectViewPolicy {
             repository: repository,
             labels: labels,
             timestamp: primaryItem.timestamp,
-            url: primaryItem.url,
+            url: subjectURL,
             actor: primaryItem.actor,
             isTriggeredByCurrentUser: primaryItem.isTriggeredByCurrentUser,
             subjectResolution: primaryItem.subjectResolution ?? items.compactMap(\.subjectResolution).first,
