@@ -59,6 +59,7 @@ struct AttentionWindowView: View {
     @State private var pullRequestDashboardFilter: PullRequestDashboardFilter = .created
     @State private var issueDashboardFilter: IssueDashboardFilter = .assigned
     @State private var showsUnreadOnly = false
+    @State private var searchText = ""
     @State private var unreadFilterCachedSubjectKeys = Set<String>()
     @State private var autoMarkReadTask: Task<Void, Never>?
     @State private var autoSelectionTask: Task<Void, Never>?
@@ -138,6 +139,14 @@ struct AttentionWindowView: View {
         .task(id: pullRequestFocusTaskID) {
             await loadPullRequestFocusForSelection()
         }
+        .onChange(of: searchText) { _, _ in
+            syncSelection()
+        }
+        .searchable(
+            text: $searchText,
+            placement: .toolbar,
+            prompt: searchPrompt
+        )
         .sheet(item: $workflowApprovalSheetRequest) { request in
             WorkflowPendingDeploymentReviewSheet(
                 model: model,
@@ -361,23 +370,30 @@ struct AttentionWindowView: View {
         displayedSections.flatMap(\.items)
     }
 
+    private var filteredVisibleItems: [AttentionItem] {
+        AttentionItemSearchPolicy.matching(
+            visibleItems,
+            query: searchText
+        )
+    }
+
     private var inboxSectionSubjectKeys: Set<String> {
         Set(model.inboxSectionItems.map(\.subjectKey))
     }
 
     private var displayedOtherItems: [AttentionItem] {
         guard inboxMode == .inbox else {
-            return visibleItems
+            return filteredVisibleItems
         }
 
-        return visibleItems.filter { !inboxSectionSubjectKeys.contains($0.subjectKey) }
+        return filteredVisibleItems.filter { !inboxSectionSubjectKeys.contains($0.subjectKey) }
     }
 
     private var displayedSections: [SidebarSectionDescriptor] {
         var sections = [SidebarSectionDescriptor]()
 
         if inboxMode == .inbox {
-            let visibleKeys = Set(visibleItems.map(\.subjectKey))
+            let visibleKeys = Set(filteredVisibleItems.map(\.subjectKey))
             for section in model.inboxSections {
                 let items = section.items.filter { visibleKeys.contains($0.subjectKey) }
                 guard !items.isEmpty else { continue }
@@ -443,6 +459,28 @@ struct AttentionWindowView: View {
 
     private var primaryReadActionTitle: String {
         selectionActionItems.contains(where: \.isUnread) ? "Mark Read" : "Mark Unread"
+    }
+
+    private var trimmedSearchText: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isSearching: Bool {
+        !trimmedSearchText.isEmpty
+    }
+
+    private var searchPrompt: String {
+        switch inboxMode {
+        case .inbox:
+            return "Search inbox"
+        case .browse:
+            switch browseScope {
+            case .pullRequests:
+                return "Search pull requests"
+            case .issues:
+                return "Search issues"
+            }
+        }
     }
 
     private var primaryReadActionSymbol: String {
@@ -933,6 +971,27 @@ struct AttentionWindowView: View {
         let title: String
         let description: String
 
+        if isSearching {
+            switch inboxMode {
+            case .inbox:
+                if showsUnreadOnly {
+                    title = "No matching unread items"
+                    description = "No items in the unread view match \"\(trimmedSearchText)\"."
+                } else {
+                    title = "No matching inbox items"
+                    description = "No inbox items match \"\(trimmedSearchText)\"."
+                }
+            case .browse:
+                switch browseScope {
+                case .pullRequests:
+                    title = "No matching pull requests"
+                    description = "No pull requests in the \(pullRequestDashboardFilter.title) view match \"\(trimmedSearchText)\"."
+                case .issues:
+                    title = "No matching issues"
+                    description = "No issues in the \(issueDashboardFilter.title) view match \"\(trimmedSearchText)\"."
+                }
+            }
+        } else {
         switch inboxMode {
         case .inbox:
             if showsUnreadOnly {
@@ -952,6 +1011,7 @@ struct AttentionWindowView: View {
                 description = "There are no open issues in the \(issueDashboardFilter.title) view."
             }
         }
+        }
 
         return ContentUnavailableView {
             Label(title, systemImage: "checkmark.circle")
@@ -965,13 +1025,15 @@ struct AttentionWindowView: View {
             switch browseScope {
             case .pullRequests:
                 return dashboardSummaryLine(
-                    count: scopedItems.count,
+                    resultCount: displayedItems.count,
+                    totalCount: scopedItems.count,
                     noun: "pull request",
                     filterTitle: pullRequestDashboardFilter.title
                 )
             case .issues:
                 return dashboardSummaryLine(
-                    count: scopedItems.count,
+                    resultCount: displayedItems.count,
+                    totalCount: scopedItems.count,
                     noun: "issue",
                     filterTitle: issueDashboardFilter.title
                 )
@@ -991,6 +1053,30 @@ struct AttentionWindowView: View {
         let unreadLabel = unreadCount == 1
             ? "1 unread"
             : "\(unreadCount) unread"
+
+        if isSearching {
+            let matchLabel = displayedCount == 1 ? "1 match" : "\(displayedCount) matches"
+            let baseLabel = visibleItems.count == 1 ? "1 item" : "\(visibleItems.count) items"
+            var components = ["\(matchLabel) of \(baseLabel)"]
+
+            if showsUnreadOnly {
+                let liveUnreadLabel = unreadCount == 1
+                    ? "1 still unread"
+                    : "\(unreadCount) still unread"
+                components.append(liveUnreadLabel)
+            } else {
+                components.append(unreadLabel)
+            }
+
+            if displayedInboxSectionCount > 0 {
+                let actionSummary = displayedInboxSectionCount == 1
+                    ? "1 action item"
+                    : "\(displayedInboxSectionCount) action items"
+                components.append(actionSummary)
+            }
+
+            return components.joined(separator: " · ")
+        }
 
         if showsUnreadOnly {
             let unreadSummary: String
@@ -1023,12 +1109,18 @@ struct AttentionWindowView: View {
     }
 
     private func dashboardSummaryLine(
-        count: Int,
+        resultCount: Int,
+        totalCount: Int,
         noun: String,
         filterTitle: String
     ) -> String {
-        let label = count == 1 ? "1 \(noun)" : "\(count) \(noun)s"
-        return "\(filterTitle) · \(label)"
+        let totalLabel = totalCount == 1 ? "1 \(noun)" : "\(totalCount) \(noun)s"
+        guard isSearching else {
+            return "\(filterTitle) · \(totalLabel)"
+        }
+
+        let matchLabel = resultCount == 1 ? "1 match" : "\(resultCount) matches"
+        return "\(filterTitle) · \(matchLabel) of \(totalLabel)"
     }
 
     private func sidebarSectionHeader(title: String, count: Int) -> some View {

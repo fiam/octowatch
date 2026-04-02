@@ -2057,6 +2057,64 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testAttentionItemSearchPolicyMatchesAcrossMetadataFields() {
+        let item = AttentionItem(
+            id: "search",
+            subjectKey: "https://github.com/ExampleOrg/offload-tools/pull/67",
+            type: .reviewRequested,
+            title: "fix(terraform): use set region for location code",
+            subtitle: "#67 · ExampleOrg/offload-tools",
+            repository: "ExampleOrg/offload-tools",
+            labels: [
+                GitHubLabel(
+                    name: "needs-review",
+                    colorHex: "0052CC",
+                    description: nil
+                )
+            ],
+            timestamp: Date(),
+            url: URL(string: "https://github.com/ExampleOrg/offload-tools/pull/67")!,
+            actor: AttentionActor(login: "alberto", avatarURL: nil)
+        )
+
+        XCTAssertEqual(
+            AttentionItemSearchPolicy.matching([item], query: "terraform needs-review"),
+            [item]
+        )
+        XCTAssertEqual(
+            AttentionItemSearchPolicy.matching([item], query: "offload review"),
+            [item]
+        )
+    }
+
+    func testAttentionItemSearchPolicyReturnsAllItemsForBlankQuery() {
+        let items = [
+            AttentionItem(
+                id: "one",
+                subjectKey: "https://github.com/acme/example/pull/42",
+                type: .assignedPullRequest,
+                title: "Example pull request",
+                subtitle: "#42 · acme/example",
+                timestamp: Date(),
+                url: URL(string: "https://github.com/acme/example/pull/42")!
+            ),
+            AttentionItem(
+                id: "two",
+                subjectKey: "https://github.com/acme/example/issues/7",
+                type: .assignedIssue,
+                title: "Example issue",
+                subtitle: "#7 · acme/example",
+                timestamp: Date(),
+                url: URL(string: "https://github.com/acme/example/issues/7")!
+            )
+        ]
+
+        XCTAssertEqual(
+            AttentionItemSearchPolicy.matching(items, query: "   "),
+            items
+        )
+    }
+
     func testRateLimitUsesGitHubPollHintWhenHigherThanConfiguredInterval() {
         let rateLimit = GitHubRateLimit(
             resource: "graphql",

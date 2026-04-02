@@ -6023,6 +6023,55 @@ enum AttentionUnreadSessionPolicy {
     }
 }
 
+enum AttentionItemSearchPolicy {
+    static func matching(_ items: [AttentionItem], query: String) -> [AttentionItem] {
+        let searchTerms = queryTerms(from: query)
+        guard !searchTerms.isEmpty else {
+            return items
+        }
+
+        return items.filter { item in
+            let searchableFields = searchableFields(for: item)
+            return searchTerms.allSatisfy { term in
+                searchableFields.contains { field in
+                    field.localizedStandardContains(term)
+                }
+            }
+        }
+    }
+
+    private static func queryTerms(from query: String) -> [String] {
+        query
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
+    private static func searchableFields(for item: AttentionItem) -> [String] {
+        var fields = [
+            item.title,
+            item.subtitle,
+            item.type.nativeNotificationTitle,
+            item.stream.title
+        ]
+
+        if let repository = item.repository {
+            fields.append(repository)
+        }
+
+        if let actorLogin = item.actor?.login {
+            fields.append(actorLogin)
+        }
+
+        if let focusActorLogin = item.focusActor?.login {
+            fields.append(focusActorLogin)
+        }
+
+        fields.append(contentsOf: item.labels.map(\.name))
+        return fields
+    }
+}
+
 enum InboxSectionPolicy {
     private static let selfReviewTypes: Set<AttentionItemType> = [
         .reviewApproved,
