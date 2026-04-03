@@ -6092,6 +6092,168 @@ enum AttentionSelectionRequestPolicy {
     }
 }
 
+enum AttentionEmptyStateAction: Hashable, Sendable {
+    case showAllInboxItems
+    case showPullRequests
+    case showIssues
+    case openSnoozedItems
+    case openIgnoredItems
+
+    var title: String {
+        switch self {
+        case .showAllInboxItems:
+            return "Show All"
+        case .showPullRequests:
+            return "Show My PRs"
+        case .showIssues:
+            return "Show My Issues"
+        case .openSnoozedItems:
+            return "Open Snoozed Items"
+        case .openIgnoredItems:
+            return "Open Ignored Items"
+        }
+    }
+}
+
+struct AttentionEmptyStateContent: Hashable, Sendable {
+    let title: String
+    let description: String
+    let actions: [AttentionEmptyStateAction]
+}
+
+enum AttentionEmptyStatePolicy {
+    static func inbox(
+        showsUnreadOnly: Bool,
+        snoozedCount: Int,
+        ignoredCount: Int,
+        pullRequestCount: Int,
+        issueCount: Int
+    ) -> AttentionEmptyStateContent {
+        var actions = [AttentionEmptyStateAction]()
+        if showsUnreadOnly {
+            actions.append(.showAllInboxItems)
+        }
+
+        let hiddenSummary = hiddenSummary(
+            snoozedCount: snoozedCount,
+            ignoredCount: ignoredCount
+        )
+        let browseSummary = browseSummary(
+            pullRequestCount: pullRequestCount,
+            issueCount: issueCount
+        )
+
+        if showsUnreadOnly {
+            if snoozedCount > 0 {
+                actions.append(.openSnoozedItems)
+            }
+            if ignoredCount > 0 {
+                actions.append(.openIgnoredItems)
+            }
+
+            var description = "Everything currently in the inbox has been marked read."
+            if let hiddenSummary {
+                description += " \(hiddenSummary)"
+            }
+
+            return AttentionEmptyStateContent(
+                title: "No unread items",
+                description: description,
+                actions: actions
+            )
+        }
+
+        if pullRequestCount > 0 {
+            actions.append(.showPullRequests)
+        }
+        if issueCount > 0 {
+            actions.append(.showIssues)
+        }
+        if snoozedCount > 0 {
+            actions.append(.openSnoozedItems)
+        }
+        if ignoredCount > 0 {
+            actions.append(.openIgnoredItems)
+        }
+
+        var descriptionParts = [String]()
+
+        if let browseSummary {
+            descriptionParts.append(
+                "Nothing currently qualifies for the inbox, but Browse still has \(browseSummary)."
+            )
+        } else {
+            descriptionParts.append(
+                "Octowatch is watching GitHub, but there is nothing actionable right now."
+            )
+        }
+
+        if let hiddenSummary {
+            descriptionParts.append(hiddenSummary)
+        }
+
+        return AttentionEmptyStateContent(
+            title: "Inbox is clear",
+            description: descriptionParts.joined(separator: " "),
+            actions: actions
+        )
+    }
+
+    private static func hiddenSummary(
+        snoozedCount: Int,
+        ignoredCount: Int
+    ) -> String? {
+        var parts = [String]()
+
+        if snoozedCount > 0 {
+            let noun = snoozedCount == 1 ? "item is" : "items are"
+            parts.append("\(snoozedCount) \(noun) snoozed locally")
+        }
+
+        if ignoredCount > 0 {
+            let noun = ignoredCount == 1 ? "item is" : "items are"
+            parts.append("\(ignoredCount) \(noun) ignored locally")
+        }
+
+        guard !parts.isEmpty else {
+            return nil
+        }
+
+        if parts.count == 1 {
+            return "\(parts[0])."
+        }
+
+        return "\(parts[0]) and \(parts[1])."
+    }
+
+    private static func browseSummary(
+        pullRequestCount: Int,
+        issueCount: Int
+    ) -> String? {
+        var parts = [String]()
+
+        if pullRequestCount > 0 {
+            let noun = pullRequestCount == 1 ? "pull request" : "pull requests"
+            parts.append("\(pullRequestCount) \(noun)")
+        }
+
+        if issueCount > 0 {
+            let noun = issueCount == 1 ? "issue" : "issues"
+            parts.append("\(issueCount) \(noun)")
+        }
+
+        guard !parts.isEmpty else {
+            return nil
+        }
+
+        if parts.count == 1 {
+            return parts[0]
+        }
+
+        return "\(parts[0]) and \(parts[1])"
+    }
+}
+
 enum InboxSectionPolicy {
     private static let selfReviewTypes: Set<AttentionItemType> = [
         .reviewApproved,

@@ -51,6 +51,7 @@ struct AttentionWindowView: View {
 
     @ObservedObject var model: AppModel
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
 
     @State private var selectedItemIDs = Set<AttentionItem.ID>()
@@ -972,56 +973,111 @@ struct AttentionWindowView: View {
         }
     }
 
-    private var emptyStateView: some View {
-        let title: String
-        let description: String
+    private var browsePullRequestCount: Int {
+        Set(
+            (
+                model.pullRequestDashboard.created +
+                model.pullRequestDashboard.assigned +
+                model.pullRequestDashboard.mentioned +
+                model.pullRequestDashboard.reviewRequests
+            ).map(\.subjectKey)
+        ).count
+    }
 
+    private var browseIssueCount: Int {
+        Set(
+            (
+                model.issueDashboard.created +
+                model.issueDashboard.assigned +
+                model.issueDashboard.mentioned
+            ).map(\.subjectKey)
+        ).count
+    }
+
+    @ViewBuilder
+    private var emptyStateView: some View {
         if isSearching {
-            switch inboxMode {
-            case .inbox:
-                if showsUnreadOnly {
-                    title = "No matching unread items"
-                    description = "No items in the unread view match \"\(trimmedSearchText)\"."
-                } else {
-                    title = "No matching inbox items"
-                    description = "No inbox items match \"\(trimmedSearchText)\"."
-                }
-            case .browse:
-                switch browseScope {
-                case .pullRequests:
-                    title = "No matching pull requests"
-                    description = "No pull requests in the \(pullRequestDashboardFilter.title) view match \"\(trimmedSearchText)\"."
-                case .issues:
-                    title = "No matching issues"
-                    description = "No issues in the \(issueDashboardFilter.title) view match \"\(trimmedSearchText)\"."
+            let content = searchEmptyStateContent()
+
+            ContentUnavailableView {
+                Label(content.title, systemImage: "checkmark.circle")
+            } description: {
+                Text(content.description)
+            }
+        } else if inboxMode == .inbox {
+            let content = AttentionEmptyStatePolicy.inbox(
+                showsUnreadOnly: showsUnreadOnly,
+                snoozedCount: model.snoozedItems.count,
+                ignoredCount: model.ignoredItems.count,
+                pullRequestCount: browsePullRequestCount,
+                issueCount: browseIssueCount
+            )
+
+            ContentUnavailableView {
+                Label(content.title, systemImage: "checkmark.circle")
+            } description: {
+                Text(content.description)
+            } actions: {
+                ForEach(content.actions, id: \.self) { action in
+                    Button(action.title) {
+                        performEmptyStateAction(action)
+                    }
+                    .appInteractiveHover()
                 }
             }
         } else {
+            let content = browseEmptyStateContent()
+
+            ContentUnavailableView {
+                Label(content.title, systemImage: "checkmark.circle")
+            } description: {
+                Text(content.description)
+            }
+        }
+    }
+
+    private func searchEmptyStateContent() -> (title: String, description: String) {
         switch inboxMode {
         case .inbox:
             if showsUnreadOnly {
-                title = "No unread items"
-                description = "Everything currently in the inbox has been marked read."
-            } else {
-                title = "Inbox is clear"
-                description = "Octowatch is watching GitHub, but there is nothing actionable right now."
+                return (
+                    "No matching unread items",
+                    "No items in the unread view match \"\(trimmedSearchText)\"."
+                )
             }
+
+            return (
+                "No matching inbox items",
+                "No inbox items match \"\(trimmedSearchText)\"."
+            )
         case .browse:
             switch browseScope {
             case .pullRequests:
-                title = "No pull requests"
-                description = "There are no open pull requests in the \(pullRequestDashboardFilter.title) view."
+                return (
+                    "No matching pull requests",
+                    "No pull requests in the \(pullRequestDashboardFilter.title) view match \"\(trimmedSearchText)\"."
+                )
             case .issues:
-                title = "No issues"
-                description = "There are no open issues in the \(issueDashboardFilter.title) view."
+                return (
+                    "No matching issues",
+                    "No issues in the \(issueDashboardFilter.title) view match \"\(trimmedSearchText)\"."
+                )
             }
         }
-        }
+    }
 
-        return ContentUnavailableView {
-            Label(title, systemImage: "checkmark.circle")
-        } description: {
-            Text(description)
+    private func browseEmptyStateContent() -> (title: String, description: String) {
+        switch browseScope {
+        case .pullRequests:
+            return (
+                "No pull requests",
+                "There are no open pull requests in the \(pullRequestDashboardFilter.title) view."
+            )
+        case .issues:
+            return (
+                "No issues",
+                "There are no open issues in the \(issueDashboardFilter.title) view."
+            )
         }
     }
 
@@ -1258,6 +1314,21 @@ struct AttentionWindowView: View {
 
         updateWatchedPullRequestSelection()
         return true
+    }
+
+    private func performEmptyStateAction(_ action: AttentionEmptyStateAction) {
+        switch action {
+        case .showAllInboxItems:
+            showsUnreadOnly = false
+        case .showPullRequests:
+            selectScopeTab(.myPRs)
+        case .showIssues:
+            selectScopeTab(.myIssues)
+        case .openSnoozedItems:
+            openWindow(id: AppSceneID.snoozedItemsWindow)
+        case .openIgnoredItems:
+            openWindow(id: AppSceneID.ignoredItemsWindow)
+        }
     }
 
     private func normalizeSelection(_ selection: Set<AttentionItem.ID>) -> Set<AttentionItem.ID> {

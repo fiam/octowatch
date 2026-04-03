@@ -2144,6 +2144,56 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testInboxEmptyStateExplainsUnreadFilterAndHiddenItems() {
+        let content = AttentionEmptyStatePolicy.inbox(
+            showsUnreadOnly: true,
+            snoozedCount: 1,
+            ignoredCount: 2,
+            pullRequestCount: 0,
+            issueCount: 0
+        )
+
+        XCTAssertEqual(content.title, "No unread items")
+        XCTAssertEqual(
+            content.description,
+            "Everything currently in the inbox has been marked read. " +
+            "1 item is snoozed locally and 2 items are ignored locally."
+        )
+        XCTAssertEqual(
+            content.actions,
+            [
+                .showAllInboxItems,
+                .openSnoozedItems,
+                .openIgnoredItems
+            ]
+        )
+    }
+
+    func testInboxEmptyStateExplainsBrowseItemsAndRecoveryActions() {
+        let content = AttentionEmptyStatePolicy.inbox(
+            showsUnreadOnly: false,
+            snoozedCount: 0,
+            ignoredCount: 1,
+            pullRequestCount: 2,
+            issueCount: 1
+        )
+
+        XCTAssertEqual(content.title, "Inbox is clear")
+        XCTAssertEqual(
+            content.description,
+            "Nothing currently qualifies for the inbox, but Browse still " +
+            "has 2 pull requests and 1 issue. 1 item is ignored locally."
+        )
+        XCTAssertEqual(
+            content.actions,
+            [
+                .showPullRequests,
+                .showIssues,
+                .openIgnoredItems
+            ]
+        )
+    }
+
     func testAttentionSubjectNavigationRequestRoundTripsNotificationUserInfo() {
         let request = AttentionSubjectNavigationRequest(
             subjectKey: "https://github.com/acme/example/pull/42"

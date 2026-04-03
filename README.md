@@ -23,6 +23,7 @@ Local macOS notifications also reuse the same subject identity, so newer updates
 Items in the `Inbox` view have dot-style read/unread indicators, and opening one of those items marks it as read locally. The `Browse` dashboards (`My PRs` and `My Issues`) do not use local read state.
 The unread-only filter in `Inbox` keeps the current session stable like Mail, so items that were visible when you entered that filter do not disappear immediately after being marked read.
 The main window also includes native search for the current scope, matching titles, repositories, labels, and common attention metadata without leaving the app.
+When `Inbox` is empty, the empty state explains whether everything is already read, whether items are only available in `Browse`, and whether local snoozes or ignores are hiding anything, with shortcuts to the relevant view when possible.
 Menu bar rows now open the matching subject in Octowatch by default, keep a secondary GitHub button for the web view, and Settings can hide the menu bar icon entirely when you do not want a status item.
 The main window sidebar supports native macOS multi-selection, and a right-click menu can open, snooze, ignore, and, where read state is supported, mark the current selection read or unread.
 Ignoring and snoozing from the main window both show a small transient undo toast so accidental local triage actions can be reversed quickly.
