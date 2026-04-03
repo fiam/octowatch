@@ -41,6 +41,7 @@ final class UserNotifier {
     func notify(transition: AttentionTransitionNotification) {
         notify(
             identifier: transition.id,
+            subjectKey: transition.subjectKey,
             title: transition.title,
             subtitle: transition.subtitle,
             body: transition.body,
@@ -60,6 +61,7 @@ final class UserNotifier {
 
     private func notify(
         identifier: String,
+        subjectKey: String?,
         title: String,
         subtitle: String,
         body: String,
@@ -70,7 +72,11 @@ final class UserNotifier {
         content.subtitle = subtitle
         content.body = body
         content.sound = .default
-        content.userInfo = ["url": url.absoluteString]
+        var userInfo: [String: String] = ["url": url.absoluteString]
+        if let subjectKey {
+            userInfo["subjectKey"] = subjectKey
+        }
+        content.userInfo = userInfo
 
         let request = UNNotificationRequest(
             identifier: identifier,

@@ -2160,6 +2160,41 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testRemovalNotificationKeepsSubjectKeyForDeepLinking() {
+        let item = AttentionItem(
+            id: "pr:42",
+            subjectKey: "https://github.com/acme/example/pull/42",
+            type: .readyToMerge,
+            title: "Example pull request",
+            subtitle: "#42 · acme/example",
+            repository: "acme/example",
+            timestamp: Date(),
+            url: URL(string: "https://github.com/acme/example/pull/42")!
+        )
+        let state = GitHubSubjectResolutionState(
+            reference: GitHubSubjectReference(
+                owner: "acme",
+                name: "example",
+                number: 42,
+                kind: .pullRequest
+            ),
+            resolution: .merged,
+            isAssignedToViewer: nil,
+            mergedAt: Date(),
+            mergeCommitSHA: "abc"
+        )
+
+        let notification = AttentionRemovalNotificationPolicy.notification(
+            for: [item],
+            state: state
+        )
+
+        XCTAssertEqual(
+            notification?.subjectKey,
+            "https://github.com/acme/example/pull/42"
+        )
+    }
+
     func testRateLimitUsesGitHubPollHintWhenHigherThanConfiguredInterval() {
         let rateLimit = GitHubRateLimit(
             resource: "graphql",

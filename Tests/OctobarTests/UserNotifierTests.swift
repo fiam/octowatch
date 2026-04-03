@@ -65,6 +65,38 @@ final class UserNotifierTests: XCTestCase {
             ]
         )
     }
+
+    func testTransitionNotificationsIncludeSubjectKeyWhenProvided() async {
+        let center = FakeUserNotificationCenter()
+        let notifier = UserNotifier(center: center)
+        let addExpectation = expectation(description: "transition notification added")
+
+        center.onAdd = { request in
+            XCTAssertEqual(request.identifier, "transition:1")
+            XCTAssertEqual(
+                request.content.userInfo["subjectKey"] as? String,
+                "https://github.com/example/repo/pull/42"
+            )
+            XCTAssertEqual(
+                request.content.userInfo["url"] as? String,
+                "https://github.com/example/repo/actions/runs/1"
+            )
+            addExpectation.fulfill()
+        }
+
+        notifier.notify(
+            transition: AttentionTransitionNotification(
+                id: "transition:1",
+                subjectKey: "https://github.com/example/repo/pull/42",
+                title: "Workflow failed",
+                subtitle: "CI",
+                body: "CI failed after merge.",
+                url: URL(string: "https://github.com/example/repo/actions/runs/1")!
+            )
+        )
+
+        await fulfillment(of: [addExpectation], timeout: 1)
+    }
 }
 
 @MainActor

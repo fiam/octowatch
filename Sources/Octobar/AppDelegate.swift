@@ -522,14 +522,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        guard
-            let rawURL = response.notification.request.content.userInfo["url"] as? String,
-            let url = URL(string: rawURL)
-        else {
-            return
-        }
+        let userInfo = response.notification.request.content.userInfo
+        let subjectKey = userInfo["subjectKey"] as? String
+        let rawURL = userInfo["url"] as? String
 
         await MainActor.run {
+            if let subjectKey,
+               !subjectKey.isEmpty {
+                openMainWindow(selectingSubjectKey: subjectKey)
+                return
+            }
+
+            guard
+                let rawURL,
+                let url = URL(string: rawURL)
+            else {
+                return
+            }
+
             NSApp.activate(ignoringOtherApps: true)
             NSWorkspace.shared.open(url)
         }

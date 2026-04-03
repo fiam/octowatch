@@ -1205,6 +1205,7 @@ struct GitHubSubjectResolutionState: Hashable, Sendable {
 
 struct AttentionTransitionNotification: Hashable, Sendable {
     let id: String
+    let subjectKey: String?
     let title: String
     let subtitle: String
     let body: String
@@ -1379,6 +1380,7 @@ enum PostMergeWatchPolicy {
                 notifications.append(
                     AttentionTransitionNotification(
                         id: "post-merge:merged:\(watch.id)",
+                        subjectKey: watch.reference.pullRequestURL.absoluteString,
                         title: "Pull request merged",
                         subtitle: watch.title,
                         body: "Your queued pull request was merged in \(watch.repository).",
@@ -1410,7 +1412,8 @@ enum PostMergeWatchPolicy {
                     !notifiedApprovalRequiredRunIDs.contains(run.id),
                     let notification = workflowApprovalRequiredNotification(
                         for: run,
-                        pullRequestTitle: watch.title
+                        pullRequestTitle: watch.title,
+                        subjectKey: watch.reference.pullRequestURL.absoluteString
                     )
                 {
                     notifications.append(notification)
@@ -1424,6 +1427,7 @@ enum PostMergeWatchPolicy {
                     let notification = workflowCompletionNotification(
                         for: run,
                         pullRequestTitle: watch.title,
+                        subjectKey: watch.reference.pullRequestURL.absoluteString,
                         hasPendingRuns: hasPendingPushRuns
                     )
                 else {
@@ -1481,6 +1485,7 @@ enum PostMergeWatchPolicy {
     private static func workflowCompletionNotification(
         for run: PostMergeObservedWorkflowRun,
         pullRequestTitle: String,
+        subjectKey: String,
         hasPendingRuns: Bool
     ) -> AttentionTransitionNotification? {
         let normalizedConclusion = (run.conclusion ?? "").lowercased()
@@ -1503,6 +1508,7 @@ enum PostMergeWatchPolicy {
 
         return AttentionTransitionNotification(
             id: "post-merge:workflow:\(run.repository):\(run.id)",
+            subjectKey: subjectKey,
             title: title,
             subtitle: run.title,
             body: body,
@@ -1523,7 +1529,8 @@ enum PostMergeWatchPolicy {
 
     private static func workflowApprovalRequiredNotification(
         for run: PostMergeObservedWorkflowRun,
-        pullRequestTitle: String
+        pullRequestTitle: String,
+        subjectKey: String
     ) -> AttentionTransitionNotification? {
         guard workflowRequiresApproval(run) else {
             return nil
@@ -1531,6 +1538,7 @@ enum PostMergeWatchPolicy {
 
         return AttentionTransitionNotification(
             id: "post-merge:workflow-approval:\(run.repository):\(run.id)",
+            subjectKey: subjectKey,
             title: "Workflow waiting for approval",
             subtitle: run.title,
             body: "\(run.title) is waiting for approval for \(pullRequestTitle).",
@@ -1563,6 +1571,7 @@ enum AttentionRemovalNotificationPolicy {
 
             return AttentionTransitionNotification(
                 id: "resolved:merged:\(representative.ignoreKey)",
+                subjectKey: state.reference.webURL.absoluteString,
                 title: "Pull request merged",
                 subtitle: representative.title,
                 body: body,
@@ -1584,6 +1593,7 @@ enum AttentionRemovalNotificationPolicy {
 
             return AttentionTransitionNotification(
                 id: "resolved:closed:\(representative.ignoreKey)",
+                subjectKey: state.reference.webURL.absoluteString,
                 title: title,
                 subtitle: representative.title,
                 body: body,
@@ -1601,6 +1611,7 @@ enum AttentionRemovalNotificationPolicy {
 
             return AttentionTransitionNotification(
                 id: "resolved:unassigned:\(representative.ignoreKey)",
+                subjectKey: state.reference.webURL.absoluteString,
                 title: "Pull request unassigned",
                 subtitle: representative.title,
                 body: "This pull request is no longer assigned to you in \(representative.repository ?? state.reference.repository).",
