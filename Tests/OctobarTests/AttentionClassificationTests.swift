@@ -2115,6 +2115,51 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testAttentionSelectionRequestPolicySelectsMatchingSubject() {
+        let matchingItem = AttentionItem(
+            id: "match",
+            subjectKey: "https://github.com/acme/example/pull/42",
+            type: .assignedPullRequest,
+            title: "Matching item",
+            subtitle: "#42 · acme/example",
+            timestamp: Date(),
+            url: URL(string: "https://github.com/acme/example/pull/42")!
+        )
+        let otherItem = AttentionItem(
+            id: "other",
+            subjectKey: "https://github.com/acme/example/pull/43",
+            type: .assignedPullRequest,
+            title: "Other item",
+            subtitle: "#43 · acme/example",
+            timestamp: Date(),
+            url: URL(string: "https://github.com/acme/example/pull/43")!
+        )
+
+        XCTAssertEqual(
+            AttentionSelectionRequestPolicy.itemID(
+                for: matchingItem.subjectKey,
+                in: [otherItem, matchingItem]
+            ),
+            matchingItem.id
+        )
+    }
+
+    func testAttentionSubjectNavigationRequestRoundTripsNotificationUserInfo() {
+        let request = AttentionSubjectNavigationRequest(
+            subjectKey: "https://github.com/acme/example/pull/42"
+        )
+        let notification = Notification(
+            name: .openMainWindowRequested,
+            object: nil,
+            userInfo: request.userInfo
+        )
+
+        XCTAssertEqual(
+            AttentionSubjectNavigationRequest(notification: notification),
+            request
+        )
+    }
+
     func testRateLimitUsesGitHubPollHintWhenHigherThanConfiguredInterval() {
         let rateLimit = GitHubRateLimit(
             resource: "graphql",

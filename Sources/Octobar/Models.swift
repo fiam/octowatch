@@ -6072,6 +6072,15 @@ enum AttentionItemSearchPolicy {
     }
 }
 
+enum AttentionSelectionRequestPolicy {
+    static func itemID(
+        for subjectKey: String,
+        in items: [AttentionItem]
+    ) -> AttentionItem.ID? {
+        items.first(where: { $0.subjectKey == subjectKey })?.id
+    }
+}
+
 enum InboxSectionPolicy {
     private static let selfReviewTypes: Set<AttentionItemType> = [
         .reviewApproved,

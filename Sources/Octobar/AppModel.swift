@@ -37,6 +37,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var pollIntervalSeconds = 60
     @Published private(set) var autoMarkReadSetting: AutoMarkReadSetting = .threeSeconds
     @Published private(set) var notifyOnSelfTriggeredUpdates = false
+    @Published private(set) var showsMenuBarIcon = true
     @Published private(set) var pullRequestWatchRevision = 0
     @Published private(set) var showsDebugRateLimitDetails = false
     @Published private(set) var inboxSectionConfig: InboxSectionConfiguration = .default
@@ -53,6 +54,7 @@ final class AppModel: ObservableObject {
     private let pollIntervalStoreKey = "poll-interval-seconds-v1"
     private let autoMarkReadStoreKey = "auto-mark-read-setting-v1"
     private let notifyOnSelfTriggeredUpdatesStoreKey = "notify-on-self-triggered-updates-v1"
+    private let showsMenuBarIconStoreKey = "shows-menu-bar-icon-v1"
     private let debugRateLimitDetailsStoreKey = "debug-rate-limit-details-v1"
     private let inboxSectionConfigStoreKey = "needs-action-configuration-v2"
     private let legacyInboxSectionConfigStoreKey = "needs-action-configuration-v1"
@@ -121,6 +123,11 @@ final class AppModel: ObservableObject {
         notifyOnSelfTriggeredUpdates = Self.loadBooleanSetting(
             from: UserDefaults.standard,
             key: notifyOnSelfTriggeredUpdatesStoreKey
+        )
+        showsMenuBarIcon = Self.loadBooleanSetting(
+            from: UserDefaults.standard,
+            key: showsMenuBarIconStoreKey,
+            defaultValue: true
         )
         showsDebugRateLimitDetails = Self.loadBooleanSetting(
             from: UserDefaults.standard,
@@ -291,6 +298,15 @@ final class AppModel: ObservableObject {
 
         notifyOnSelfTriggeredUpdates = value
         UserDefaults.standard.set(value, forKey: notifyOnSelfTriggeredUpdatesStoreKey)
+    }
+
+    func setShowsMenuBarIcon(_ value: Bool) {
+        guard showsMenuBarIcon != value else {
+            return
+        }
+
+        showsMenuBarIcon = value
+        UserDefaults.standard.set(value, forKey: showsMenuBarIconStoreKey)
     }
 
     func setInboxRuleEnabled(_ ruleID: UUID, isEnabled: Bool) {
@@ -2238,9 +2254,10 @@ final class AppModel: ObservableObject {
 
     private static func loadBooleanSetting(
         from defaults: UserDefaults,
-        key: String
+        key: String,
+        defaultValue: Bool = false
     ) -> Bool {
-        defaults.object(forKey: key) as? Bool ?? false
+        defaults.object(forKey: key) as? Bool ?? defaultValue
     }
 
     private func clearRateLimitState() {
@@ -2350,6 +2367,7 @@ final class AppModel: ObservableObject {
         snoozeUndoState = nil
         autoMarkReadSetting = fixture.autoMarkReadSetting
         notifyOnSelfTriggeredUpdates = false
+        showsMenuBarIcon = true
         showsDebugRateLimitDetails = false
         notificationScanState = .default
         teamMembershipCache = .default

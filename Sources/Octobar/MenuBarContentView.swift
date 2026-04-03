@@ -80,27 +80,41 @@ struct MenuBarContentView: View {
                                 .padding(.top, section.name == model.inboxSections.first?.name ? 0 : 8)
 
                             ForEach(section.items.prefix(10)) { item in
-                                Button {
-                                    openURL(item.url)
-                                } label: {
-                                    HStack(alignment: .top, spacing: 10) {
-                                        eventBadge(for: item)
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            Text(item.title)
-                                                .font(.callout.weight(.medium))
-                                                .lineLimit(1)
-                                            Text(itemContext(for: item))
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
+                                HStack(spacing: 6) {
+                                    Button {
+                                        requestMainWindow(for: item)
+                                    } label: {
+                                        HStack(alignment: .top, spacing: 10) {
+                                            eventBadge(for: item)
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text(item.title)
+                                                    .font(.callout.weight(.medium))
+                                                    .lineLimit(1)
+                                                Text(itemContext(for: item))
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(1)
+                                            }
+                                            .frame(maxWidth: .infinity, alignment: .leading)
                                         }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.vertical, 6)
+                                        .padding(.horizontal, 8)
                                     }
-                                    .padding(.vertical, 6)
-                                    .padding(.horizontal, 8)
+                                    .buttonStyle(.plain)
+                                    .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 10)
+                                    .help("Open in Octowatch")
+
+                                    Button {
+                                        openURL(item.url)
+                                    } label: {
+                                        Image(systemName: "arrow.up.right.square")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .frame(width: 28, height: 28)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 8)
+                                    .help("Open on GitHub")
                                 }
-                                .buttonStyle(.plain)
-                                .appInteractiveHover(backgroundOpacity: 0.06, cornerRadius: 10)
                             }
                         }
                     }
@@ -154,6 +168,15 @@ struct MenuBarContentView: View {
 
     private func requestMainWindow() {
         NotificationCenter.default.post(name: .openMainWindowRequested, object: nil)
+    }
+
+    private func requestMainWindow(for item: AttentionItem) {
+        let request = AttentionSubjectNavigationRequest(subjectKey: item.subjectKey)
+        NotificationCenter.default.post(
+            name: .openMainWindowRequested,
+            object: nil,
+            userInfo: request.userInfo
+        )
     }
 
     @ViewBuilder

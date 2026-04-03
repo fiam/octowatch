@@ -61,6 +61,7 @@ struct AttentionWindowView: View {
     @State private var showsUnreadOnly = false
     @State private var searchText = ""
     @State private var unreadFilterCachedSubjectKeys = Set<String>()
+    @State private var pendingFocusedSubjectKey: String?
     @State private var autoMarkReadTask: Task<Void, Never>?
     @State private var autoSelectionTask: Task<Void, Never>?
     @State private var pullRequestFocusState: PullRequestFocusLoadState = .idle
@@ -141,6 +142,9 @@ struct AttentionWindowView: View {
         }
         .onChange(of: searchText) { _, _ in
             syncSelection()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .focusAttentionSubjectRequested)) { notification in
+            handleFocusAttentionSubjectRequested(notification)
         }
         .searchable(
             text: $searchText,
@@ -573,6 +577,7 @@ struct AttentionWindowView: View {
                 let normalizedSelection = normalizeSelection(newValue)
                 let selectionChanged = selectedItemIDs != normalizedSelection
                 selectedItemIDs = normalizedSelection
+                pendingFocusedSubjectKey = nil
 
                 if selectionChanged {
                     cancelAutoMarkReadTask()
@@ -1184,7 +1189,15 @@ struct AttentionWindowView: View {
             armAutoMarkReadForCurrentSelection()
         }
 
+        if applyPendingFocusedSubjectSelectionIfPossible() {
+            return
+        }
+
         updateWatchedPullRequestSelection()
+
+        guard pendingFocusedSubjectKey == nil else {
+            return
+        }
 
         if selectedItemIDs.isEmpty, let firstItemID = displayedItems.first?.id {
             scheduleAutoSelection(firstItemID)
@@ -1205,6 +1218,46 @@ struct AttentionWindowView: View {
             unreadFilterCachedSubjectKeys,
             with: scopedItems
         )
+    }
+
+    private func handleFocusAttentionSubjectRequested(_ notification: Notification) {
+        guard let request = AttentionSubjectNavigationRequest(notification: notification) else {
+            return
+        }
+
+        inboxMode = .inbox
+        showsUnreadOnly = false
+        searchText = ""
+        pendingFocusedSubjectKey = request.subjectKey
+        syncSelection()
+    }
+
+    private func applyPendingFocusedSubjectSelectionIfPossible() -> Bool {
+        guard let pendingFocusedSubjectKey else {
+            return false
+        }
+
+        guard let itemID = AttentionSelectionRequestPolicy.itemID(
+            for: pendingFocusedSubjectKey,
+            in: displayedItems
+        ) else {
+            return false
+        }
+
+        let newSelection: Set<AttentionItem.ID> = [itemID]
+        let selectionChanged = selectedItemIDs != newSelection
+        selectedItemIDs = newSelection
+        self.pendingFocusedSubjectKey = nil
+
+        if selectionChanged {
+            cancelAutoMarkReadTask()
+            pullRequestFocusState = .idle
+            reviewMergeState = .idle
+            armAutoMarkReadForCurrentSelection()
+        }
+
+        updateWatchedPullRequestSelection()
+        return true
     }
 
     private func normalizeSelection(_ selection: Set<AttentionItem.ID>) -> Set<AttentionItem.ID> {

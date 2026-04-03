@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let popover = NSPopover()
     private var popoverHostingController: NSHostingController<MenuBarContentView>?
     private var modelChangeCancellable: AnyCancellable?
+    private var menuBarVisibilityCancellable: AnyCancellable?
     private var popoverLayoutChangeCancellable: AnyCancellable?
     private var lastStatusPresentation: MenuBarStatusPresentation?
     private weak var mainWindow: NSWindow?
@@ -56,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configurePopover()
-        configureStatusItem()
+        refreshStatusItemVisibility()
         observeAppEvents()
         observeModelChanges()
         observeWindowLifecycle()
@@ -85,6 +86,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func configureStatusItem() {
+        guard statusItem == nil else {
+            updateStatusItemButton()
+            return
+        }
+
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem = item
 
@@ -100,11 +106,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         updateStatusItemButton()
     }
 
+    private func removeStatusItem() {
+        if popover.isShown {
+            popover.performClose(nil)
+        }
+
+        removePopoverDismissMonitors()
+
+        if let statusItem {
+            NSStatusBar.system.removeStatusItem(statusItem)
+            self.statusItem = nil
+        }
+
+        lastStatusPresentation = nil
+    }
+
+    private func refreshStatusItemVisibility() {
+        if model.showsMenuBarIcon {
+            configureStatusItem()
+        } else {
+            removeStatusItem()
+        }
+    }
+
     private func observeModelChanges() {
         modelChangeCancellable = model.$inboxSections
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.updateStatusItemButton()
+            }
+
+        menuBarVisibilityCancellable = model.$showsMenuBarIcon
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.refreshStatusItemVisibility()
             }
 
         popoverLayoutChangeCancellable = model.objectWillChange
@@ -297,7 +332,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc
     private func handleOpenMainWindowRequested(_ notification: Notification) {
-        openMainWindow()
+        let request = AttentionSubjectNavigationRequest(notification: notification)
+        openMainWindow(selectingSubjectKey: request?.subjectKey)
     }
 
     @objc
@@ -345,7 +381,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return !isSettingsWindow(window)
     }
 
-    private func openMainWindow() {
+    private func openMainWindow(selectingSubjectKey subjectKey: String? = nil) {
         if popover.isShown {
             popover.performClose(nil)
         }
@@ -353,16 +389,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.async { [weak self] in
             NotificationCenter.default.post(name: .performMainWindowOpen, object: nil)
-            self?.focusMainWindowWhenAvailable()
+            self?.focusMainWindowWhenAvailable(selectingSubjectKey: subjectKey)
         }
     }
 
-    private func focusMainWindowWhenAvailable(retries: Int = 12) {
+    private func focusMainWindowWhenAvailable(
+        retries: Int = 12,
+        selectingSubjectKey subjectKey: String? = nil
+    ) {
         if let window = findMainWindow() {
             mainWindow = window
             window.makeKeyAndOrderFront(nil)
             window.orderFrontRegardless()
             NSApp.activate(ignoringOtherApps: true)
+            if let subjectKey {
+                let request = AttentionSubjectNavigationRequest(subjectKey: subjectKey)
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(
+                        name: .focusAttentionSubjectRequested,
+                        object: nil,
+                        userInfo: request.userInfo
+                    )
+                }
+            }
             return
         }
 
@@ -371,7 +420,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            self?.focusMainWindowWhenAvailable(retries: retries - 1)
+            self?.focusMainWindowWhenAvailable(
+                retries: retries - 1,
+                selectingSubjectKey: subjectKey
+            )
         }
     }
 

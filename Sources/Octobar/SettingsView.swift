@@ -24,6 +24,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     tokenCard
                     pollingCard
+                    menuBarCard
                     inboxCard
                     diagnosticsCard
                     snoozedItemsCard
@@ -221,6 +222,42 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .appInteractiveHover()
+            }
+        }
+    }
+
+    private var menuBarCard: some View {
+        settingsCard {
+            cardIntro(
+                title: "Menu Bar",
+                message: "Keep Octowatch in the macOS menu bar for quick triage and fast handoff into the main window."
+            ) {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(.mint.opacity(0.18))
+                    .frame(width: 46, height: 46)
+                    .overlay {
+                        Image(systemName: "menubar.rectangle")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(.mint)
+                    }
+            }
+
+            Divider()
+                .padding(.horizontal, 20)
+
+            settingsRow(
+                title: "Show Menu Bar Icon",
+                subtitle: "When on, clicking a menu bar item opens Octowatch by default and keeps GitHub as a secondary action."
+            ) {
+                Toggle(
+                    "Show Menu Bar Icon",
+                    isOn: Binding(
+                        get: { model.showsMenuBarIcon },
+                        set: { model.setShowsMenuBarIcon($0) }
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
             }
         }
     }
