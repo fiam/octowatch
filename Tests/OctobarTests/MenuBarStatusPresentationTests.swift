@@ -43,6 +43,40 @@ final class MenuBarStatusPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.toolTip, "2 items in your inbox.")
     }
 
+    func testPopoverSizingPolicyClampsHeightIntoAllowedRange() {
+        XCTAssertEqual(
+            MenuBarPopoverSizingPolicy.contentSize(
+                width: 360,
+                preferredHeight: 80,
+                minHeight: 120,
+                maxHeight: 520
+            ),
+            CGSize(width: 360, height: 120)
+        )
+
+        XCTAssertEqual(
+            MenuBarPopoverSizingPolicy.contentSize(
+                width: 360,
+                preferredHeight: 640.2,
+                minHeight: 120,
+                maxHeight: 520
+            ),
+            CGSize(width: 360, height: 520)
+        )
+    }
+
+    func testPopoverSizingPolicyFallsBackToMinimumHeightForInvalidValues() {
+        XCTAssertEqual(
+            MenuBarPopoverSizingPolicy.contentSize(
+                width: 360,
+                preferredHeight: 0,
+                minHeight: 120,
+                maxHeight: 520
+            ),
+            CGSize(width: 360, height: 120)
+        )
+    }
+
     private func makeItem(id: String, isUnread: Bool) -> AttentionItem {
         AttentionItem(
             id: id,

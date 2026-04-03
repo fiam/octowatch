@@ -2,11 +2,33 @@ import SwiftUI
 
 struct MenuBarContentView: View {
     @ObservedObject var model: AppModel
+    var onRenderedHeightChange: ((CGFloat) -> Void)? = nil
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
 
     var body: some View {
+        VStack(spacing: 0) {
+            content
+            Spacer(minLength: 0)
+        }
+        .frame(width: 360)
+        .onPreferenceChange(MenuBarContentHeightPreferenceKey.self) { height in
+            guard height.isFinite, height > 0 else {
+                return
+            }
+
+            onRenderedHeightChange?(height)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .performMainWindowOpen)) { _ in
+            openWindow(id: AppSceneID.mainWindow)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .performSettingsOpen)) { _ in
+            openSettings()
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
 
@@ -19,12 +41,13 @@ struct MenuBarContentView: View {
             footer
         }
         .padding(12)
-        .frame(width: 360)
-        .onReceive(NotificationCenter.default.publisher(for: .performMainWindowOpen)) { _ in
-            openWindow(id: AppSceneID.mainWindow)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .performSettingsOpen)) { _ in
-            openSettings()
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: MenuBarContentHeightPreferenceKey.self,
+                    value: proxy.size.height
+                )
+            }
         }
     }
 
@@ -198,6 +221,14 @@ struct MenuBarContentView: View {
             .accessibilityLabel(helpText)
     }
 
+}
+
+private struct MenuBarContentHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
 }
 
 struct BotAccountChip: View {

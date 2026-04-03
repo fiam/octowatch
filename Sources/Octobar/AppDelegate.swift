@@ -34,6 +34,24 @@ struct MenuBarStatusPresentation: Equatable {
     }
 }
 
+enum MenuBarPopoverSizingPolicy {
+    static func contentSize(
+        width: CGFloat,
+        preferredHeight: CGFloat,
+        minHeight: CGFloat,
+        maxHeight: CGFloat
+    ) -> CGSize {
+        guard preferredHeight.isFinite, preferredHeight > 0 else {
+            return CGSize(width: width, height: minHeight)
+        }
+
+        return CGSize(
+            width: width,
+            height: min(max(ceil(preferredHeight), minHeight), maxHeight)
+        )
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSPopoverDelegate {
     private enum MenuBarPopoverMetrics {
@@ -73,7 +91,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         popover.behavior = .transient
         popover.animates = true
         let hostingController = NSHostingController(
-            rootView: MenuBarContentView(model: model)
+            rootView: MenuBarContentView(
+                model: model,
+                onRenderedHeightChange: { [weak self] height in
+                    DispatchQueue.main.async { [weak self] in
+                        self?.updatePopoverContentSize(measuredHeight: height)
+                    }
+                }
+            )
         )
         if #available(macOS 13.0, *) {
             hostingController.sizingOptions = [.preferredContentSize]
@@ -295,7 +320,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         installPopoverDismissMonitors()
     }
 
-    private func updatePopoverContentSize() {
+    private func updatePopoverContentSize(measuredHeight: CGFloat? = nil) {
         guard let hostingController = popoverHostingController else {
             return
         }
@@ -303,24 +328,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         hostingController.view.layoutSubtreeIfNeeded()
 
         let fittingWidth = MenuBarPopoverMetrics.width
-        var fittingSize = hostingController.sizeThatFits(
-            in: NSSize(width: fittingWidth, height: .greatestFiniteMagnitude)
-        )
-
-        if !fittingSize.width.isFinite || fittingSize.width <= 0 {
-            fittingSize.width = fittingWidth
-        }
-
-        if !fittingSize.height.isFinite || fittingSize.height <= 0 {
-            fittingSize.height = MenuBarPopoverMetrics.minHeight
-        }
-
-        let contentSize = NSSize(
-            width: fittingWidth,
-            height: min(
-                max(ceil(fittingSize.height), MenuBarPopoverMetrics.minHeight),
-                MenuBarPopoverMetrics.maxHeight
+        let preferredHeight: CGFloat
+        if let measuredHeight, measuredHeight.isFinite, measuredHeight > 0 {
+            preferredHeight = measuredHeight
+        } else {
+            let fittingSize = hostingController.sizeThatFits(
+                in: NSSize(width: fittingWidth, height: .greatestFiniteMagnitude)
             )
+            preferredHeight = fittingSize.height
+        }
+
+        let contentSize = MenuBarPopoverSizingPolicy.contentSize(
+            width: fittingWidth,
+            preferredHeight: preferredHeight,
+            minHeight: MenuBarPopoverMetrics.minHeight,
+            maxHeight: MenuBarPopoverMetrics.maxHeight
         )
 
         guard popover.contentSize != contentSize else {
