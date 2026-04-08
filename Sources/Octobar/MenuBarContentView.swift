@@ -1,23 +1,39 @@
 import SwiftUI
 
 struct MenuBarContentView: View {
+    private enum LayoutMetrics {
+        static let width: CGFloat = 360
+        static let contentPadding: CGFloat = 12
+        static let sectionSpacing: CGFloat = 10
+        static let maxListHeight: CGFloat = 320
+    }
+
     @ObservedObject var model: AppModel
     var onRenderedHeightChange: ((CGFloat) -> Void)? = nil
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
+    @State private var inboxListContentHeight: CGFloat = 0
 
     var body: some View {
-        VStack(spacing: 0) {
-            content
-            Spacer(minLength: 0)
-        }
-        .frame(width: 360)
+        content
+            .frame(width: LayoutMetrics.width, alignment: .topLeading)
+            .fixedSize(horizontal: false, vertical: true)
         .onPreferenceChange(MenuBarContentHeightPreferenceKey.self) { height in
             guard height.isFinite, height > 0 else {
                 return
             }
 
             onRenderedHeightChange?(height)
+        }
+        .onPreferenceChange(MenuBarListContentHeightPreferenceKey.self) { height in
+            guard height.isFinite, height > 0 else {
+                return
+            }
+
+            inboxListContentHeight = height
+        }
+        .onChange(of: inboxSectionLayoutSignature) { _, _ in
+            inboxListContentHeight = 0
         }
         .onReceive(NotificationCenter.default.publisher(for: .performMainWindowOpen)) { _ in
             openWindow(id: AppSceneID.mainWindow)
@@ -27,8 +43,41 @@ struct MenuBarContentView: View {
         }
     }
 
+    private var inboxSectionLayoutSignature: String {
+        model.inboxSections
+            .map { section in
+                "\(section.name)#\(min(section.items.count, 10))"
+            }
+            .joined(separator: "|")
+    }
+
+    private var estimatedInboxListHeight: CGFloat {
+        model.inboxSections.enumerated().reduce(CGFloat(0)) { partialHeight, element in
+            let (index, section) = element
+            let visibleItemCount = min(section.items.count, 10)
+            let sectionTopPadding: CGFloat = index == 0 ? 0 : 8
+            let sectionHeaderHeight: CGFloat = 18
+            let itemRowHeight: CGFloat = 42
+            let itemSpacing: CGFloat = 2
+            let rowBlockHeight = CGFloat(visibleItemCount) * itemRowHeight
+            let intraRowSpacing = CGFloat(max(visibleItemCount - 1, 0)) * itemSpacing
+            return partialHeight
+                + sectionTopPadding
+                + sectionHeaderHeight
+                + rowBlockHeight
+                + intraRowSpacing
+        }
+    }
+
+    private var inboxListViewportHeight: CGFloat {
+        let preferredHeight = inboxListContentHeight > 0
+            ? inboxListContentHeight
+            : estimatedInboxListHeight
+        return min(preferredHeight, LayoutMetrics.maxListHeight)
+    }
+
     private var content: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: LayoutMetrics.sectionSpacing) {
             header
 
             if model.hasToken {
@@ -39,7 +88,7 @@ struct MenuBarContentView: View {
 
             footer
         }
-        .padding(12)
+        .padding(LayoutMetrics.contentPadding)
         .background {
             GeometryReader { proxy in
                 Color.clear.preference(
@@ -141,8 +190,16 @@ struct MenuBarContentView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear.preference(
+                                key: MenuBarListContentHeightPreferenceKey.self,
+                                value: proxy.size.height
+                            )
+                        }
+                    }
                 }
-                .frame(maxHeight: 320)
+                .frame(height: inboxListViewportHeight)
             }
         }
     }
@@ -223,6 +280,14 @@ struct MenuBarContentView: View {
 }
 
 private struct MenuBarContentHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct MenuBarListContentHeightPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {

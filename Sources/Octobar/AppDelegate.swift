@@ -60,8 +60,8 @@ enum MenuBarPopoverSizingPolicy {
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSPopoverDelegate {
     private enum MenuBarPopoverMetrics {
         static let width: CGFloat = 360
-        static let minHeight: CGFloat = 120
-        static let maxHeight: CGFloat = 520
+        static let minHeight: CGFloat = 160
+        static let maxHeight: CGFloat = 420
     }
 
     private let model = AppModel.shared
@@ -70,8 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var popoverHostingController: NSHostingController<MenuBarContentView>?
     private var modelChangeCancellable: AnyCancellable?
     private var menuBarVisibilityCancellable: AnyCancellable?
-    private var popoverLayoutChangeCancellable: AnyCancellable?
     private var lastStatusPresentation: MenuBarStatusPresentation?
+    private var lastMeasuredPopoverHeight: CGFloat = 0
     private weak var mainWindow: NSWindow?
     private weak var settingsWindow: NSWindow?
     private var localPopoverEventMonitor: Any?
@@ -99,17 +99,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 model: model,
                 onRenderedHeightChange: { [weak self] height in
                     DispatchQueue.main.async { [weak self] in
+                        self?.lastMeasuredPopoverHeight = height
                         self?.updatePopoverContentSize(measuredHeight: height)
                     }
                 }
             )
         )
-        if #available(macOS 13.0, *) {
-            hostingController.sizingOptions = [.preferredContentSize]
-        }
         popoverHostingController = hostingController
         popover.contentViewController = hostingController
-        updatePopoverContentSize()
+        updatePopoverContentSize(measuredHeight: lastMeasuredPopoverHeight)
         // Make sure SwiftUI observers are active before first context-menu action.
         _ = popover.contentViewController?.view
     }
@@ -169,14 +167,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.refreshStatusItemVisibility()
-            }
-
-        popoverLayoutChangeCancellable = model.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                DispatchQueue.main.async {
-                    self?.updatePopoverContentSize()
-                }
             }
     }
 
@@ -319,8 +309,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
 
-        updatePopoverContentSize()
+        updatePopoverContentSize(measuredHeight: lastMeasuredPopoverHeight)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        DispatchQueue.main.async { [weak self] in
+            self?.updatePopoverContentSize(measuredHeight: self?.lastMeasuredPopoverHeight ?? 0)
+        }
         installPopoverDismissMonitors()
     }
 
