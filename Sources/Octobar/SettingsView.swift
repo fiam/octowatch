@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -6,44 +7,91 @@ struct SettingsView: View {
         case personalAccessToken
     }
 
+    private enum SettingsPane: String, CaseIterable, Identifiable {
+        case general
+        case github
+        case inbox
+        case localState
+        case advanced
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .general:
+                return "General"
+            case .github:
+                return "Authentication"
+            case .inbox:
+                return "Inbox"
+            case .localState:
+                return "Local State"
+            case .advanced:
+                return "Advanced"
+            }
+        }
+
+        var iconName: String {
+            switch self {
+            case .general:
+                return "gearshape"
+            case .github:
+                return "lock.shield"
+            case .inbox:
+                return "tray"
+            case .localState:
+                return "archivebox"
+            case .advanced:
+                return "ladybug"
+            }
+        }
+    }
+
+    private enum LayoutMetrics {
+        static let detailMaxWidth: CGFloat = 500
+        static let detailHorizontalPadding: CGFloat = 16
+        static let detailTopPadding: CGFloat = 16
+        static let detailBottomPadding: CGFloat = 20
+        static let sectionSpacing: CGFloat = 20
+        static let sidebarTopInset: CGFloat = 10
+        static let sectionHeaderSpacing: CGFloat = 8
+        static let sectionCornerRadius: CGFloat = 10
+        static let sectionStrokeOpacity: Double = 0.12
+    }
+
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
     @FocusState private var tokenFieldFocused: Bool
     @State private var selectedTokenSource: TokenSource = .personalAccessToken
+    @State private var selectedPane: SettingsPane = .general
     @State private var showsResetInboxSectionsConfirmation = false
     @State private var renamingSection: InboxSection?
     @State private var renamingSectionName = ""
     @State private var editingSectionForRules: InboxSection?
 
     var body: some View {
-        ZStack {
-            Color(nsColor: .windowBackgroundColor)
-                .ignoresSafeArea()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    tokenCard
-                    pollingCard
-                    menuBarCard
-                    inboxCard
-                    diagnosticsCard
-                    snoozedItemsCard
-                    ignoredItemsCard
-                }
-                .padding(28)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+        NavigationSplitView {
+            settingsSidebar
+        } detail: {
+            settingsPaneContent {
+                paneContent(for: selectedPane)
             }
-            .scrollIndicators(.never)
         }
-        .frame(width: 760, height: 460)
+        .navigationSplitViewStyle(.balanced)
+        .frame(minWidth: 720, minHeight: 460)
+        .background(SettingsWindowConfigurator(windowTitle: selectedPane.title))
         .onAppear {
             syncSelectedTokenSource()
+            syncSelectedPaneIfNeeded()
             focusTokenFieldIfNeeded()
         }
         .onChange(of: model.usingGitHubCLIToken) { _, usingCLI in
             if usingCLI {
                 selectedTokenSource = .githubCLI
             }
+        }
+        .onChange(of: selectedPane) { _, _ in
+            focusTokenFieldIfNeeded()
         }
         .confirmationDialog(
             "Reset Inbox Sections?",
@@ -86,20 +134,109 @@ struct SettingsView: View {
         }
     }
 
-    private var tokenCard: some View {
-        settingsCard {
-            cardIntro(
-                title: "GitHub Auth",
-                message: tokenSummary
+    private var settingsSidebar: some View {
+        List(SettingsPane.allCases, selection: $selectedPane) { pane in
+            Label(pane.title, systemImage: pane.iconName)
+                .tag(pane)
+        }
+        .listStyle(.sidebar)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            Color.clear
+                .frame(height: LayoutMetrics.sidebarTopInset)
+        }
+        .navigationSplitViewColumnWidth(min: 190, ideal: 200, max: 220)
+    }
+
+    private func settingsPaneContent<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: LayoutMetrics.sectionSpacing) {
+                content()
+            }
+            .padding(.horizontal, LayoutMetrics.detailHorizontalPadding)
+            .padding(.top, LayoutMetrics.detailTopPadding)
+            .padding(.bottom, LayoutMetrics.detailBottomPadding)
+            .frame(maxWidth: LayoutMetrics.detailMaxWidth, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .textBackgroundColor))
+        .scrollIndicators(.never)
+    }
+
+    @ViewBuilder
+    private func paneContent(for pane: SettingsPane) -> some View {
+        switch pane {
+        case .general:
+            generalPaneContent
+        case .github:
+            githubPaneContent
+        case .inbox:
+            inboxPaneContent
+        case .localState:
+            localStatePaneContent
+        case .advanced:
+            advancedPaneContent
+        }
+    }
+
+    private var generalPaneContent: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            settingsSection(
+                title: "Refreshing",
+                summary: "Control how often Octowatch polls GitHub for new activity."
             ) {
-                GitHubMarkBadge()
+                settingsRow(
+                    title: "Refresh Interval",
+                    subtitle: "Shorter intervals check more often but increase API traffic."
+                ) {
+                    Picker(
+                        "Refresh Interval",
+                        selection: Binding(
+                            get: { model.pollIntervalSeconds },
+                            set: { model.setPollIntervalSeconds($0) }
+                        )
+                    ) {
+                        ForEach(model.pollIntervalOptions, id: \.self) { seconds in
+                            Text(label(for: seconds)).tag(seconds)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 140)
+                    .labelsHidden()
+                }
             }
 
-            Divider()
-                .padding(.horizontal, 20)
+            settingsSection(
+                title: "Menu Bar",
+                summary: "Choose whether Octowatch keeps a persistent status item in the menu bar."
+            ) {
+                settingsRow(
+                    title: "Show Menu Bar Icon",
+                    subtitle: "When on, clicking a menu bar item opens Octowatch by default and keeps GitHub as a secondary action."
+                ) {
+                    Toggle(
+                        "Show Menu Bar Icon",
+                        isOn: Binding(
+                            get: { model.showsMenuBarIcon },
+                            set: { model.setShowsMenuBarIcon($0) }
+                        )
+                    )
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                }
+            }
+        }
+    }
 
+    private var githubPaneContent: some View {
+        settingsSection(
+            title: "GitHub",
+            summary: tokenSummary
+        ) {
             settingsRow(
-                title: "Authentication",
+                title: "Token Source",
                 subtitle: authSubtitle
             ) {
                 if model.gitHubCLIAvailable {
@@ -116,8 +253,7 @@ struct SettingsView: View {
                 }
             }
 
-            Divider()
-                .padding(.leading, 20)
+            settingsSectionDivider
 
             if selectedTokenSource == .githubCLI {
                 settingsRow(
@@ -141,178 +277,184 @@ struct SettingsView: View {
             }
 
             if let error = model.lastError {
-                Divider()
-                    .padding(.leading, 20)
+                settingsSectionDivider
 
                 Text(error)
-                    .font(.callout)
+                    .font(.footnote)
                     .foregroundStyle(.red)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 16)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
             }
         }
     }
 
-    private var pollingCard: some View {
-        settingsCard {
-            cardIntro(
-                title: "Refresh Interval",
-                message: "Choose how often Octowatch refreshes GitHub activity."
+    private var inboxPaneContent: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            settingsSection(
+                title: "Read State",
+                summary: "Choose how items move from unread to read while you browse the inbox."
             ) {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.orange.gradient)
-                    .frame(width: 46, height: 46)
-                    .overlay {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 21, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-            }
-
-            Divider()
-                .padding(.horizontal, 20)
-
-            settingsRow(
-                title: "Refresh Interval",
-                subtitle: "Shorter intervals check more often but increase API traffic."
-            ) {
-                Picker(
-                    "Refresh Interval",
-                    selection: Binding(
-                        get: { model.pollIntervalSeconds },
-                        set: { model.setPollIntervalSeconds($0) }
-                    )
+                settingsRow(
+                    title: "Auto-Mark as Read",
+                    subtitle: "Marks an item read after it stays selected for the chosen delay."
                 ) {
-                    ForEach(model.pollIntervalOptions, id: \.self) { seconds in
-                        Text(label(for: seconds)).tag(seconds)
+                    Picker(
+                        "Auto-Mark as Read",
+                        selection: Binding(
+                            get: { model.autoMarkReadSetting },
+                            set: { model.setAutoMarkReadSetting($0) }
+                        )
+                    ) {
+                        ForEach(model.autoMarkReadOptions, id: \.self) { setting in
+                            Text(setting.label).tag(setting)
+                        }
                     }
+                    .pickerStyle(.menu)
+                    .frame(width: 140)
+                    .labelsHidden()
                 }
-                .pickerStyle(.menu)
-                .frame(width: 140)
-                .labelsHidden()
-            }
-        }
-    }
-
-    private var ignoredItemsCard: some View {
-        settingsCard {
-            cardIntro(
-                title: "Ignored Items",
-                message: ignoredItemsSummary
-            ) {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.secondary.opacity(0.16))
-                    .frame(width: 46, height: 46)
-                    .overlay {
-                        Image(systemName: "eye.slash")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
             }
 
-            Divider()
-                .padding(.horizontal, 20)
-
-            settingsRow(
-                title: "Manage Ignored Items",
-                subtitle: ignoredItemsManagementSubtitle
+            settingsSection(
+                title: "Notifications",
+                summary: "Control whether Octowatch raises notifications for your own follow-up activity."
             ) {
-                Button("Open Ignored Items") {
-                    openWindow(id: AppSceneID.ignoredItemsWindow)
-                }
-                .buttonStyle(.borderedProminent)
-                .appInteractiveHover()
-            }
-        }
-    }
-
-    private var menuBarCard: some View {
-        settingsCard {
-            cardIntro(
-                title: "Menu Bar",
-                message: "Keep Octowatch in the macOS menu bar for quick triage and fast handoff into the main window."
-            ) {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.mint.opacity(0.18))
-                    .frame(width: 46, height: 46)
-                    .overlay {
-                        Image(systemName: "menubar.rectangle")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(.mint)
-                    }
-            }
-
-            Divider()
-                .padding(.horizontal, 20)
-
-            settingsRow(
-                title: "Show Menu Bar Icon",
-                subtitle: "When on, clicking a menu bar item opens Octowatch by default and keeps GitHub as a secondary action."
-            ) {
-                Toggle(
-                    "Show Menu Bar Icon",
-                    isOn: Binding(
-                        get: { model.showsMenuBarIcon },
-                        set: { model.setShowsMenuBarIcon($0) }
+                settingsRow(
+                    title: "Notify on Your Updates",
+                    subtitle: "When off, Octowatch keeps your own commits, comments, reviews, and workflows in the update history but does not raise macOS notifications for them."
+                ) {
+                    Toggle(
+                        "Notify on Your Updates",
+                        isOn: Binding(
+                            get: { model.notifyOnSelfTriggeredUpdates },
+                            set: { model.setNotifyOnSelfTriggeredUpdates($0) }
+                        )
                     )
-                )
-                .labelsHidden()
-                .toggleStyle(.switch)
-            }
-        }
-    }
-
-    private var snoozedItemsCard: some View {
-        settingsCard {
-            cardIntro(
-                title: "Snoozed Items",
-                message: snoozedItemsSummary
-            ) {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.blue.opacity(0.16))
-                    .frame(width: 46, height: 46)
-                    .overlay {
-                        Image(systemName: "moon.zzz")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(.blue)
-                    }
-            }
-
-            Divider()
-                .padding(.horizontal, 20)
-
-            settingsRow(
-                title: "Manage Snoozed Items",
-                subtitle: snoozedItemsManagementSubtitle
-            ) {
-                Button("Open Snoozed Items") {
-                    openWindow(id: AppSceneID.snoozedItemsWindow)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
                 }
-                .buttonStyle(.borderedProminent)
-                .appInteractiveHover()
+            }
+
+            settingsSection(
+                title: "Pinned Sections",
+                summary: "Define the pinned sections at the top of your inbox. Items match the first section whose rules apply."
+            ) {
+                VStack(spacing: 0) {
+                    ForEach(Array(model.inboxSectionConfig.sections.enumerated()), id: \.element.id) { index, section in
+                        HStack(alignment: .center, spacing: 16) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(section.name)
+                                    .font(.body.weight(.medium))
+
+                                Text(inboxSectionSummary(for: section))
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer(minLength: 16)
+
+                            Button("Edit Rules") {
+                                editingSectionForRules = section
+                            }
+                            .appInteractiveHover()
+
+                            Menu {
+                                Button("Rename...") {
+                                    renamingSectionName = section.name
+                                    renamingSection = section
+                                }
+                                Toggle("Enabled", isOn: sectionToggleBinding(section))
+                                Divider()
+                                Button("Move Up") {
+                                    moveSection(section, by: -1)
+                                }
+                                .disabled(index == 0)
+                                Button("Move Down") {
+                                    moveSection(section, by: 1)
+                                }
+                                .disabled(index == model.inboxSectionConfig.sections.count - 1)
+                                Divider()
+                                Button("Delete Section", role: .destructive) {
+                                    model.deleteInboxSection(id: section.id)
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                                    .font(.system(size: 16, weight: .medium))
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+
+                        if index < model.inboxSectionConfig.sections.count - 1 {
+                            settingsSectionDivider
+                        }
+                    }
+
+                    settingsSectionDivider
+
+                    HStack {
+                        Button("Add Section") {
+                            model.addInboxSection(name: "New Section")
+                        }
+                        .appInteractiveHover()
+
+                        Spacer()
+
+                        Button("Reset Defaults") {
+                            showsResetInboxSectionsConfirmation = true
+                        }
+                        .appInteractiveHover()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                }
             }
         }
     }
 
-    private var diagnosticsCard: some View {
-        settingsCard {
-            cardIntro(
-                title: "Diagnostics",
-                message: "Optional low-level API diagnostics for debugging refresh behavior."
+    private var localStatePaneContent: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            settingsSection(
+                title: "Snoozed Items",
+                summary: snoozedItemsSummary
             ) {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.purple.opacity(0.15))
-                    .frame(width: 46, height: 46)
-                    .overlay {
-                        Image(systemName: "ladybug")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(.purple)
+                settingsRow(
+                    title: "Manage Snoozed Items",
+                    subtitle: snoozedItemsManagementSubtitle
+                ) {
+                    Button("Open Snoozed Items") {
+                        openWindow(id: AppSceneID.snoozedItemsWindow)
                     }
+                    .buttonStyle(.bordered)
+                    .appInteractiveHover()
+                }
             }
 
-            Divider()
-                .padding(.horizontal, 20)
+            settingsSection(
+                title: "Ignored Items",
+                summary: ignoredItemsSummary
+            ) {
+                settingsRow(
+                    title: "Manage Ignored Items",
+                    subtitle: ignoredItemsManagementSubtitle
+                ) {
+                    Button("Open Ignored Items") {
+                        openWindow(id: AppSceneID.ignoredItemsWindow)
+                    }
+                    .buttonStyle(.bordered)
+                    .appInteractiveHover()
+                }
+            }
+        }
+    }
 
+    private var advancedPaneContent: some View {
+        settingsSection(
+            title: "Diagnostics",
+            summary: "Optional low-level API diagnostics for debugging refresh behavior."
+        ) {
             settingsRow(
                 title: "Show Rate-Limit Buckets",
                 subtitle: "Displays per-bucket GitHub API budgets in the inbox sidebar."
@@ -330,133 +472,10 @@ struct SettingsView: View {
         }
     }
 
-    private var inboxCard: some View {
-        settingsCard {
-            cardIntro(
-                title: "Inbox",
-                message: "Choose how the inbox handles read state, self-triggered notifications, and inbox sections."
-            ) {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.blue.gradient)
-                    .frame(width: 46, height: 46)
-                    .overlay {
-                        Image(systemName: "checkmark.circle")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-            }
-
-            Divider()
-                .padding(.horizontal, 20)
-
-            settingsRow(
-                title: "Auto-Mark as Read",
-                subtitle: "Marks an item read after it stays selected for the chosen delay."
-            ) {
-                Picker(
-                    "Auto-Mark as Read",
-                    selection: Binding(
-                        get: { model.autoMarkReadSetting },
-                        set: { model.setAutoMarkReadSetting($0) }
-                    )
-                ) {
-                    ForEach(model.autoMarkReadOptions, id: \.self) { setting in
-                        Text(setting.label).tag(setting)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(width: 140)
-                .labelsHidden()
-            }
-
-            Divider()
-                .padding(.leading, 20)
-
-            settingsRow(
-                title: "Notify on Your Updates",
-                subtitle: "When off, Octowatch keeps your own commits, comments, reviews, and workflows in the update history but does not raise macOS notifications for them."
-            ) {
-                Toggle(
-                    "Notify on Your Updates",
-                    isOn: Binding(
-                        get: { model.notifyOnSelfTriggeredUpdates },
-                        set: { model.setNotifyOnSelfTriggeredUpdates($0) }
-                    )
-                )
-                .labelsHidden()
-                .toggleStyle(.switch)
-            }
-
-            Divider()
-                .padding(.leading, 20)
-
-            settingsRow(
-                title: "Inbox Sections",
-                subtitle: "Define the pinned sections at the top of your inbox. Items match the first section whose rules apply."
-            ) {
-                EmptyView()
-            }
-
-            List {
-                ForEach(model.inboxSectionConfig.sections) { section in
-                    HStack {
-                        Text(section.name)
-                            .font(.body.weight(.medium))
-
-                        Spacer()
-
-                        Text("\(section.enabledRuleCount) of \(section.ruleCount) rules")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        Button("Edit") {
-                            editingSectionForRules = section
-                        }
-                        .appInteractiveHover()
-
-                        Menu {
-                            Button("Rename...") {
-                                renamingSectionName = section.name
-                                renamingSection = section
-                            }
-                            Toggle("Enabled", isOn: sectionToggleBinding(section))
-                            Divider()
-                            Button("Delete Section", role: .destructive) { model.deleteInboxSection(id: section.id) }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                        }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
-                    }
-                }
-                .onMove { from, to in
-                    model.reorderInboxSections(fromOffsets: from, toOffset: to)
-                }
-            }
-            .listStyle(.plain)
-            .frame(height: CGFloat(model.inboxSectionConfig.sections.count) * 44)
-            .padding(.horizontal, 20)
-
-            HStack {
-                Button("Add Section") { model.addInboxSection(name: "New Section") }
-                    .appInteractiveHover()
-                Spacer()
-                Button("Reset Defaults") { showsResetInboxSectionsConfirmation = true }
-                    .appInteractiveHover()
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 6)
-        }
-    }
-
     private var customTokenEditor: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Personal Access Token")
-                .font(.headline)
-
-            Text("Octowatch validates the token before it starts using it.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .font(.body.weight(.medium))
 
             SecureField("Personal access token", text: $model.tokenInput)
                 .textFieldStyle(.roundedBorder)
@@ -486,9 +505,13 @@ struct SettingsView: View {
 
                 Spacer()
             }
+
+            Text("Octowatch validates the token before it starts using it.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
     }
 
     private var tokenSummary: String {
@@ -594,7 +617,17 @@ struct SettingsView: View {
         selectedTokenSource = model.usingGitHubCLIToken ? .githubCLI : .personalAccessToken
     }
 
+    private func syncSelectedPaneIfNeeded() {
+        if !model.usingGitHubCLIToken && !model.hasToken {
+            selectedPane = .github
+        }
+    }
+
     private func focusTokenFieldIfNeeded(force: Bool = false) {
+        guard selectedPane == .github else {
+            return
+        }
+
         guard selectedTokenSource == .personalAccessToken || force else {
             return
         }
@@ -616,41 +649,73 @@ struct SettingsView: View {
 
         return "\(minutes) minutes"
     }
-    private func settingsCard<Content: View>(
+
+    private func inboxSectionSummary(for section: InboxSection) -> String {
+        let enabledRules = section.enabledRuleCount
+        let totalRules = section.ruleCount
+        let ruleLabel = totalRules == 1 ? "rule" : "rules"
+        return "\(enabledRules) of \(totalRules) \(ruleLabel) enabled"
+    }
+
+    private func moveSection(_ section: InboxSection, by offset: Int) {
+        guard
+            let currentIndex = model.inboxSectionConfig.sections.firstIndex(where: { $0.id == section.id })
+        else {
+            return
+        }
+
+        let targetIndex = currentIndex + offset
+        guard model.inboxSectionConfig.sections.indices.contains(targetIndex) else {
+            return
+        }
+
+        let destination = offset < 0 ? targetIndex : targetIndex + 1
+        model.reorderInboxSections(
+            fromOffsets: IndexSet(integer: currentIndex),
+            toOffset: destination
+        )
+    }
+
+    private func settingsSection<Content: View>(
+        title: String,
+        summary: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: LayoutMetrics.sectionHeaderSpacing) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+
+            if let summary, !summary.isEmpty {
+                Text(summary)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            settingsPanel {
+                content()
+            }
+        }
+    }
+
+    private func settingsPanel<Content: View>(
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             content()
         }
         .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
+            RoundedRectangle(cornerRadius: LayoutMetrics.sectionCornerRadius, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+            RoundedRectangle(cornerRadius: LayoutMetrics.sectionCornerRadius, style: .continuous)
+                .stroke(
+                    Color(nsColor: .separatorColor).opacity(LayoutMetrics.sectionStrokeOpacity),
+                    lineWidth: 1
+                )
         )
-    }
-
-    private func cardIntro<Leading: View>(
-        title: String,
-        message: String,
-        @ViewBuilder leading: () -> Leading
-    ) -> some View {
-        HStack(alignment: .top, spacing: 16) {
-            leading()
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.title2.weight(.semibold))
-
-                Text(message)
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(20)
+        .clipShape(RoundedRectangle(cornerRadius: LayoutMetrics.sectionCornerRadius, style: .continuous))
     }
 
     private func settingsRow<Accessory: View>(
@@ -658,25 +723,70 @@ struct SettingsView: View {
         subtitle: String,
         @ViewBuilder accessory: () -> Accessory
     ) -> some View {
-        HStack(alignment: .center, spacing: 20) {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.headline)
+                    .font(.system(size: 13, weight: .semibold))
 
                 if !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(.subheadline)
+                        .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
-            Spacer(minLength: 24)
+            Spacer(minLength: 16)
 
             accessory()
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+    }
+
+    private var settingsSectionDivider: some View {
+        Divider()
+            .padding(.leading, 14)
+    }
+}
+
+private struct SettingsWindowConfigurator: NSViewRepresentable {
+    let windowTitle: String
+
+    private static let initialContentSize = CGSize(width: 760, height: 500)
+    private static let minimumContentSize = CGSize(width: 720, height: 460)
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            guard let window = nsView.window else {
+                return
+            }
+
+            window.identifier = AppWindowIdentifier.settings
+            window.title = windowTitle
+            window.titleVisibility = .visible
+            window.toolbarStyle = .unifiedCompact
+            window.titlebarSeparatorStyle = .line
+            window.backgroundColor = .textBackgroundColor
+            window.contentMinSize = Self.minimumContentSize
+
+            if context.coordinator.configuredWindowNumber != window.windowNumber {
+                context.coordinator.configuredWindowNumber = window.windowNumber
+                window.setContentSize(Self.initialContentSize)
+            }
+        }
+    }
+
+    final class Coordinator {
+        var configuredWindowNumber: Int?
     }
 }
 

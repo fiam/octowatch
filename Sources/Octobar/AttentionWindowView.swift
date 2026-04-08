@@ -50,7 +50,6 @@ struct AttentionWindowView: View {
     }
 
     @ObservedObject var model: AppModel
-    @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
 
@@ -228,7 +227,7 @@ struct AttentionWindowView: View {
 
             ToolbarItem {
                 Button {
-                    openSettings()
+                    openWindow(id: AppSceneID.settingsWindow)
                 } label: {
                     Image(systemName: "gearshape")
                 }
@@ -967,7 +966,7 @@ struct AttentionWindowView: View {
             Text("Open Settings to connect GitHub with either GitHub CLI or a personal access token.")
         } actions: {
             Button("Open Settings") {
-                openSettings()
+                openWindow(id: AppSceneID.settingsWindow)
             }
             .appInteractiveHover()
         }

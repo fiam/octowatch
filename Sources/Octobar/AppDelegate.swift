@@ -3,6 +3,10 @@ import Combine
 import SwiftUI
 import UserNotifications
 
+enum AppWindowIdentifier {
+    static let settings = NSUserInterfaceItemIdentifier("OctowatchSettingsWindow")
+}
+
 struct MenuBarStatusPresentation: Equatable {
     let imageName: String
     let fallbackSymbolName: String
@@ -450,6 +454,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func isSettingsWindow(_ window: NSWindow) -> Bool {
+        if window.identifier == AppWindowIdentifier.settings {
+            return true
+        }
+
         if window is NSPanel || !window.styleMask.contains(.titled) {
             return false
         }
@@ -490,6 +498,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func findSettingsWindow() -> NSWindow? {
         if let settingsWindow, settingsWindow.isVisible {
             return settingsWindow
+        }
+
+        if let identifiedWindow = NSApp.windows.first(where: {
+            $0.identifier == AppWindowIdentifier.settings
+        }) {
+            return identifiedWindow
         }
 
         if let titledByName = NSApp.windows.first(where: {

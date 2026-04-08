@@ -3,7 +3,6 @@ import SwiftUI
 struct MenuBarContentView: View {
     @ObservedObject var model: AppModel
     var onRenderedHeightChange: ((CGFloat) -> Void)? = nil
-    @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openURL) private var openURL
 
@@ -24,7 +23,7 @@ struct MenuBarContentView: View {
             openWindow(id: AppSceneID.mainWindow)
         }
         .onReceive(NotificationCenter.default.publisher(for: .performSettingsOpen)) { _ in
-            openSettings()
+            openWindow(id: AppSceneID.settingsWindow)
         }
     }
 

@@ -2,6 +2,7 @@ import Foundation
 
 enum AppSceneID {
     static let mainWindow = "main-window"
+    static let settingsWindow = "settings-window"
     static let ignoredItemsWindow = "ignored-items-window"
     static let snoozedItemsWindow = "snoozed-items-window"
 }
