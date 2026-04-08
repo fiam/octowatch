@@ -12,6 +12,8 @@ This file captures project-specific guidance for coding agents working in `octob
 ## Source Of Truth
 - Use `xcodegen` for Xcode project generation.
 - Treat `project.yml` as canonical project config.
+- Treat `PRD.md` as the current product status document for shipped
+  scope, roadmap state, and notable gaps.
 - Do not commit generated `.xcodeproj` contents.
 - Do not hand-edit `Octowatch.xcodeproj/project.pbxproj` unless explicitly requested.
 - For UI work, follow Apple's Human Interface Guidelines:
@@ -32,6 +34,7 @@ This file captures project-specific guidance for coding agents working in `octob
 
 ## Key Files
 - `project.yml`: Xcode project definition.
+- `PRD.md`: current product status and roadmap.
 - `Octobar/Info.plist`: app metadata.
 - `Sources/Octobar/AppModel.swift`: app state, polling loop, notifications.
 - `Sources/Octobar/GitHubClient.swift`: GitHub API integration and snapshot assembly.
@@ -61,6 +64,9 @@ This file captures project-specific guidance for coding agents working in `octob
   3. If project settings changed, update `project.yml`, then run `xcodegen generate`.
   4. Validate Xcode build via `xcodebuild`.
 - Update `README.md` when user-facing behavior changes.
+- Update `PRD.md` whenever shipped behavior, backlog status, roadmap
+  ordering, or notable product gaps change.
+- Do not leave completed roadmap items in `PRD.md` marked as backlog.
 
 ## Commit Conventions
 - Use Conventional Commit subjects (`type(scope): summary` or `type: summary`).
