@@ -1767,14 +1767,19 @@ private struct AttentionSidebarRow: View {
                     Text(contextLine)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .accessibilityHidden(true)
 
                     Spacer(minLength: 8)
 
                     Text(relativeTimestamp)
                         .fixedSize()
+                        .accessibilityHidden(true)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(contextLine)
+                .accessibilityIdentifier("sidebar-item-context-\(item.id)")
             }
         }
         .padding(.vertical, 5)
@@ -2271,6 +2276,7 @@ private struct DetailEvidenceRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(evidence.title)
                     .font(.subheadline.weight(.semibold))
+                    .accessibilityIdentifier("detail-evidence-title-\(evidence.id)")
 
                 if let detail = evidence.detail {
                     Text(
@@ -2282,6 +2288,7 @@ private struct DetailEvidenceRow: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("detail-evidence-detail-\(evidence.id)")
                 }
             }
 
@@ -4349,7 +4356,7 @@ extension AttentionItemType {
 
     private var badgeSemanticColor: SemanticColor {
         switch self {
-        case .pullRequestFailedChecks, .workflowFailed:
+        case .pullRequestFailedChecks, .securityAlert, .workflowFailed:
             return .danger
         case .pullRequestMergeConflicts, .reviewChangesRequested,
              .workflowApprovalRequired:

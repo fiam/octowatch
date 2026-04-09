@@ -283,6 +283,7 @@ enum AttentionItemType: String, Hashable, Codable, Sendable {
     case assignedIssue
     case authoredIssue
     case commentedIssue
+    case securityAlert
     case comment
     case mention
     case teamMention
@@ -322,6 +323,8 @@ enum AttentionItemType: String, Hashable, Codable, Sendable {
             return "exclamationmark.circle"
         case .commentedIssue:
             return "exclamationmark.circle"
+        case .securityAlert:
+            return "exclamationmark.shield"
         case .comment:
             return "text.bubble"
         case .mention:
@@ -377,6 +380,8 @@ enum AttentionItemType: String, Hashable, Codable, Sendable {
             return "Your issue"
         case .commentedIssue:
             return "Commented issue"
+        case .securityAlert:
+            return "Security alert"
         case .comment:
             return "New comment"
         case .mention:
@@ -434,6 +439,8 @@ enum AttentionItemType: String, Hashable, Codable, Sendable {
             return "Your issue"
         case .commentedIssue:
             return "Commented issue"
+        case .securityAlert:
+            return "Security alert"
         case .comment:
             return "New comment"
         case .mention:
@@ -491,6 +498,8 @@ enum AttentionItemType: String, Hashable, Codable, Sendable {
             return "updated your issue"
         case .commentedIssue:
             return "updated an issue you commented on"
+        case .securityAlert:
+            return "raised a security alert"
         case .comment:
             return "commented"
         case .mention:
@@ -536,6 +545,10 @@ enum AttentionItemType: String, Hashable, Codable, Sendable {
         let normalizedReason = reason.lowercased()
         let normalizedEvent = timelineEvent?.lowercased()
         let normalizedState = reviewState?.lowercased()
+
+        if normalizedReason == "security_alert" {
+            return .securityAlert
+        }
 
         if normalizedReason == "review_requested", followUpRelationship == nil {
             return teamScoped ? .teamReviewRequested : .reviewRequested
@@ -665,6 +678,7 @@ enum AttentionItemType: String, Hashable, Codable, Sendable {
                 .commentedIssue:
             return .issues
         case .comment,
+                .securityAlert,
                 .mention,
                 .teamMention,
                 .newCommitsAfterComment,
@@ -3751,6 +3765,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         case .assignedPullRequest,
                 .reviewRequested,
                 .teamReviewRequested,
+                .securityAlert,
                 .ciActivity,
                 .workflowRunning,
                 .workflowSucceeded,
@@ -3779,6 +3794,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
                 .readyToMerge,
                 .pullRequestMergeConflicts,
                 .pullRequestFailedChecks,
+                .securityAlert,
                 .comment,
                 .mention,
                 .teamMention,
@@ -3887,6 +3903,8 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             return "You opened this issue."
         case .commentedIssue:
             return "You commented on this issue."
+        case .securityAlert:
+            return "GitHub detected a security alert for this repository."
         case .comment:
             return "There is new discussion on work you are following."
         case .mention:
@@ -3999,6 +4017,7 @@ extension AttentionItemType {
         case .readyToMerge,
                 .pullRequestMergeConflicts,
                 .pullRequestFailedChecks,
+                .securityAlert,
                 .comment,
                 .mention,
                 .teamMention,
@@ -4032,6 +4051,7 @@ extension AttentionItemType {
                 .readyToMerge,
                 .pullRequestMergeConflicts,
                 .pullRequestFailedChecks,
+                .securityAlert,
                 .comment,
                 .mention,
                 .teamMention,
@@ -4071,7 +4091,7 @@ extension AttentionItemType {
         switch self {
         case .pullRequestMergeConflicts:
             return 11
-        case .pullRequestFailedChecks:
+        case .pullRequestFailedChecks, .securityAlert:
             return 10
         case .workflowApprovalRequired:
             return 9

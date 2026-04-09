@@ -2128,6 +2128,7 @@ final class AppModel: ObservableObject {
                 .readyToMerge,
                 .pullRequestMergeConflicts,
                 .pullRequestFailedChecks,
+                .securityAlert,
                 .assignedIssue,
                 .authoredIssue,
                 .commentedIssue:
@@ -2388,6 +2389,10 @@ private struct LaunchFixture {
         switch environment["OCTOWATCH_UI_TEST_FIXTURE"] {
         case "auto-mark-read":
             return autoMarkReadFixture
+        case "notification-security-alert":
+            return notificationSecurityAlertFixture(isUnread: true)
+        case "notification-security-alert-read":
+            return notificationSecurityAlertFixture(isUnread: false)
         default:
             return nil
         }
@@ -2431,6 +2436,70 @@ private struct LaunchFixture {
             login: "octowatch-ui-test",
             attentionItems: [primaryItem, secondaryItem],
             autoMarkReadSetting: .oneSecond,
+            lastUpdated: now
+        )
+    }
+
+    private static func notificationSecurityAlertFixture(isUnread: Bool) -> LaunchFixture {
+        let now = Date()
+        let repository = "fiam/dc2"
+        let alertURL = URL(string: "https://github.com/\(repository)/security/dependabot/42")!
+
+        let item = AttentionItem(
+            id: isUnread ? "fixture-security-alert" : "fixture-security-alert-read",
+            subjectKey: alertURL.absoluteString,
+            stream: .notifications,
+            type: .securityAlert,
+            title: "Your repository has dependencies with security vulnerabilities",
+            subtitle: "\(repository) · Security alert",
+            repository: repository,
+            timestamp: now.addingTimeInterval(-10_800),
+            url: alertURL,
+            detail: AttentionDetail(
+                why: AttentionWhy(
+                    summary: "GitHub detected a security alert for this repository.",
+                    detail: "GitHub raised a repository security alert."
+                ),
+                evidence: [
+                    AttentionEvidence(
+                        id: "repository",
+                        title: "Repository",
+                        detail: repository,
+                        iconName: "shippingbox",
+                        url: URL(string: "https://github.com/\(repository)")!
+                    ),
+                    AttentionEvidence(
+                        id: "target",
+                        title: "Why this surfaced",
+                        detail: "GitHub raised a repository security alert.",
+                        iconName: "person"
+                    ),
+                    AttentionEvidence(
+                        id: "security-alert",
+                        title: "Security alert",
+                        detail: "Dependabot alert",
+                        iconName: "exclamationmark.shield",
+                        url: alertURL
+                    )
+                ],
+                actions: [
+                    AttentionAction(
+                        id: "open-subject",
+                        title: "Open Security Alert",
+                        iconName: "arrow.up.right.square",
+                        url: alertURL,
+                        isPrimary: true
+                    )
+                ],
+                acknowledgement: "Use the toolbar to mark this read or ignore it."
+            ),
+            isUnread: isUnread
+        )
+
+        return LaunchFixture(
+            login: "octowatch-ui-test",
+            attentionItems: [item],
+            autoMarkReadSetting: .threeSeconds,
             lastUpdated: now
         )
     }

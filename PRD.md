@@ -22,7 +22,8 @@ in noise.
 - Assigned, authored, and tracked pull requests with 24-type
   classification.
 - Issue tracking (created, assigned, mentioned) via dashboard view.
-- GitHub notifications with stale-discussion fallback.
+- GitHub notifications with stale-discussion fallback, sourced from both
+  read and unread GitHub notification threads.
 - Workflow runs tied to tracked PRs (running, succeeded, failed,
   approval-required).
 - Post-merge workflow watching with prediction from changed files +
@@ -54,6 +55,8 @@ in noise.
 
 ### Read State & Notifications
 - Dot-style read/unread with auto-mark-read delay (off / 1 / 3 / 5 s).
+- Inbox notification visibility comes from the full actionable GitHub
+  notification set, while unread state remains local to Octowatch.
 - macOS notifications with subject-key threading.
 - Self-triggered update suppression toggle.
 - Undo affordances for local ignore and snooze actions.

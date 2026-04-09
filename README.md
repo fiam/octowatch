@@ -9,7 +9,7 @@ likely needs your attention.
 - Open pull requests assigned to you
 - Open pull requests you authored when they are ready to merge, have merge conflicts, or have failed checks
 - Recently merged pull requests you authored, reviewed, commented on, or were still assigned when they merged, kept in the pull request stream as a log
-- Actionable GitHub notifications (`review_requested`, `assign`, `mention`, `team_mention`, `ci_activity`, and similar reasons)
+- Actionable GitHub notifications (`review_requested`, `assign`, `mention`, `team_mention`, `ci_activity`, `security_alert`, and similar reasons), from both read and unread GitHub threads
 - GitHub Actions workflow runs attached to pull requests you authored, reviewed, were assigned, or merged, including waiting-for-approval and failed runs
 
 The app polls every 60 seconds and shows local macOS notifications when new actionable items appear.
@@ -20,7 +20,8 @@ When Octowatch is referring to your own GitHub account as the actor in the UI, i
 Bot accounts keep their badge in the compact sidebar and all-updates actor labels, and those visible labels omit the literal `[bot]` suffix.
 The detail pane keeps an all-updates timeline at the bottom of pull request details, and that history is persisted locally so older updates still appear when the subject drops out of the API and later returns.
 Local macOS notifications also reuse the same subject identity, so newer updates replace older notifications for that pull request or issue instead of leaving stale duplicates behind, and clicking a notification now opens the matching subject in Octowatch whenever the app can resolve it. Settings include a toggle for whether updates triggered by your own comments, commits, reviews, and workflows should raise macOS notifications; the default is off, but those self-triggered updates still stay in the timeline.
-Items in the `Inbox` view have dot-style read/unread indicators, and opening one of those items marks it as read locally. The `Browse` dashboards (`My PRs` and `My Issues`) do not use local read state.
+GitHub notification subjects that point to security alerts, such as Dependabot alerts, now keep their security-alert presentation and open the related Dependabot security page instead of collapsing into a generic comment row.
+Items in the `Inbox` view have dot-style read/unread indicators, and opening one of those items marks it as read locally. GitHub notification threads are fetched from both the read and unread notification feeds, while the inbox dot state and `Unread` filter are still driven by Octowatch's local read state. The `Browse` dashboards (`My PRs` and `My Issues`) do not use local read state.
 The unread-only filter in `Inbox` keeps the current session stable like Mail, so items that were visible when you entered that filter do not disappear immediately after being marked read.
 The main window also includes native search for the current scope, matching titles, repositories, labels, and common attention metadata without leaving the app.
 When `Inbox` is empty, the empty state explains whether everything is already read, whether items are only available in `Browse`, and whether local snoozes or ignores are hiding anything, with shortcuts to the relevant view when possible.

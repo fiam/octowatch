@@ -33,6 +33,7 @@ struct GitHubClient {
     private let baseURL = URL(string: "https://api.github.com")!
     private let graphQLURL = URL(string: "https://api.github.com/graphql")!
     private let notificationPageSize = 50
+    private let includeReadNotificationThreads = true
     private let steadyNotificationPageLimit = 2
     private let initialNotificationPageLimit = 5
     private let maximumNotificationPageLimit = 10
@@ -285,10 +286,7 @@ struct GitHubClient {
         do {
             let _: [NotificationThread] = try await request(
                 path: "/notifications",
-                queryItems: [
-                    URLQueryItem(name: "all", value: "false"),
-                    URLQueryItem(name: "per_page", value: "1")
-                ],
+                queryItems: notificationThreadQueryItems(page: 1, perPage: 1),
                 token: token
             )
         } catch {
@@ -3124,11 +3122,7 @@ struct GitHubClient {
         for page in 1...maximumNotificationPageLimit {
             let threads: [NotificationThread] = try await request(
                 path: "/notifications",
-                queryItems: [
-                    URLQueryItem(name: "all", value: "false"),
-                    URLQueryItem(name: "per_page", value: "\(notificationPageSize)"),
-                    URLQueryItem(name: "page", value: "\(page)")
-                ],
+                queryItems: notificationThreadQueryItems(page: page),
                 token: token,
                 observer: observer
             )
@@ -3259,6 +3253,12 @@ struct GitHubClient {
             repositoryWebURL: thread.repository.htmlURL,
             subjectType: thread.subject.type
         )
+        let detailEvidence = notificationDetailEvidence(
+            reason: thread.reason,
+            subjectType: thread.subject.type,
+            url: url,
+            existingEvidence: timelineContext?.detailEvidence ?? []
+        )
 
         return NotificationSummary(
             id: thread.id,
@@ -3287,8 +3287,25 @@ struct GitHubClient {
                 stateTransition: timelineContext?.stateTransition
             ),
             stateTransition: timelineContext?.stateTransition,
-            detailEvidence: timelineContext?.detailEvidence ?? []
+            detailEvidence: detailEvidence
         )
+    }
+
+    func notificationThreadQueryItems(
+        page: Int,
+        perPage: Int? = nil
+    ) -> [URLQueryItem] {
+        [
+            URLQueryItem(
+                name: "all",
+                value: includeReadNotificationThreads ? "true" : "false"
+            ),
+            URLQueryItem(
+                name: "per_page",
+                value: "\(perPage ?? notificationPageSize)"
+            ),
+            URLQueryItem(name: "page", value: "\(page)")
+        ]
     }
 
     private func buildFallbackNotificationSummary(
@@ -3308,6 +3325,12 @@ struct GitHubClient {
             subjectURL: thread.subject.url,
             repositoryWebURL: thread.repository.htmlURL,
             subjectType: thread.subject.type
+        )
+        let detailEvidence = notificationDetailEvidence(
+            reason: thread.reason,
+            subjectType: thread.subject.type,
+            url: url,
+            existingEvidence: []
         )
         let resolution: GitHubSubjectResolution? = {
             guard let reference else {
@@ -3347,7 +3370,7 @@ struct GitHubClient {
                 stateTransition: nil
             ),
             stateTransition: nil,
-            detailEvidence: []
+            detailEvidence: detailEvidence
         )
     }
 
@@ -3606,6 +3629,40 @@ struct GitHubClient {
         return "\(repository) · \(type.accessibilityLabel)"
     }
 
+    private func notificationDetailEvidence(
+        reason: String,
+        subjectType: String,
+        url: URL,
+        existingEvidence: [AttentionEvidence]
+    ) -> [AttentionEvidence] {
+        guard reason.caseInsensitiveCompare("security_alert") == .orderedSame else {
+            return existingEvidence
+        }
+
+        return [
+            AttentionEvidence(
+                id: "security-alert",
+                title: "Security alert",
+                detail: securityAlertEvidenceDetail(subjectType: subjectType),
+                iconName: "exclamationmark.shield",
+                url: url
+            )
+        ] + existingEvidence
+    }
+
+    private func securityAlertEvidenceDetail(subjectType: String) -> String {
+        if isDependabotSecurityAlertSubjectType(subjectType) {
+            return "Dependabot alert"
+        }
+
+        return "Repository security alert"
+    }
+
+    private func isDependabotSecurityAlertSubjectType(_ subjectType: String) -> Bool {
+        subjectType.caseInsensitiveCompare("RepositoryVulnerabilityAlert") == .orderedSame ||
+            subjectType.caseInsensitiveCompare("RepositoryDependabotAlertsThread") == .orderedSame
+    }
+
     private func fetchReviewRequestTarget(
         token: String,
         reference: DiscussionReference,
@@ -3684,6 +3741,8 @@ struct GitHubClient {
             return "You were mentioned directly."
         case "team_mention":
             return "One of your teams was mentioned."
+        case "security_alert":
+            return "GitHub raised a repository security alert."
         case "review_requested":
             switch reviewTarget {
             case .direct:
@@ -4951,6 +5010,8 @@ struct GitHubClient {
             return "You opened this issue."
         case .commentedIssue:
             return "You commented on this issue."
+        case .securityAlert:
+            return "GitHub detected a security alert for this repository."
         case .comment:
             return "There is new discussion on a thread you are following."
         case .mention:
@@ -4986,13 +5047,16 @@ struct GitHubClient {
         }
     }
 
-    private func openActionTitle(for url: URL) -> String {
+    func openActionTitle(for url: URL) -> String {
         let path = url.path
         if path.contains("/pull/") {
             return "Open Pull Request"
         }
         if path.contains("/issues/") {
             return "Open Issue"
+        }
+        if path.contains("/security/dependabot") {
+            return "Open Security Alert"
         }
         if path.contains("/actions/runs/") {
             return "Open Workflow Run"
@@ -5329,7 +5393,7 @@ struct GitHubClient {
         return "\(owner)/\(repository)"
     }
 
-    private func subjectWebURL(subjectURL: URL?, repositoryWebURL: URL, subjectType: String) -> URL {
+    func subjectWebURL(subjectURL: URL?, repositoryWebURL: URL, subjectType: String) -> URL {
         guard let subjectURL else {
             return fallbackWebURL(repositoryWebURL: repositoryWebURL, subjectType: subjectType)
         }
@@ -5341,6 +5405,14 @@ struct GitHubClient {
 
         let owner = parts[reposIndex + 1]
         let repository = parts[reposIndex + 2]
+
+        if reposIndex + 5 < parts.count &&
+            parts[reposIndex + 3] == "dependabot" &&
+            parts[reposIndex + 4] == "alerts" {
+            let value = parts[reposIndex + 5]
+            return URL(string: "https://github.com/\(owner)/\(repository)/security/dependabot/\(value)")!
+        }
+
         let kind = parts[reposIndex + 3]
         let value = parts[reposIndex + 4]
 
@@ -5360,6 +5432,10 @@ struct GitHubClient {
         switch subjectType {
         case "CheckSuite", "WorkflowRun", "Build":
             return repositoryWebURL.appending(path: "actions")
+        case "RepositoryVulnerabilityAlert", "RepositoryDependabotAlertsThread":
+            return repositoryWebURL
+                .appending(path: "security")
+                .appending(path: "dependabot")
         default:
             return repositoryWebURL
         }
