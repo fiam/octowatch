@@ -56,8 +56,9 @@ final class AppModel: ObservableObject {
     private let notifyOnSelfTriggeredUpdatesStoreKey = "notify-on-self-triggered-updates-v1"
     private let showsMenuBarIconStoreKey = "shows-menu-bar-icon-v1"
     private let debugRateLimitDetailsStoreKey = "debug-rate-limit-details-v1"
-    private let inboxSectionConfigStoreKey = "needs-action-configuration-v2"
-    private let legacyInboxSectionConfigStoreKey = "needs-action-configuration-v1"
+    private let inboxSectionConfigStoreKey = "needs-action-configuration-v3"
+    private let legacyInboxSectionConfigStoreKey = "needs-action-configuration-v2"
+    private let legacyInboxSectionConfigStoreKeyV1 = "needs-action-configuration-v1"
     private let notificationScanStateStoreKey = "notification-scan-state-v1"
     private let teamMembershipStoreKey = "team-membership-cache-v1"
     private let postMergeWatchStoreKey = "post-merge-watches-v1"
@@ -136,8 +137,12 @@ final class AppModel: ObservableObject {
         inboxSectionConfig = Self.loadInboxSectionConfiguration(
             from: UserDefaults.standard,
             key: inboxSectionConfigStoreKey,
-            legacyKey: legacyInboxSectionConfigStoreKey
+            legacyKey: legacyInboxSectionConfigStoreKey,
+            legacyKeyV1: legacyInboxSectionConfigStoreKeyV1
         )
+        if UserDefaults.standard.data(forKey: inboxSectionConfigStoreKey) == nil {
+            persistInboxSectionConfiguration()
+        }
         notificationScanState = Self.loadNotificationScanState(
             from: UserDefaults.standard,
             key: notificationScanStateStoreKey
@@ -1660,6 +1665,7 @@ final class AppModel: ObservableObject {
         if let data = try? encoder.encode(inboxSectionConfig.normalized) {
             UserDefaults.standard.set(data, forKey: inboxSectionConfigStoreKey)
             UserDefaults.standard.removeObject(forKey: legacyInboxSectionConfigStoreKey)
+            UserDefaults.standard.removeObject(forKey: legacyInboxSectionConfigStoreKeyV1)
         }
     }
 
@@ -2207,7 +2213,8 @@ final class AppModel: ObservableObject {
     private static func loadInboxSectionConfiguration(
         from defaults: UserDefaults,
         key: String,
-        legacyKey: String
+        legacyKey: String,
+        legacyKeyV1: String
     ) -> InboxSectionConfiguration {
         if let data = defaults.data(forKey: key),
             let configuration = try? JSONDecoder().decode(InboxSectionConfiguration.self, from: data) {
@@ -2215,11 +2222,16 @@ final class AppModel: ObservableObject {
         }
 
         if let data = defaults.data(forKey: legacyKey),
+            let configuration = try? JSONDecoder().decode(InboxSectionConfiguration.self, from: data) {
+            return configuration.migratingV2ToV3()
+        }
+
+        if let data = defaults.data(forKey: legacyKeyV1),
             let legacyConfiguration = try? JSONDecoder().decode(
                 LegacyInboxSectionConfiguration.self,
                 from: data
             ) {
-            return InboxSectionConfiguration.migrated(from: legacyConfiguration)
+            return InboxSectionConfiguration.migrated(from: legacyConfiguration).migratingV2ToV3()
         }
 
         return .default

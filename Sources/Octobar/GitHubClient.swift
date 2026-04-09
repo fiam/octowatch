@@ -490,6 +490,7 @@ struct GitHubClient {
                 subjectResolution: pullRequest.resolution,
                 detail: detail(for: pullRequest),
                 isHistoricalLogEntry: pullRequest.resolution == .merged,
+                isDraft: pullRequest.isDraft,
                 isUnread: pullRequest.resolution != .merged
             )
         }
@@ -510,7 +511,8 @@ struct GitHubClient {
                 actor: pullRequest.actor,
                 isTriggeredByCurrentUser: false,
                 subjectResolution: .open,
-                detail: detail(for: pullRequest)
+                detail: detail(for: pullRequest),
+                isDraft: pullRequest.isDraft
             )
         }
 
@@ -595,6 +597,7 @@ struct GitHubClient {
                 subjectResolution: trackedSubject.resolution,
                 detail: detail(for: trackedSubject),
                 isHistoricalLogEntry: trackedSubject.resolution == .merged,
+                isDraft: trackedSubject.isDraft,
                 isUnread: trackedSubject.resolution != .merged
             )
         }
@@ -770,6 +773,7 @@ struct GitHubClient {
                 labels: issue.labels.map(\.gitHubLabel),
                 url: issue.htmlURL,
                 updatedAt: issue.updatedAt,
+                isDraft: issue.isDraft,
                 resolution: resolution
             )
         }
@@ -2648,6 +2652,7 @@ struct GitHubClient {
                                 actor: mergedBy,
                                 isTriggeredByCurrentUser: summary.isTriggeredByCurrentUser,
                                 latestSelfUpdate: summary.latestSelfUpdate,
+                                isDraft: summary.isDraft,
                                 resolution: summary.resolution
                             )
                         )
@@ -2706,6 +2711,7 @@ struct GitHubClient {
                                     reviews: reviews,
                                     login: login
                                 ),
+                                isDraft: summary.isDraft,
                                 resolution: summary.resolution
                             )
                         )
@@ -2767,6 +2773,7 @@ struct GitHubClient {
                 labels: issue.labels.map(\.gitHubLabel),
                 url: issue.htmlURL,
                 updatedAt: issue.updatedAt,
+                isDraft: issue.isDraft,
                 resolution: issue.resolution
             )
         }
@@ -2883,6 +2890,7 @@ struct GitHubClient {
                 actor: nil,
                 isTriggeredByCurrentUser: type.isSelfTriggeredRelationshipType,
                 latestSelfUpdate: nil,
+                isDraft: issue.isDraft,
                 resolution: resolution ?? issue.resolution
             )
         }
@@ -2906,8 +2914,7 @@ struct GitHubClient {
         )
 
         guard details.state.caseInsensitiveCompare("open") == .orderedSame,
-            !details.merged,
-            !details.isDraft else {
+            !details.merged else {
             return []
         }
 
@@ -2977,7 +2984,8 @@ struct GitHubClient {
                     updatedAt: commonValues.updatedAt,
                     actor: commonValues.actor,
                     approvalCount: approvalSummary.approvalCount,
-                    checkSummary: commonValues.checkSummary
+                    checkSummary: commonValues.checkSummary,
+                    isDraft: details.isDraft
                 )
             )
         }
@@ -3002,7 +3010,8 @@ struct GitHubClient {
                     updatedAt: commonValues.updatedAt,
                     actor: nil,
                     approvalCount: nil,
-                    checkSummary: commonValues.checkSummary
+                    checkSummary: commonValues.checkSummary,
+                    isDraft: details.isDraft
                 )
             )
         }
@@ -3030,7 +3039,8 @@ struct GitHubClient {
                     updatedAt: commonValues.updatedAt,
                     actor: nil,
                     approvalCount: nil,
-                    checkSummary: commonValues.checkSummary
+                    checkSummary: commonValues.checkSummary,
+                    isDraft: details.isDraft
                 )
             )
         }
@@ -6106,6 +6116,7 @@ private struct IssueItem: Decodable {
     let number: Int
     let title: String
     let state: String
+    let isDraft: Bool
     let user: GitHubUser?
     let assignees: [GitHubUser]
     let labels: [GitHubRESTLabel]
@@ -6132,11 +6143,28 @@ private struct IssueItem: Decodable {
         assignees.contains { $0.login.caseInsensitiveCompare(login) == .orderedSame }
     }
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int.self, forKey: .id)
+        number = try container.decode(Int.self, forKey: .number)
+        title = try container.decode(String.self, forKey: .title)
+        state = try container.decode(String.self, forKey: .state)
+        isDraft = try container.decodeIfPresent(Bool.self, forKey: .isDraft) ?? false
+        user = try container.decodeIfPresent(GitHubUser.self, forKey: .user)
+        assignees = try container.decodeIfPresent([GitHubUser].self, forKey: .assignees) ?? []
+        labels = try container.decodeIfPresent([GitHubRESTLabel].self, forKey: .labels) ?? []
+        htmlURL = try container.decode(URL.self, forKey: .htmlURL)
+        repositoryURL = try container.decode(URL.self, forKey: .repositoryURL)
+        pullRequest = try container.decodeIfPresent(IssueItemPullRequest.self, forKey: .pullRequest)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    }
+
     enum CodingKeys: String, CodingKey {
         case id
         case number
         case title
         case state
+        case isDraft = "draft"
         case user
         case assignees
         case labels

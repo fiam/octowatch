@@ -925,7 +925,7 @@ private struct InboxRuleClauseRow: View {
     }
 
     private var signalPicker: some View {
-        let currentValue = condition.signalValues.first ?? .failedChecks
+        let currentValue = condition.signalValues.first ?? itemKind.availableSignals.first ?? .failedChecks
         return Picker("", selection: Binding(
             get: { currentValue },
             set: { condition.signalValues = [$0] }

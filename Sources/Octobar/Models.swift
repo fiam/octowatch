@@ -3522,6 +3522,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     let isHistoricalLogEntry: Bool
     let closureNotificationEligibleOverride: Bool?
     let postMergeWatchEligibleOverride: Bool?
+    let isDraft: Bool?
     let supportsReadState: Bool
     var isUnread: Bool
 
@@ -3550,6 +3551,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         isHistoricalLogEntry: Bool = false,
         closureNotificationEligibleOverride: Bool? = nil,
         postMergeWatchEligibleOverride: Bool? = nil,
+        isDraft: Bool? = nil,
         supportsReadState: Bool = true,
         isUnread: Bool = true
     ) {
@@ -3586,6 +3588,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
         self.isHistoricalLogEntry = isHistoricalLogEntry
         self.closureNotificationEligibleOverride = closureNotificationEligibleOverride
         self.postMergeWatchEligibleOverride = postMergeWatchEligibleOverride
+        self.isDraft = isDraft
         self.supportsReadState = supportsReadState
         self.isUnread = isUnread
     }
@@ -3618,6 +3621,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             isHistoricalLogEntry: isHistoricalLogEntry,
             closureNotificationEligibleOverride: closureNotificationEligibleOverride,
             postMergeWatchEligibleOverride: postMergeWatchEligibleOverride,
+            isDraft: isDraft,
             supportsReadState: supportsReadState,
             isUnread: isUnread
         )
@@ -3649,6 +3653,7 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
             isHistoricalLogEntry: isHistoricalLogEntry,
             closureNotificationEligibleOverride: closureNotificationEligibleOverride,
             postMergeWatchEligibleOverride: postMergeWatchEligibleOverride,
+            isDraft: isDraft,
             supportsReadState: supportsReadState,
             isUnread: isUnread
         )
@@ -4283,6 +4288,7 @@ enum AttentionSubjectViewPolicy {
             isHistoricalLogEntry: items.allSatisfy(\.isHistoricalLogEntry),
             closureNotificationEligibleOverride: items.contains(where: \.isClosureNotificationEligible),
             postMergeWatchEligibleOverride: items.contains(where: \.isPostMergeWatchEligible),
+            isDraft: items.compactMap(\.isDraft).first,
             isUnread: items.contains(where: \.isUnread)
         )
 
@@ -4382,6 +4388,7 @@ struct PullRequestSummary: Identifiable, Hashable, Sendable {
     let labels: [GitHubLabel]
     let url: URL
     let updatedAt: Date
+    let isDraft: Bool
     let resolution: GitHubSubjectResolution
 }
 
@@ -4399,6 +4406,7 @@ struct TrackedSubjectSummary: Identifiable, Hashable, Sendable {
     let actor: AttentionActor?
     let isTriggeredByCurrentUser: Bool
     let latestSelfUpdate: TrackedSubjectSelfUpdateSummary?
+    let isDraft: Bool
     let resolution: GitHubSubjectResolution
 }
 
@@ -4422,6 +4430,7 @@ struct AuthoredPullRequestSignalSummary: Identifiable, Hashable, Sendable {
     let actor: AttentionActor?
     let approvalCount: Int?
     let checkSummary: PullRequestCheckSummary
+    let isDraft: Bool
 }
 
 struct NotificationSummary: Identifiable, Hashable, Sendable {
@@ -5148,7 +5157,7 @@ enum InboxRuleItemKind: String, Codable, CaseIterable, Hashable, Sendable {
     var availableSignals: [InboxRuleSignal] {
         switch self {
         case .pullRequest:
-            return [.readyToMerge, .mergeConflicts, .failedChecks]
+            return [.readyToMerge, .readyForReview, .mergeConflicts, .failedChecks]
         case .issue:
             return []
         case .workflow:
@@ -5239,6 +5248,7 @@ enum InboxRuleRelationship: String, Codable, CaseIterable, Hashable, Sendable {
 
 enum InboxRuleSignal: String, Codable, CaseIterable, Hashable, Sendable {
     case readyToMerge
+    case readyForReview
     case mergeConflicts
     case failedChecks
     case workflowFailed
@@ -5249,6 +5259,8 @@ enum InboxRuleSignal: String, Codable, CaseIterable, Hashable, Sendable {
         switch self {
         case .readyToMerge:
             return "Ready to Merge"
+        case .readyForReview:
+            return "Ready for Review"
         case .mergeConflicts:
             return "Merge Conflicts"
         case .failedChecks:
@@ -5480,6 +5492,8 @@ struct InboxRuleCondition: Identifiable, Codable, Hashable, Sendable {
         switch signal {
         case .readyToMerge:
             return isNegated ? "not ready to merge" : "ready to merge"
+        case .readyForReview:
+            return isNegated ? "still in draft" : "ready for review"
         case .mergeConflicts:
             return isNegated ? "without merge conflicts" : "with merge conflicts"
         case .failedChecks:
@@ -5611,6 +5625,7 @@ struct InboxRuleFacts: Hashable, Sendable {
 
 enum DefaultInboxRule: String, Codable, CaseIterable, Hashable, Sendable {
     case authoredReadyToMerge
+    case authoredDraftPullRequests
     case authoredMergeConflicts
     case authoredFailedChecks
     case assignedPullRequestsWithoutReview
@@ -5623,6 +5638,8 @@ enum DefaultInboxRule: String, Codable, CaseIterable, Hashable, Sendable {
         switch self {
         case .authoredReadyToMerge:
             return "Your approved PRs ready to merge"
+        case .authoredDraftPullRequests:
+            return "Your draft PRs"
         case .authoredMergeConflicts:
             return "Your PRs with merge conflicts"
         case .authoredFailedChecks:
@@ -5644,6 +5661,8 @@ enum DefaultInboxRule: String, Codable, CaseIterable, Hashable, Sendable {
         switch self {
         case .authoredReadyToMerge:
             return "Open pull requests you authored that are approved, checks passed, and are ready to merge."
+        case .authoredDraftPullRequests:
+            return "Open pull requests you authored that are still in draft."
         case .authoredMergeConflicts:
             return "Open pull requests you authored that need conflict resolution."
         case .authoredFailedChecks:
@@ -5665,6 +5684,8 @@ enum DefaultInboxRule: String, Codable, CaseIterable, Hashable, Sendable {
         switch self {
         case .authoredReadyToMerge:
             return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4501")!
+        case .authoredDraftPullRequests:
+            return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4509")!
         case .authoredMergeConflicts:
             return UUID(uuidString: "F73752E8-2A4B-4C36-82AA-9A9A2A6C4502")!
         case .authoredFailedChecks:
@@ -5693,6 +5714,18 @@ enum DefaultInboxRule: String, Codable, CaseIterable, Hashable, Sendable {
                 conditions: [
                     .relationship([.authored]),
                     .signal([.readyToMerge])
+                ],
+                isEnabled: true
+            )
+        case .authoredDraftPullRequests:
+            return InboxSectionRule(
+                id: stableID,
+                name: title,
+                itemKind: .pullRequest,
+                matchMode: .all,
+                conditions: [
+                    .relationship([.authored]),
+                    .signal([.readyForReview], isNegated: true)
                 ],
                 isEnabled: true
             )
@@ -5925,6 +5958,24 @@ struct InboxSectionConfiguration: Codable, Hashable, Sendable {
                 return definition
             }
         ).normalized
+    }
+
+    func migratingV2ToV3() -> InboxSectionConfiguration {
+        let newRule = DefaultInboxRule.authoredDraftPullRequests.defaultDefinition
+        guard !rules.contains(where: { $0.id == newRule.id }) else {
+            return normalized
+        }
+
+        let sectionIndex = sections.firstIndex(where: { $0.id == Self.defaultSectionID })
+            ?? sections.firstIndex(where: { $0.name == "Your Turn" })
+            ?? sections.indices.first
+        guard let sectionIndex else {
+            return normalized
+        }
+
+        var updatedSections = sections
+        updatedSections[sectionIndex].rules.append(newRule)
+        return InboxSectionConfiguration(sections: updatedSections).normalized
     }
 
     // MARK: - Rule CRUD
@@ -6418,10 +6469,11 @@ enum InboxSectionPolicy {
     }
 
     private static func facts(for item: AttentionItem) -> InboxRuleFacts {
-        let signals = item.currentUpdateTypes.reduce(into: Set<InboxRuleSignal>()) { partialResult, type in
+        var signals = item.currentUpdateTypes.reduce(into: Set<InboxRuleSignal>()) { partialResult, type in
             switch type {
             case .readyToMerge:
                 partialResult.insert(.readyToMerge)
+                partialResult.insert(.readyForReview)
             case .pullRequestMergeConflicts:
                 partialResult.insert(.mergeConflicts)
             case .pullRequestFailedChecks:
@@ -6435,6 +6487,10 @@ enum InboxSectionPolicy {
             default:
                 break
             }
+        }
+
+        if item.pullRequestReference != nil, item.isDraft == false {
+            signals.insert(.readyForReview)
         }
 
         let relationships = relationshipTypes(in: item).reduce(
@@ -6574,7 +6630,7 @@ enum AuthoredPullRequestAttentionPolicy {
         isDraft: Bool,
         mergeableState: String?
     ) -> Bool {
-        guard state.lowercased() == "open", !merged, !isDraft else {
+        guard state.lowercased() == "open", !merged else {
             return false
         }
 
@@ -6587,7 +6643,7 @@ enum AuthoredPullRequestAttentionPolicy {
         isDraft: Bool,
         checkSummary: PullRequestCheckSummary
     ) -> Bool {
-        guard state.lowercased() == "open", !merged, !isDraft else {
+        guard state.lowercased() == "open", !merged else {
             return false
         }
 

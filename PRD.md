@@ -32,7 +32,8 @@ in noise.
 ### Inbox & Filtering
 - Five scopes: Focus, Pull Requests, Issues, Workflows, Notifications.
 - Configurable "Needs Action" rule engine (relationship + signal
-  conditions, enable/disable, CRUD, duplicate, reset to defaults).
+  conditions, enable/disable, CRUD, duplicate, reset to defaults),
+  including `Ready for Review` and default authored-draft coverage.
 - Unread filter on read-state views.
 - PR dashboard (created/assigned/mentioned/review-requested) and Issue
   dashboard (created/assigned/mentioned), demand-loaded.

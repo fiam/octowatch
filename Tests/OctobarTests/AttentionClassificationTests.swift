@@ -2725,6 +2725,125 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testInboxSectionConfigurationV2MigrationAddsDraftRule() {
+        let configuration = InboxSectionConfiguration(
+            rules: [
+                InboxSectionRule(
+                    name: "Existing PR rule",
+                    itemKind: .pullRequest,
+                    conditions: [
+                        .relationship([.authored]),
+                        .signal([.readyToMerge])
+                    ]
+                )
+            ]
+        )
+
+        let migrated = configuration.migratingV2ToV3()
+
+        XCTAssertTrue(
+            migrated.rules.contains {
+                $0.name == DefaultInboxRule.authoredDraftPullRequests.title
+            }
+        )
+    }
+
+    func testInboxSectionPolicyMatchesNegatedReadyForReviewSignalForDrafts() {
+        let draftItem = AttentionItem(
+            id: "draft-authored-pr",
+            subjectKey: "https://github.com/example/repo/pull/11",
+            type: .authoredPullRequest,
+            title: "Draft PR",
+            subtitle: "example/repo · Created by you",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 110),
+            url: URL(string: "https://github.com/example/repo/pull/11")!,
+            subjectResolution: .open,
+            isDraft: true
+        )
+        let configuration = InboxSectionConfiguration(
+            rules: [
+                InboxSectionRule(
+                    name: "Draft authored PRs",
+                    itemKind: .pullRequest,
+                    conditions: [
+                        .relationship([.authored]),
+                        .signal([.readyForReview], isNegated: true)
+                    ]
+                )
+            ]
+        )
+
+        let matches = InboxSectionPolicy.matchingItems(
+            in: [draftItem],
+            configuration: configuration
+        )
+
+        XCTAssertEqual(matches.map(\.id), ["draft-authored-pr"])
+    }
+
+    func testInboxSectionPolicyMatchesReadyForReviewSignal() {
+        let readyItem = AttentionItem(
+            id: "ready-pr",
+            subjectKey: "https://github.com/example/repo/pull/12",
+            type: .authoredPullRequest,
+            title: "Ready PR",
+            subtitle: "example/repo · Created by you",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 120),
+            url: URL(string: "https://github.com/example/repo/pull/12")!,
+            subjectResolution: .open,
+            isDraft: false
+        )
+        let draftItem = AttentionItem(
+            id: "draft-pr",
+            subjectKey: "https://github.com/example/repo/pull/13",
+            type: .authoredPullRequest,
+            title: "Draft PR",
+            subtitle: "example/repo · Created by you",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 130),
+            url: URL(string: "https://github.com/example/repo/pull/13")!,
+            subjectResolution: .open,
+            isDraft: true
+        )
+        let configuration = InboxSectionConfiguration(
+            rules: [
+                InboxSectionRule(
+                    name: "Ready for review PRs",
+                    itemKind: .pullRequest,
+                    conditions: [
+                        .relationship([.authored]),
+                        .signal([.readyForReview])
+                    ]
+                )
+            ]
+        )
+
+        let matches = InboxSectionPolicy.matchingItems(
+            in: [readyItem, draftItem],
+            configuration: configuration
+        )
+
+        XCTAssertEqual(matches.map(\.id), ["ready-pr"])
+    }
+
+    func testDraftPullRequestsCanSurfaceFailedChecksSignals() {
+        XCTAssertTrue(
+            AuthoredPullRequestAttentionPolicy.shouldSurfaceFailedChecks(
+                state: "open",
+                merged: false,
+                isDraft: true,
+                checkSummary: PullRequestCheckSummary(
+                    passedCount: 0,
+                    skippedCount: 0,
+                    failedCount: 1,
+                    pendingCount: 0
+                )
+            )
+        )
+    }
+
     func testInboxSectionPolicyNormalizesLegacyAnyModeRulesToAllMatch() {
         let authoredFailedChecks = AttentionItem(
             id: "custom-any",
