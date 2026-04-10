@@ -1103,6 +1103,40 @@ final class AttentionClassificationTests: XCTestCase {
         )
     }
 
+    func testCombinedReviewRequestRowPrefersReviewRequestForPullRequestFocus() {
+        let url = URL(string: "https://github.com/example/repo/pull/3837")!
+        let reviewRequest = AttentionItem(
+            id: "notif:review",
+            subjectKey: url.absoluteString,
+            stream: .notifications,
+            type: .teamReviewRequested,
+            title: "bump deps",
+            subtitle: "example/repo · Team review requested",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 100),
+            url: url
+        )
+        let failedChecks = AttentionItem(
+            id: "signal:failed-checks",
+            subjectKey: url.absoluteString,
+            stream: .pullRequests,
+            type: .pullRequestFailedChecks,
+            title: "bump deps",
+            subtitle: "example/repo · Failed checks",
+            repository: "example/repo",
+            timestamp: Date(timeIntervalSince1970: 101),
+            url: url
+        )
+
+        let combined = AttentionCombinedViewPolicy.collapsingDuplicates(
+            in: [reviewRequest, failedChecks]
+        )
+
+        XCTAssertEqual(combined.count, 1)
+        XCTAssertEqual(combined.first?.type, .pullRequestFailedChecks)
+        XCTAssertEqual(combined.first?.pullRequestFocusSourceType, .teamReviewRequested)
+    }
+
     func testAttentionItemWorkflowApprovalURLUsesCurrentWorkflowUpdate() {
         let pullRequestURL = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/pull/638")!
         let workflowURL = URL(string: "https://github.com/ExampleOrg/cloud-uc-manifests/actions/runs/123")!
@@ -3561,6 +3595,36 @@ final class AttentionClassificationTests: XCTestCase {
             mode: .generic,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
             viewerPermission: "MAINTAIN",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
+            mergeable: "MERGEABLE",
+            isDraft: false,
+            reviewDecision: "REVIEW_REQUIRED",
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 1,
+            checkSummary: PullRequestCheckSummary(
+                passedCount: 5,
+                skippedCount: 1,
+                failedCount: 0,
+                pendingCount: 0
+            ),
+            openThreadCount: 0
+        )
+
+        XCTAssertEqual(action?.title, "Approve and Merge")
+        XCTAssertEqual(action?.requiresApproval, true)
+        XCTAssertEqual(action?.isEnabled, true)
+        XCTAssertNil(action?.disabledReason)
+    }
+
+    func testBotCommentFollowUpActionEnablesApproveAndMergeForCurrentRequest() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .newCommitsAfterComment,
+            mode: .generic,
+            author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
+            viewerPermission: "ADMIN",
             allowMergeCommit: true,
             allowSquashMerge: true,
             allowRebaseMerge: true,

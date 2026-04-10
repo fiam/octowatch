@@ -753,7 +753,7 @@ final class AppModel: ObservableObject {
             token: token,
             login: userLogin,
             reference: reference,
-            sourceType: item.focusType ?? item.type,
+            sourceType: item.pullRequestFocusSourceType,
             sourceActor: item.focusActor ?? item.actor
         )
         let preferredMergeMethod = preferredMergeMethod(

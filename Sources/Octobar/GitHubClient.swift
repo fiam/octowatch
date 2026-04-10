@@ -2183,7 +2183,7 @@ struct GitHubClient {
     ) -> String {
         if let reviewMergeAction, reviewMergeAction.isEnabled {
             return reviewMergeAction.requiresApproval
-                ? "This bot PR is assigned to you, with no unresolved conversations or failing checks."
+                ? "This bot PR can be approved and merged from here."
                 : "There are no unresolved conversations or failing checks."
         }
 

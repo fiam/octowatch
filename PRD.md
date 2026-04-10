@@ -47,6 +47,9 @@ in noise.
   merge status.
 - Authored draft PRs show draft state and support a direct
   ready-for-review action from the detail pane.
+- Bot-authored PRs keep their approve-and-merge action even when the
+  latest combined row update is a failing check, a comment follow-up, or
+  another non-review signal.
 - Merge controls with auto-method detection, per-repo memory, merge
   queue support.
 - Focused 5 s watch on open PR, 20 s watch on queued PR.

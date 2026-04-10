@@ -3170,11 +3170,7 @@ extension PullRequestReviewMergeAction {
         isInMergeQueue: Bool = false
     ) -> PullRequestReviewMergeAction? {
         let isBotReviewablePullRequest =
-            [
-                AttentionItemType.assignedPullRequest,
-                .reviewRequested,
-                .teamReviewRequested
-            ].contains(sourceType) && author?.isBotAccount == true
+            author?.isBotAccount == true && mode != .authored
         let isMergeCandidateFromYourPullRequest = mode == .authored
 
         guard isBotReviewablePullRequest || isMergeCandidateFromYourPullRequest else {
@@ -3635,6 +3631,26 @@ struct AttentionItem: Identifiable, Hashable, Sendable {
     }
 
     var ignoreKey: String { subjectKey }
+
+    var pullRequestFocusSourceType: AttentionItemType {
+        if let focusType, focusType.isRelationshipType {
+            return focusType
+        }
+
+        if currentUpdateTypes.contains(.teamReviewRequested) {
+            return .teamReviewRequested
+        }
+
+        if currentUpdateTypes.contains(.reviewRequested) {
+            return .reviewRequested
+        }
+
+        if let focusType {
+            return focusType
+        }
+
+        return type
+    }
 
     func replacing(detail: AttentionDetail) -> AttentionItem {
         AttentionItem(
