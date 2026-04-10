@@ -1,11 +1,55 @@
 import Foundation
+import Network
 import SwiftUI
+
+enum AppConnectivityStatus: Equatable, Sendable {
+    case unknown
+    case online
+    case offline
+}
+
+enum AppStartupUnavailableState: Equatable, Sendable {
+    case connectionRequired
+    case offline
+
+    var title: String {
+        switch self {
+        case .connectionRequired:
+            return "GitHub Connection Required"
+        case .offline:
+            return "You're Offline"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .connectionRequired:
+            return "Open Settings to connect GitHub with either GitHub CLI or a personal access token."
+        case .offline:
+            return "Octowatch can't reach GitHub while your Mac is offline. It will retry automatically when the connection comes back."
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .connectionRequired:
+            return "person.crop.circle.badge.exclamationmark"
+        case .offline:
+            return "wifi.slash"
+        }
+    }
+}
 
 @MainActor
 final class AppModel: ObservableObject {
-    private enum TokenSource {
+    private enum TokenSource: Sendable {
         case githubCLI
         case personalAccessToken
+    }
+
+    private struct PendingTokenCandidate: Sendable {
+        let token: String
+        let source: TokenSource
     }
 
     static let shared = AppModel()
@@ -24,6 +68,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var rateLimit: GitHubRateLimit?
     @Published private(set) var rateLimitBuckets: [GitHubRateLimit] = []
+    @Published private(set) var connectivityStatus: AppConnectivityStatus = .unknown
 
     @Published var tokenInput = ""
     @Published private(set) var isResolvingInitialContent = true
@@ -105,6 +150,12 @@ final class AppModel: ObservableObject {
     private var updateHistoryBySubjectKey = [String: [AttentionUpdate]]()
     private var suppressedTransitionNotificationKeys = Set<String>()
     private var pendingForcedRefresh = false
+    private var pendingTokenCandidate: PendingTokenCandidate?
+    private var connectivityMonitor: NWPathMonitor?
+    private let connectivityMonitorQueue = DispatchQueue(
+        label: "dev.octowatch.app.connectivity"
+    )
+    private var connectivityRecoveryTask: Task<Void, Never>?
     private let relativeDateFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
@@ -189,6 +240,8 @@ final class AppModel: ObservableObject {
             return
         }
 
+        startConnectivityMonitoring()
+
         Task {
             await notifier.requestAuthorization()
         }
@@ -205,6 +258,8 @@ final class AppModel: ObservableObject {
         ignoreUndoDismissTask?.cancel()
         snoozeUndoDismissTask?.cancel()
         snoozeWakeTask?.cancel()
+        connectivityRecoveryTask?.cancel()
+        connectivityMonitor?.cancel()
     }
 
     var hasToken: Bool {
@@ -213,6 +268,18 @@ final class AppModel: ObservableObject {
 
     var viewerLogin: String? {
         userLogin
+    }
+
+    var startupUnavailableState: AppStartupUnavailableState? {
+        guard !isResolvingInitialContent, !hasToken else {
+            return nil
+        }
+
+        if connectivityStatus == .offline, canRecoverConnectionWithoutOpeningSettings {
+            return .offline
+        }
+
+        return .connectionRequired
     }
 
     var actionableCount: Int {
@@ -507,6 +574,7 @@ final class AppModel: ObservableObject {
         token = nil
         tokenInput = ""
         usingGitHubCLIToken = false
+        pendingTokenCandidate = nil
         latestSnapshotAttentionItems = []
         latestSnapshotPullRequestDashboard = .empty
         latestSnapshotIssueDashboard = .empty
@@ -578,6 +646,13 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func retryConnection() {
+        connectivityRecoveryTask?.cancel()
+        connectivityRecoveryTask = Task { [weak self] in
+            await self?.attemptConnectionRecovery(forceTokenReload: true)
+        }
+    }
+
     func ensurePullRequestDashboardLoaded() async {
         guard pullRequestDashboardLastUpdated == nil else {
             return
@@ -633,7 +708,8 @@ final class AppModel: ObservableObject {
                 case let .rateLimited(rateLimit) = clientError {
                 mergeRateLimitState(with: rateLimit)
             }
-            pullRequestDashboardLastError = error.localizedDescription
+            recordConnectivityFailureIfNeeded(for: error)
+            pullRequestDashboardLastError = userFacingRefreshError(for: error)
         }
     }
 
@@ -673,7 +749,8 @@ final class AppModel: ObservableObject {
                 case let .rateLimited(rateLimit) = clientError {
                 mergeRateLimitState(with: rateLimit)
             }
-            issueDashboardLastError = error.localizedDescription
+            recordConnectivityFailureIfNeeded(for: error)
+            issueDashboardLastError = userFacingRefreshError(for: error)
         }
     }
 
@@ -1064,6 +1141,73 @@ final class AppModel: ObservableObject {
         queuedPostMergeWatchTask = nil
     }
 
+    private var canRecoverConnectionWithoutOpeningSettings: Bool {
+        pendingTokenCandidate != nil || gitHubCLIAvailable
+    }
+
+    private func startConnectivityMonitoring() {
+        let monitor = NWPathMonitor()
+        connectivityMonitor = monitor
+        monitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor [weak self] in
+                self?.handleConnectivityUpdate(path)
+            }
+        }
+        monitor.start(queue: connectivityMonitorQueue)
+    }
+
+    private func handleConnectivityUpdate(_ path: NWPath) {
+        let previousStatus = connectivityStatus
+        let nextStatus: AppConnectivityStatus = switch path.status {
+        case .satisfied:
+            .online
+        case .requiresConnection, .unsatisfied:
+            .offline
+        @unknown default:
+            .unknown
+        }
+
+        guard nextStatus != previousStatus else {
+            return
+        }
+
+        connectivityStatus = nextStatus
+
+        guard nextStatus == .online else {
+            return
+        }
+
+        connectivityRecoveryTask?.cancel()
+        connectivityRecoveryTask = Task { [weak self] in
+            await self?.attemptConnectionRecovery(forceTokenReload: false)
+        }
+    }
+
+    private func attemptConnectionRecovery(forceTokenReload: Bool) async {
+        if let pendingTokenCandidate {
+            _ = await validateAndApplyToken(
+                pendingTokenCandidate.token,
+                source: pendingTokenCandidate.source
+            )
+            return
+        }
+
+        if !hasToken {
+            _ = await importTokenFromGitHubCLIIfAvailable(force: forceTokenReload)
+            return
+        }
+
+        await refresh(force: true)
+
+        if pullRequestDashboardLastError != nil {
+            await refreshPullRequestDashboard(force: true)
+        }
+
+        if issueDashboardLastError != nil {
+            await refreshIssueDashboard(force: true)
+        }
+    }
+
     private func syncQueuedPostMergeWatchLoop() {
         guard hasToken, hasQueuedPostMergeWatches else {
             clearQueuedPostMergeWatchLoop()
@@ -1260,7 +1404,8 @@ final class AppModel: ObservableObject {
                 case let .rateLimited(rateLimit) = clientError {
                 mergeRateLimitState(with: rateLimit)
             }
-            lastError = error.localizedDescription
+            recordConnectivityFailureIfNeeded(for: error)
+            lastError = userFacingRefreshError(for: error)
         }
 
         if isResolvingInitialContent {
@@ -1313,11 +1458,13 @@ final class AppModel: ObservableObject {
             let previousLogin = userLogin
 
             token = candidate
+            pendingTokenCandidate = nil
             userLogin = validatedLogin
             usingGitHubCLIToken = source == .githubCLI
             tokenInput = source == .githubCLI ? "" : candidate
             knownLatestUpdateKeyBySubjectKey.removeAll()
             lastError = nil
+            connectivityStatus = .online
             clearRateLimitState()
             pullRequestFocusCache = [:]
             suppressedTransitionNotificationKeys = []
@@ -1347,6 +1494,15 @@ final class AppModel: ObservableObject {
             refreshNow()
             return true
         } catch {
+            if shouldRetainTokenCandidate(after: error) {
+                pendingTokenCandidate = PendingTokenCandidate(
+                    token: candidate,
+                    source: source
+                )
+                recordConnectivityFailureIfNeeded(for: error)
+            } else {
+                pendingTokenCandidate = nil
+            }
             lastError = userFacingTokenError(for: error, source: source)
             return false
         }
@@ -1358,6 +1514,10 @@ final class AppModel: ObservableObject {
     ) -> String {
         if let clientError = error as? GitHubClientError {
             switch clientError {
+            case .offline:
+                return "You're offline. Octowatch will retry when the connection returns."
+            case let .transport(message):
+                return message
             case .invalidCredentials:
                 return "GitHub rejected that token. Check the token and try again."
             case .rateLimited:
@@ -1379,6 +1539,51 @@ final class AppModel: ObservableObject {
         }
 
         return "That token could not be validated for Octowatch."
+    }
+
+    private func userFacingRefreshError(for error: Error) -> String {
+        if let clientError = error as? GitHubClientError {
+            switch clientError {
+            case .offline:
+                return "You're offline. Octowatch will retry when the connection returns."
+            case let .transport(message):
+                return message
+            default:
+                return clientError.localizedDescription
+            }
+        }
+
+        return error.localizedDescription
+    }
+
+    private func shouldRetainTokenCandidate(after error: Error) -> Bool {
+        guard let clientError = error as? GitHubClientError else {
+            return false
+        }
+
+        switch clientError {
+        case .offline, .transport:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func recordConnectivityFailureIfNeeded(for error: Error) {
+        guard let clientError = error as? GitHubClientError else {
+            return
+        }
+
+        switch clientError {
+        case .offline:
+            connectivityStatus = .offline
+        case .transport:
+            if connectivityStatus == .unknown {
+                connectivityStatus = .offline
+            }
+        default:
+            break
+        }
     }
 
     private func notifyIfNeeded(previousItems: [AttentionItem], token: String) async {
@@ -2354,7 +2559,7 @@ final class AppModel: ObservableObject {
     }
 
     private func applyLaunchFixture(_ fixture: LaunchFixture) {
-        token = "ui-test-token"
+        token = fixture.token
         tokenInput = ""
         userLogin = fixture.login
         latestSnapshotAttentionItems = fixture.attentionItems
@@ -2374,11 +2579,12 @@ final class AppModel: ObservableObject {
             configuration: inboxSectionConfig
         )
         lastUpdated = fixture.lastUpdated
-        lastError = nil
+        lastError = fixture.lastError
         isResolvingInitialContent = false
-        gitHubCLIAvailable = false
+        gitHubCLIAvailable = fixture.gitHubCLIAvailable
         usingGitHubCLIToken = false
         isValidatingToken = false
+        connectivityStatus = fixture.connectivityStatus
         clearRateLimitState()
         knownLatestUpdateKeyBySubjectKey = Dictionary(
             uniqueKeysWithValues: fixture.attentionItems.map { ($0.subjectKey, $0.updateKey) }
@@ -2397,6 +2603,9 @@ final class AppModel: ObservableObject {
         showsDebugRateLimitDetails = false
         notificationScanState = .default
         teamMembershipCache = .default
+        pendingTokenCandidate = fixture.hasPendingGitHubCLIToken
+            ? PendingTokenCandidate(token: "ui-test-token", source: .githubCLI)
+            : nil
         pullRequestFocusCache = Dictionary(
             uniqueKeysWithValues: fixture.pullRequestFocusesBySubjectKey.map { subjectKey, focus in
                 (
@@ -2422,11 +2631,16 @@ final class AppModel: ObservableObject {
 }
 
 private struct LaunchFixture {
-    let login: String
+    let token: String?
+    let login: String?
     let attentionItems: [AttentionItem]
     let pullRequestFocusesBySubjectKey: [String: PullRequestFocus]
     let autoMarkReadSetting: AutoMarkReadSetting
     let lastUpdated: Date
+    let lastError: String?
+    let connectivityStatus: AppConnectivityStatus
+    let gitHubCLIAvailable: Bool
+    let hasPendingGitHubCLIToken: Bool
 
     static func load(from environment: [String: String]) -> LaunchFixture? {
         switch environment["OCTOWATCH_UI_TEST_FIXTURE"] {
@@ -2438,6 +2652,8 @@ private struct LaunchFixture {
             return notificationSecurityAlertFixture(isUnread: true)
         case "notification-security-alert-read":
             return notificationSecurityAlertFixture(isUnread: false)
+        case "offline-startup":
+            return offlineStartupFixture
         default:
             return nil
         }
@@ -2478,11 +2694,16 @@ private struct LaunchFixture {
         )
 
         return LaunchFixture(
+            token: "ui-test-token",
             login: "octowatch-ui-test",
             attentionItems: [primaryItem, secondaryItem],
             pullRequestFocusesBySubjectKey: [:],
             autoMarkReadSetting: .oneSecond,
-            lastUpdated: now
+            lastUpdated: now,
+            lastError: nil,
+            connectivityStatus: .online,
+            gitHubCLIAvailable: false,
+            hasPendingGitHubCLIToken: false
         )
     }
 
@@ -2577,11 +2798,16 @@ private struct LaunchFixture {
         )
 
         return LaunchFixture(
+            token: "ui-test-token",
             login: "octowatch-ui-test",
             attentionItems: [item],
             pullRequestFocusesBySubjectKey: [subjectKey: focus],
             autoMarkReadSetting: .never,
-            lastUpdated: now
+            lastUpdated: now,
+            lastError: nil,
+            connectivityStatus: .online,
+            gitHubCLIAvailable: false,
+            hasPendingGitHubCLIToken: false
         )
     }
 
@@ -2642,11 +2868,31 @@ private struct LaunchFixture {
         )
 
         return LaunchFixture(
+            token: "ui-test-token",
             login: "octowatch-ui-test",
             attentionItems: [item],
             pullRequestFocusesBySubjectKey: [:],
             autoMarkReadSetting: .threeSeconds,
-            lastUpdated: now
+            lastUpdated: now,
+            lastError: nil,
+            connectivityStatus: .online,
+            gitHubCLIAvailable: false,
+            hasPendingGitHubCLIToken: false
+        )
+    }
+
+    private static var offlineStartupFixture: LaunchFixture {
+        LaunchFixture(
+            token: nil,
+            login: nil,
+            attentionItems: [],
+            pullRequestFocusesBySubjectKey: [:],
+            autoMarkReadSetting: .threeSeconds,
+            lastUpdated: Date(),
+            lastError: "You're offline. Octowatch will retry when the connection returns.",
+            connectivityStatus: .offline,
+            gitHubCLIAvailable: true,
+            hasPendingGitHubCLIToken: true
         )
     }
 }

@@ -4,6 +4,8 @@ import GitHubWorkflowParsing
 enum GitHubClientError: LocalizedError {
     case invalidResponse
     case invalidCredentials
+    case offline
+    case transport(message: String)
     case api(statusCode: Int, message: String)
     case rateLimited(GitHubRateLimit?)
     case tokenValidation(message: String)
@@ -15,6 +17,10 @@ enum GitHubClientError: LocalizedError {
             return "GitHub API returned an invalid response."
         case .invalidCredentials:
             return "GitHub credentials were rejected."
+        case .offline:
+            return "You're offline. Octowatch will retry when the connection returns."
+        case let .transport(message):
+            return message
         case let .api(statusCode, message):
             return "GitHub API error \(statusCode): \(message)"
         case .rateLimited:
@@ -5412,7 +5418,21 @@ struct GitHubClient {
         _ request: URLRequest,
         observer: GitHubRateLimitObserver? = nil
     ) async throws -> (Data, HTTPURLResponse) {
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            if error is CancellationError {
+                throw error
+            }
+
+            if let urlError = error as? URLError, urlError.code == .cancelled {
+                throw error
+            }
+
+            throw mapTransportError(error)
+        }
         guard let http = response as? HTTPURLResponse else {
             throw GitHubClientError.invalidResponse
         }
@@ -5440,12 +5460,42 @@ struct GitHubClient {
         return (data, http)
     }
 
+    private func mapTransportError(_ error: Error) -> GitHubClientError {
+        if let clientError = error as? GitHubClientError {
+            return clientError
+        }
+
+        guard let urlError = error as? URLError else {
+            return .transport(message: "Octowatch couldn't reach GitHub right now.")
+        }
+
+        switch urlError.code {
+        case .notConnectedToInternet,
+             .cannotLoadFromNetwork,
+             .internationalRoamingOff,
+             .dataNotAllowed:
+            return .offline
+        case .timedOut,
+             .cannotFindHost,
+             .cannotConnectToHost,
+             .dnsLookupFailed,
+             .networkConnectionLost:
+            return .transport(message: "Octowatch couldn't reach GitHub right now.")
+        default:
+            return .transport(message: urlError.localizedDescription)
+        }
+    }
+
     private func mapTokenValidationError(
         _ error: Error,
         fallback: String
     ) -> GitHubClientError {
         if let clientError = error as? GitHubClientError {
             switch clientError {
+            case .offline:
+                return .offline
+            case let .transport(message):
+                return .transport(message: message)
             case .invalidCredentials:
                 return .invalidCredentials
             case let .api(statusCode, message):

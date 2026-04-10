@@ -240,34 +240,39 @@ struct AttentionWindowView: View {
 
     @ViewBuilder
     private func windowContent(relativeTo referenceDate: Date) -> some View {
-        ZStack(alignment: .bottomTrailing) {
-            NavigationSplitView {
-                sidebar(relativeTo: referenceDate)
-            } detail: {
-                detailPane(relativeTo: referenceDate)
-            }
-
-            if hasVisibleToasts {
-                VStack(alignment: .trailing, spacing: 12) {
-                    if let snoozeUndoState = model.snoozeUndoState {
-                        SnoozeUndoBanner(
-                            state: snoozeUndoState,
-                            onUndo: model.undoRecentSnooze,
-                            onDismiss: model.dismissRecentSnooze
-                        )
-                    }
-
-                    if let ignoreUndoState = model.ignoreUndoState {
-                        IgnoreUndoBanner(
-                            state: ignoreUndoState,
-                            onUndo: model.undoRecentIgnore,
-                            onDismiss: model.dismissIgnoreUndo
-                        )
-                    }
+        if let unavailableState = model.startupUnavailableState {
+            startupUnavailableView(for: unavailableState)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ZStack(alignment: .bottomTrailing) {
+                NavigationSplitView {
+                    sidebar(relativeTo: referenceDate)
+                } detail: {
+                    detailPane(relativeTo: referenceDate)
                 }
-                .padding(.trailing, 20)
-                .padding(.bottom, 20)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
+
+                if hasVisibleToasts {
+                    VStack(alignment: .trailing, spacing: 12) {
+                        if let snoozeUndoState = model.snoozeUndoState {
+                            SnoozeUndoBanner(
+                                state: snoozeUndoState,
+                                onUndo: model.undoRecentSnooze,
+                                onDismiss: model.dismissRecentSnooze
+                            )
+                        }
+
+                        if let ignoreUndoState = model.ignoreUndoState {
+                            IgnoreUndoBanner(
+                                state: ignoreUndoState,
+                                onUndo: model.undoRecentIgnore,
+                                onDismiss: model.dismissIgnoreUndo
+                            )
+                        }
+                    }
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 20)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
             }
         }
     }
@@ -608,8 +613,8 @@ struct AttentionWindowView: View {
             Group {
                 if showsLoadingState {
                     sidebarLoadingView
-                } else if !model.hasToken {
-                    connectionRequiredView
+                } else if let unavailableState = model.startupUnavailableState {
+                    startupUnavailableView(for: unavailableState)
                 } else if displayedItems.isEmpty {
                     emptyStateView
                 } else {
@@ -913,8 +918,8 @@ struct AttentionWindowView: View {
         Group {
             if showsLoadingState {
                 loadingDetailPlaceholder
-            } else if !model.hasToken {
-                connectionRequiredView
+            } else if let unavailableState = model.startupUnavailableState {
+                startupUnavailableView(for: unavailableState)
             } else if selectionActionItems.count > 1 {
                 multipleSelectionView
             } else if let item = selectedItem {
@@ -967,17 +972,30 @@ struct AttentionWindowView: View {
         Color(nsColor: .windowBackgroundColor)
     }
 
-    private var connectionRequiredView: some View {
+    private func startupUnavailableView(
+        for state: AppStartupUnavailableState
+    ) -> some View {
         ContentUnavailableView {
-            Label("GitHub Connection Required", systemImage: "person.crop.circle.badge.exclamationmark")
+            Label(state.title, systemImage: state.systemImage)
+                .accessibilityIdentifier("startup-unavailable-title")
         } description: {
-            Text("Open Settings to connect GitHub with either GitHub CLI or a personal access token.")
+            Text(state.description)
         } actions: {
-            Button("Open Settings") {
-                openWindow(id: AppSceneID.settingsWindow)
+            switch state {
+            case .connectionRequired:
+                Button("Open Settings") {
+                    openWindow(id: AppSceneID.settingsWindow)
+                }
+                .appInteractiveHover()
+            case .offline:
+                Button("Retry") {
+                    model.retryConnection()
+                }
+                .appInteractiveHover()
+                .accessibilityIdentifier("offline-retry-button")
             }
-            .appInteractiveHover()
         }
+        .accessibilityIdentifier("startup-unavailable-view")
     }
 
     private var browsePullRequestCount: Int {

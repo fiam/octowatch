@@ -72,6 +72,8 @@ in noise.
 - Polling interval (30–900 s).
 - Rate-limit diagnostics toggle.
 - Ignored items and snoozed items managers with restore actions.
+- Offline startup handling with a single recovery state, manual retry,
+  and automatic reconnect refresh when network access returns.
 
 ---
 

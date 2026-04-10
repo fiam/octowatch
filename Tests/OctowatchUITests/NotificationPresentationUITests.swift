@@ -41,6 +41,16 @@ final class NotificationPresentationUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["detail-evidence-title-security-alert"].exists)
     }
 
+    func testOfflineStartupShowsSingleRetryState() async throws {
+        let app = launchFixture(named: "offline-startup")
+
+        let offlineTitle = app.staticTexts["You're Offline"]
+        XCTAssertTrue(offlineTitle.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["GitHub Connection Required"].exists)
+        XCTAssertFalse(app.buttons["Open Settings"].exists)
+        XCTAssertTrue(app.buttons["Retry"].exists)
+    }
+
     private func launchFixture(named fixtureName: String) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["OCTOWATCH_UI_TEST_FIXTURE"] = fixtureName

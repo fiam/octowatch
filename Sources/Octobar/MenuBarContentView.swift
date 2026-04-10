@@ -80,7 +80,9 @@ struct MenuBarContentView: View {
         VStack(alignment: .leading, spacing: LayoutMetrics.sectionSpacing) {
             header
 
-            if model.hasToken {
+            if let unavailableState = model.startupUnavailableState {
+                unavailableStateView(for: unavailableState)
+            } else if model.hasToken {
                 inboxSectionList
             } else {
                 tokenSetup
@@ -206,7 +208,7 @@ struct MenuBarContentView: View {
 
     @ViewBuilder
     private var footer: some View {
-        if let lastError = model.lastError {
+        if model.hasToken, let lastError = model.lastError {
             HStack {
                 Text(lastError)
                     .font(.caption2)
@@ -230,6 +232,34 @@ struct MenuBarContentView: View {
                 Text("Open Settings")
             }
             .appInteractiveHover()
+        }
+    }
+
+    private func unavailableStateView(
+        for state: AppStartupUnavailableState
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(state.title)
+                .font(.callout.weight(.semibold))
+            Text(state.description)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            switch state {
+            case .connectionRequired:
+                Button(action: requestSettings) {
+                    Text("Open Settings")
+                }
+                .appInteractiveHover()
+            case .offline:
+                Button {
+                    model.retryConnection()
+                } label: {
+                    Text("Retry")
+                }
+                .appInteractiveHover()
+                .accessibilityIdentifier("menu-bar-offline-retry-button")
+            }
         }
     }
 
