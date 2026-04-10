@@ -45,6 +45,8 @@ in noise.
 ### Pull Request Detail
 - Rich detail pane: body, labels, review threads, checks, commits,
   merge status.
+- Authored draft PRs show draft state and support a direct
+  ready-for-review action from the detail pane.
 - Merge controls with auto-method detection, per-repo memory, merge
   queue support.
 - Focused 5 s watch on open PR, 20 s watch on queued PR.
@@ -91,6 +93,14 @@ next week), then resurfaced automatically. Complements ignore
   `AttentionWindowView.swift`, `SnoozedItemsView.swift`
 - **Status:** Shipped
 
+#### Draft PR Visual Treatment
+Draft pull requests now carry explicit draft labeling in the sidebar
+and menu bar, stay eligible for `Your Turn` rules, and authored draft
+PRs surface a direct ready-for-review action in the detail pane.
+- **Files:** `Models.swift`, `AttentionWindowView.swift`,
+  `MenuBarContentView.swift`, `GitHubClient.swift`
+- **Status:** Shipped
+
 ### Partial
 
 #### 1. Issue Detail Pane
@@ -118,35 +128,29 @@ ignore, and Cmd+Shift+A mark-all-read are still missing.
 #### 4. Expanded Test Coverage
 - Integration tests for `AppModel` polling loop with a stub client are
   still missing.
-- UI coverage exists for auto-mark-read, but the wider UI surface is not
-  yet covered.
+- UI coverage exists for auto-mark-read plus targeted draft-PR and
+  security-alert presentation paths, but the wider UI surface is still
+  not comprehensively covered.
 - Settings persistence round-trip tests are still missing.
 - **Files:** `Tests/`
 - **Status:** Partial
 
 ### Missing
 
-#### 5. Draft PR Visual Treatment
-Draft state exists in the model/API layer, but the UI still does not
-give draft pull requests a distinct treatment.
-- **Files:** `Models.swift`, `AttentionWindowView.swift`,
-  `GitHubClient.swift`
-- **Status:** Missing
-
-#### 6. Stale PR Indicator
+#### 5. Stale PR Indicator
 Flag PRs with no activity for a configurable period (for example,
 7 days) so authored PRs do not disappear into the background.
 - **Files:** `Models.swift`, `AttentionWindowView.swift`
 - **Status:** Missing
 
-#### 7. Persist Token in Keychain
+#### 6. Persist Token in Keychain
 `KeychainStore.swift` exists but is still unused. Users should be able
 to opt in to persisting their token across launches.
 - **Files:** `KeychainStore.swift`, `SettingsView.swift`,
   `AppModel.swift`
 - **Status:** Missing
 
-#### 8. Deep-Link Support (`octobar://`)
+#### 7. Deep-Link Support (`octobar://`)
 Register a custom URL scheme so external tools / scripts can open
 specific items in the app.
 - **Files:** `AppDelegate.swift`, `Info.plist`, `project.yml`
@@ -158,7 +162,8 @@ specific items in the app.
 - GitHub App / webhook-based real-time updates.
 - Cross-platform (iOS, Linux).
 - Organization-wide dashboards or team views.
-- Write operations beyond merge and workflow approval.
+- Broad GitHub write tooling beyond targeted actions such as ready for
+  review, merge, and workflow approval.
 
 ---
 

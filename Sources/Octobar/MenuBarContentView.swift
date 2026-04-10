@@ -234,11 +234,7 @@ struct MenuBarContentView: View {
     }
 
     private func itemContext(for item: AttentionItem) -> String {
-        let typeSummary = item.type.nativeNotificationTitle
-        if let repo = item.repository {
-            return "\(repo) · \(typeSummary)"
-        }
-        return typeSummary
+        AttentionItemPresentationPolicy.sidebarContext(for: item)
     }
 
     private func requestSettings() {

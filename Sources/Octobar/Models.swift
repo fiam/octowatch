@@ -1724,6 +1724,7 @@ struct PullRequestFocus: Hashable, Sendable {
     let sections: [PullRequestFocusSection]
     let timeline: [PullRequestTimelineEntry]
     let actions: [AttentionAction]
+    let readyForReviewAction: PullRequestReadyForReviewAction?
     let reviewMergeAction: PullRequestReviewMergeAction?
     let emptyStateTitle: String
     let emptyStateDetail: String
@@ -1739,6 +1740,22 @@ struct PullRequestFocus: Hashable, Sendable {
             workflowAttentionType: postMergeWorkflowPreview?.attentionType,
             excluding: currentSourceType
         )
+    }
+}
+
+enum AttentionItemPresentationPolicy {
+    static func sidebarContext(for item: AttentionItem) -> String {
+        let typeSummary = item.type.nativeNotificationTitle
+        let draftPrefix =
+            item.pullRequestReference != nil && item.isDraft == true
+            ? "Draft · "
+            : ""
+
+        if let repository = item.repository {
+            return "\(repository) · \(draftPrefix)\(typeSummary)"
+        }
+
+        return "\(draftPrefix)\(typeSummary)"
     }
 }
 
@@ -2665,6 +2682,28 @@ struct PullRequestReviewMergeAction: Hashable, Sendable {
     }
 }
 
+struct PullRequestReadyForReviewAction: Hashable, Sendable {
+    let title: String
+    let isEnabled: Bool
+    let disabledReason: String?
+
+    static func makeAction(
+        mode: PullRequestFocusMode,
+        resolution: GitHubSubjectResolution,
+        isDraft: Bool
+    ) -> PullRequestReadyForReviewAction? {
+        guard mode == .authored, resolution == .open, isDraft else {
+            return nil
+        }
+
+        return PullRequestReadyForReviewAction(
+            title: "Ready for Review",
+            isEnabled: true,
+            disabledReason: nil
+        )
+    }
+}
+
 enum PullRequestMergeMethodPolicy {
     static func effectiveAllowedMethods(
         repositoryAllowedMethods: [PullRequestMergeMethod],
@@ -2728,6 +2767,7 @@ extension PullRequestFocus {
             sections: sections,
             timeline: timeline,
             actions: actions,
+            readyForReviewAction: readyForReviewAction,
             reviewMergeAction: reviewMergeAction?.applyingPreferredMergeMethod(mergeMethod),
             emptyStateTitle: emptyStateTitle,
             emptyStateDetail: emptyStateDetail
@@ -2752,6 +2792,7 @@ extension PullRequestFocus {
             sections: sections,
             timeline: timeline,
             actions: actions,
+            readyForReviewAction: readyForReviewAction,
             reviewMergeAction: reviewMergeAction,
             emptyStateTitle: emptyStateTitle,
             emptyStateDetail: emptyStateDetail

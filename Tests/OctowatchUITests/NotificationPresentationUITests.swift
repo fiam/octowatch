@@ -4,10 +4,7 @@ import XCTest
 final class NotificationPresentationUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
-        let app = XCUIApplication()
-        if app.state != .notRunning {
-            app.terminate()
-        }
+        terminateRunningOctowatchIfNeeded()
     }
 
     func testSecurityAlertNotificationUsesSecurityAlertPresentation() async throws {
@@ -46,9 +43,6 @@ final class NotificationPresentationUITests: XCTestCase {
 
     private func launchFixture(named fixtureName: String) -> XCUIApplication {
         let app = XCUIApplication()
-        if app.state != .notRunning {
-            app.terminate()
-        }
         app.launchEnvironment["OCTOWATCH_UI_TEST_FIXTURE"] = fixtureName
         app.launch()
         return app

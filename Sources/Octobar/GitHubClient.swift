@@ -280,6 +280,17 @@ struct GitHubClient {
     }
     """
 
+    private static let markPullRequestReadyForReviewMutation = """
+    mutation MarkPullRequestReadyForReview($pullRequestId: ID!) {
+      markPullRequestReadyForReview(input: { pullRequestId: $pullRequestId }) {
+        pullRequest {
+          id
+          isDraft
+        }
+      }
+    }
+    """
+
     func validateToken(token: String) async throws -> String {
         let user: CurrentUser = try await request(path: "/user", token: token)
 
@@ -768,7 +779,11 @@ struct GitHubClient {
                 ignoreKey: issue.htmlURL.absoluteString,
                 number: issue.number,
                 title: issue.title,
-                subtitle: "#\(issue.number) · \(repository)",
+                subtitle: pullRequestSubtitle(
+                    number: issue.number,
+                    repository: repository,
+                    isDraft: issue.isDraft
+                ),
                 repository: repository,
                 labels: issue.labels.map(\.gitHubLabel),
                 url: issue.htmlURL,
@@ -1451,6 +1466,11 @@ struct GitHubClient {
             failedChecks: checkInsights.failingEntries
         )
         let openThreadCount = openThreads.count + outdatedThreads.count
+        let readyForReviewAction = PullRequestReadyForReviewAction.makeAction(
+            mode: focusMode,
+            resolution: resolution,
+            isDraft: pullRequest.isDraft
+        )
         let reviewMergeAction = PullRequestReviewMergeAction.makeAction(
             sourceType: sourceType,
             mode: focusMode,
@@ -1484,7 +1504,7 @@ struct GitHubClient {
             mode: focusMode,
             checkSummary: checkInsights.summary,
             hasNewCommits: !commitsSinceReview.isEmpty,
-            hasPrimaryMutationAction: reviewMergeAction?.isEnabled == true
+            hasPrimaryMutationAction: readyForReviewAction?.isEnabled == true || reviewMergeAction?.isEnabled == true
         )
 
         let focus = PullRequestFocus(
@@ -1504,6 +1524,7 @@ struct GitHubClient {
             sections: sections,
             timeline: buildPullRequestTimeline(from: pullRequest),
             actions: actions,
+            readyForReviewAction: readyForReviewAction,
             reviewMergeAction: reviewMergeAction,
             emptyStateTitle: focusEmptyStateTitle(
                 for: focusMode,
@@ -1651,6 +1672,30 @@ struct GitHubClient {
             mergeMethod: mergeMethod,
             rateLimits: await observer.snapshot()
         )
+    }
+
+    func markPullRequestReadyForReview(
+        token: String,
+        reference: PullRequestReference
+    ) async throws -> GitHubRateLimitSnapshot? {
+        let observer = GitHubRateLimitObserver()
+        let pullRequestID = try await fetchPullRequestNodeID(
+            token: token,
+            reference: reference,
+            observer: observer
+        )
+        let response: MarkPullRequestReadyForReviewMutationData = try await graphQLRequest(
+            query: Self.markPullRequestReadyForReviewMutation,
+            variables: EnqueuePullRequestMutationVariables(pullRequestID: pullRequestID),
+            token: token,
+            observer: observer
+        )
+
+        guard response.markPullRequestReadyForReview?.pullRequest?.isDraft == false else {
+            throw GitHubClientError.invalidResponse
+        }
+
+        return await observer.snapshot()
     }
 
     func fetchPendingDeploymentReview(
@@ -1908,7 +1953,8 @@ struct GitHubClient {
 
     private func fetchPullRequestNodeID(
         token: String,
-        reference: PullRequestReference
+        reference: PullRequestReference,
+        observer: GitHubRateLimitObserver? = nil
     ) async throws -> String {
         let response: PullRequestNodeIDQueryData = try await graphQLRequest(
             query: Self.pullRequestNodeIDQuery,
@@ -1917,7 +1963,8 @@ struct GitHubClient {
                 name: reference.name,
                 number: reference.number
             ),
-            token: token
+            token: token,
+            observer: observer
         )
 
         guard let pullRequestID = response.repository?.pullRequest?.id else {
@@ -2746,6 +2793,29 @@ struct GitHubClient {
         return "\(repository) · Merged by \(mergedBy.login)"
     }
 
+    private func pullRequestSubtitle(number: Int, repository: String, isDraft: Bool) -> String {
+        draftAwareSubtitle(
+            repository: "#\(number) · \(repository)",
+            detail: nil,
+            isDraft: isDraft
+        )
+    }
+
+    private func draftAwareSubtitle(
+        repository: String,
+        detail: String?,
+        isDraft: Bool
+    ) -> String {
+        var components = [repository]
+        if isDraft {
+            components.append("Draft")
+        }
+        if let detail, !detail.isEmpty {
+            components.append(detail)
+        }
+        return components.joined(separator: " · ")
+    }
+
     private func searchPullRequests(
         token: String,
         query: String,
@@ -2768,7 +2838,11 @@ struct GitHubClient {
                 ignoreKey: issue.htmlURL.absoluteString,
                 number: issue.number,
                 title: issue.title,
-                subtitle: "#\(issue.number) · \(repository)",
+                subtitle: pullRequestSubtitle(
+                    number: issue.number,
+                    repository: repository,
+                    isDraft: issue.isDraft
+                ),
                 repository: repository,
                 labels: issue.labels.map(\.gitHubLabel),
                 url: issue.htmlURL,
@@ -2794,18 +2868,23 @@ struct GitHubClient {
         return byKey.values.sorted { $0.updatedAt > $1.updatedAt }
     }
 
-    private func trackedSubjectSubtitle(for type: AttentionItemType, repository: String) -> String {
+    private func trackedSubjectSubtitle(
+        for type: AttentionItemType,
+        repository: String,
+        isDraft: Bool = false
+    ) -> String {
+        let draftPrefix = isDraft ? "Draft · " : ""
         switch type {
         case .authoredPullRequest, .authoredIssue:
-            return "\(repository) · Created by you"
+            return "\(repository) · \(draftPrefix)Created by you"
         case .reviewedPullRequest:
-            return "\(repository) · Reviewed by you"
+            return "\(repository) · \(draftPrefix)Reviewed by you"
         case .commentedPullRequest, .commentedIssue:
-            return "\(repository) · Commented on by you"
+            return "\(repository) · \(draftPrefix)Commented on by you"
         case .assignedIssue:
             return "\(repository) · Assigned to you"
         default:
-            return repository
+            return isDraft ? "\(repository) · Draft" : repository
         }
     }
 
@@ -2882,7 +2961,11 @@ struct GitHubClient {
                 type: type,
                 number: issue.number,
                 title: issue.title,
-                subtitle: trackedSubjectSubtitle(for: type, repository: repository),
+                subtitle: trackedSubjectSubtitle(
+                    for: type,
+                    repository: repository,
+                    isDraft: issue.isDraft
+                ),
                 repository: repository,
                 labels: issue.labels.map(\.gitHubLabel),
                 url: issue.htmlURL,
@@ -3003,7 +3086,11 @@ struct GitHubClient {
                     type: .pullRequestMergeConflicts,
                     number: commonValues.number,
                     title: commonValues.title,
-                    subtitle: "\(repository) · Merge conflicts",
+                    subtitle: draftAwareSubtitle(
+                        repository: repository,
+                        detail: "Merge conflicts",
+                        isDraft: details.isDraft
+                    ),
                     repository: commonValues.repository,
                     labels: commonValues.labels,
                     url: commonValues.url,
@@ -3032,7 +3119,11 @@ struct GitHubClient {
                     type: .pullRequestFailedChecks,
                     number: commonValues.number,
                     title: commonValues.title,
-                    subtitle: "\(repository) · \(failureLabel)",
+                    subtitle: draftAwareSubtitle(
+                        repository: repository,
+                        detail: failureLabel,
+                        isDraft: details.isDraft
+                    ),
                     repository: commonValues.repository,
                     labels: commonValues.labels,
                     url: commonValues.url,
@@ -5667,6 +5758,19 @@ private struct EnqueuePullRequestPayload: Decodable {
 
 private struct EnqueuePullRequestQueueEntry: Decodable {
     let id: String
+}
+
+private struct MarkPullRequestReadyForReviewMutationData: Decodable {
+    let markPullRequestReadyForReview: MarkPullRequestReadyForReviewPayload?
+}
+
+private struct MarkPullRequestReadyForReviewPayload: Decodable {
+    let pullRequest: MarkPullRequestReadyForReviewPullRequest?
+}
+
+private struct MarkPullRequestReadyForReviewPullRequest: Decodable {
+    let id: String
+    let isDraft: Bool
 }
 
 private struct PullRequestFocusGraphQLReviewRequestConnection: Decodable {

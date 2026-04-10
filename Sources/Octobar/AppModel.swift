@@ -833,6 +833,19 @@ final class AppModel: ObservableObject {
         return mutationResult.outcome
     }
 
+    func markPullRequestReadyForReview(for item: AttentionItem) async throws {
+        guard let reference = item.pullRequestReference, let token else {
+            throw GitHubClientError.invalidResponse
+        }
+
+        let rateLimits = try await client.markPullRequestReadyForReview(
+            token: token,
+            reference: reference
+        )
+        mergeRateLimitState(with: rateLimits)
+        pullRequestFocusCache[item.ignoreKey] = nil
+    }
+
     func fetchPendingDeploymentReview(
         for target: WorkflowApprovalTarget
     ) async throws -> WorkflowPendingDeploymentReview {
@@ -2384,7 +2397,24 @@ final class AppModel: ObservableObject {
         showsDebugRateLimitDetails = false
         notificationScanState = .default
         teamMembershipCache = .default
-        pullRequestFocusCache = [:]
+        pullRequestFocusCache = Dictionary(
+            uniqueKeysWithValues: fixture.pullRequestFocusesBySubjectKey.map { subjectKey, focus in
+                (
+                    subjectKey,
+                    PullRequestFocusCacheEntry(
+                        focus: focus,
+                        subjectRefresh: AttentionSubjectRefresh(
+                            subjectKey: subjectKey,
+                            labels: [],
+                            mergedAt: nil,
+                            supplementalItems: []
+                        ),
+                        sourceTimestamp: fixture.attentionItems.first(where: { $0.subjectKey == subjectKey })?.timestamp ?? fixture.lastUpdated,
+                        loadedAt: Date()
+                    )
+                )
+            }
+        )
         suppressedTransitionNotificationKeys = []
         snoozeWakeTask?.cancel()
         snoozeWakeTask = nil
@@ -2394,6 +2424,7 @@ final class AppModel: ObservableObject {
 private struct LaunchFixture {
     let login: String
     let attentionItems: [AttentionItem]
+    let pullRequestFocusesBySubjectKey: [String: PullRequestFocus]
     let autoMarkReadSetting: AutoMarkReadSetting
     let lastUpdated: Date
 
@@ -2401,6 +2432,8 @@ private struct LaunchFixture {
         switch environment["OCTOWATCH_UI_TEST_FIXTURE"] {
         case "auto-mark-read":
             return autoMarkReadFixture
+        case "draft-authored-pull-request":
+            return draftAuthoredPullRequestFixture
         case "notification-security-alert":
             return notificationSecurityAlertFixture(isUnread: true)
         case "notification-security-alert-read":
@@ -2447,7 +2480,107 @@ private struct LaunchFixture {
         return LaunchFixture(
             login: "octowatch-ui-test",
             attentionItems: [primaryItem, secondaryItem],
+            pullRequestFocusesBySubjectKey: [:],
             autoMarkReadSetting: .oneSecond,
+            lastUpdated: now
+        )
+    }
+
+    private static var draftAuthoredPullRequestFixture: LaunchFixture {
+        let now = Date()
+        let repository = "example/octowatch"
+        let reference = PullRequestReference(
+            owner: "example",
+            name: "octowatch",
+            number: 42
+        )
+        let author = AttentionActor(
+            login: "octowatch-ui-test",
+            avatarURL: URL(string: "https://avatars.githubusercontent.com/u/9919?v=4")
+        )
+        let subjectKey = reference.pullRequestURL.absoluteString
+        let reviewMergeAction = PullRequestReviewMergeAction.makeAction(
+            sourceType: .authoredPullRequest,
+            mode: .authored,
+            author: author,
+            viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
+            mergeable: "MERGEABLE",
+            isDraft: true,
+            reviewDecision: nil,
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 0,
+            checkSummary: .empty,
+            openThreadCount: 0
+        )
+        let readyForReviewAction = PullRequestReadyForReviewAction.makeAction(
+            mode: .authored,
+            resolution: .open,
+            isDraft: true
+        )
+        let item = AttentionItem(
+            id: "fixture-draft-pr",
+            subjectKey: subjectKey,
+            type: .authoredPullRequest,
+            title: "Draft UI fixture pull request",
+            subtitle: "\(repository) · Draft · Created by you",
+            repository: repository,
+            timestamp: now.addingTimeInterval(-3600),
+            url: reference.pullRequestURL,
+            subjectResolution: .open,
+            detail: AttentionDetail(
+                why: AttentionWhy(
+                    summary: "You authored this draft pull request.",
+                    detail: "This pull request is still a draft."
+                ),
+                evidence: [],
+                actions: []
+            ),
+            isDraft: true
+        )
+        let focus = PullRequestFocus(
+            reference: reference,
+            baseBranch: "main",
+            sourceType: .authoredPullRequest,
+            mode: .authored,
+            resolution: .open,
+            mergedAt: nil,
+            author: author,
+            labels: [],
+            headerFacts: [],
+            contextBadges: [],
+            descriptionHTML: nil,
+            statusSummary: PullRequestStatusSummary.build(
+                mode: .authored,
+                resolution: .open,
+                checkSummary: .empty,
+                openThreadCount: 0,
+                reviewMergeAction: reviewMergeAction
+            ),
+            postMergeWorkflowPreview: nil,
+            sections: [],
+            timeline: [],
+            actions: AttentionAction.pullRequestActions(
+                reference: reference,
+                mode: .authored,
+                checkSummary: .empty,
+                hasNewCommits: false,
+                hasPrimaryMutationAction: true
+            ),
+            readyForReviewAction: readyForReviewAction,
+            reviewMergeAction: reviewMergeAction,
+            emptyStateTitle: "No additional pull request activity yet",
+            emptyStateDetail: "Mark this draft ready for review when it is ready."
+        )
+
+        return LaunchFixture(
+            login: "octowatch-ui-test",
+            attentionItems: [item],
+            pullRequestFocusesBySubjectKey: [subjectKey: focus],
+            autoMarkReadSetting: .never,
             lastUpdated: now
         )
     }
@@ -2511,6 +2644,7 @@ private struct LaunchFixture {
         return LaunchFixture(
             login: "octowatch-ui-test",
             attentionItems: [item],
+            pullRequestFocusesBySubjectKey: [:],
             autoMarkReadSetting: .threeSeconds,
             lastUpdated: now
         )

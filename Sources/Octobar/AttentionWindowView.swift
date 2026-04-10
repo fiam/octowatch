@@ -66,6 +66,7 @@ struct AttentionWindowView: View {
     @State private var autoSelectionTask: Task<Void, Never>?
     @State private var pullRequestFocusState: PullRequestFocusLoadState = .idle
     @State private var reviewMergeState: PullRequestReviewMergeState = .idle
+    @State private var readyForReviewState: PullRequestReadyForReviewState = .idle
     @State private var workflowApprovalSheetRequest: WorkflowApprovalSheetRequest?
 
     private let relativeFormatter: RelativeDateTimeFormatter = {
@@ -582,6 +583,7 @@ struct AttentionWindowView: View {
                 if selectionChanged {
                     cancelAutoMarkReadTask()
                     reviewMergeState = .idle
+                    readyForReviewState = .idle
 
                     if let newItem = displayedItems.first(where: { normalizedSelection.contains($0.id) }),
                        let cached = model.cachedPullRequestFocus(for: newItem) {
@@ -923,6 +925,7 @@ struct AttentionWindowView: View {
                     referenceDate: referenceDate,
                     pullRequestFocusState: pullRequestFocusState,
                     reviewMergeState: reviewMergeState,
+                    readyForReviewState: readyForReviewState,
                     onOpenURL: { url in
                         openRelatedURL(url, for: item)
                     },
@@ -932,6 +935,11 @@ struct AttentionWindowView: View {
                     onPerformReviewMerge: { mergeMethod in
                         Task {
                             await performReviewMergeForSelection(mergeMethod: mergeMethod)
+                        }
+                    },
+                    onPerformReadyForReview: {
+                        Task {
+                            await performReadyForReviewForSelection()
                         }
                     },
                     onSelectMergeMethod: { mergeMethod in
@@ -1241,6 +1249,7 @@ struct AttentionWindowView: View {
             cancelAutoMarkReadTask()
             pullRequestFocusState = .idle
             reviewMergeState = .idle
+            readyForReviewState = .idle
             armAutoMarkReadForCurrentSelection()
         }
 
@@ -1308,6 +1317,7 @@ struct AttentionWindowView: View {
             cancelAutoMarkReadTask()
             pullRequestFocusState = .idle
             reviewMergeState = .idle
+            readyForReviewState = .idle
             armAutoMarkReadForCurrentSelection()
         }
 
@@ -1402,6 +1412,7 @@ struct AttentionWindowView: View {
             selectedItemIDs = [itemID]
             pullRequestFocusState = .idle
             reviewMergeState = .idle
+            readyForReviewState = .idle
             armAutoMarkReadForCurrentSelection()
             updateWatchedPullRequestSelection()
         }
@@ -1659,6 +1670,33 @@ struct AttentionWindowView: View {
         }
     }
 
+    private func performReadyForReviewForSelection() async {
+        guard
+            let item = selectedItem,
+            case let .loaded(focus) = pullRequestFocusState,
+            focus.readyForReviewAction != nil
+        else {
+            return
+        }
+
+        await MainActor.run {
+            readyForReviewState = .running
+        }
+
+        do {
+            try await model.markPullRequestReadyForReview(for: item)
+            await MainActor.run {
+                readyForReviewState = .idle
+            }
+            await loadPullRequestFocusForSelection(force: true)
+            model.refreshNow()
+        } catch {
+            await MainActor.run {
+                readyForReviewState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
     private func cancelAutoMarkReadTask() {
         autoMarkReadTask?.cancel()
         autoMarkReadTask = nil
@@ -1733,6 +1771,12 @@ private enum PullRequestReviewMergeState: Equatable {
     case failed(String)
 }
 
+private enum PullRequestReadyForReviewState: Equatable {
+    case idle
+    case running
+    case failed(String)
+}
+
 private struct AttentionSidebarRow: View {
     let item: AttentionItem
     let viewerLogin: String?
@@ -1740,11 +1784,7 @@ private struct AttentionSidebarRow: View {
     let onOpenWorkflowApproval: (WorkflowApprovalSheetRequest) -> Void
 
     private var contextLine: String {
-        let typeSummary = item.type.nativeNotificationTitle
-        if let repo = item.repository {
-            return "\(repo) · \(typeSummary)"
-        }
-        return typeSummary
+        AttentionItemPresentationPolicy.sidebarContext(for: item)
     }
 
     var body: some View {
@@ -1793,9 +1833,11 @@ private struct AttentionDetailView: View {
     let referenceDate: Date
     let pullRequestFocusState: PullRequestFocusLoadState
     let reviewMergeState: PullRequestReviewMergeState
+    let readyForReviewState: PullRequestReadyForReviewState
     let onOpenURL: (URL) -> Void
     let onPresentWorkflowApproval: (WorkflowApprovalSheetRequest) -> Void
     let onPerformReviewMerge: (PullRequestMergeMethod?) -> Void
+    let onPerformReadyForReview: () -> Void
     let onSelectMergeMethod: (PullRequestMergeMethod) -> Void
     let onRetryPullRequestFocus: () -> Void
 
@@ -2097,9 +2139,11 @@ private struct AttentionDetailView: View {
                 viewerLogin: viewerLogin,
                 referenceDate: referenceDate,
                 reviewMergeState: reviewMergeState,
+                readyForReviewState: readyForReviewState,
                 onOpenURL: onOpenURL,
                 onPresentWorkflowApproval: onPresentWorkflowApproval,
                 onPerformReviewMerge: onPerformReviewMerge,
+                onPerformReadyForReview: onPerformReadyForReview,
                 onSelectMergeMethod: onSelectMergeMethod
             )
         }
@@ -2434,9 +2478,11 @@ private struct PullRequestFocusView: View {
     let viewerLogin: String?
     let referenceDate: Date
     let reviewMergeState: PullRequestReviewMergeState
+    let readyForReviewState: PullRequestReadyForReviewState
     let onOpenURL: (URL) -> Void
     let onPresentWorkflowApproval: (WorkflowApprovalSheetRequest) -> Void
     let onPerformReviewMerge: (PullRequestMergeMethod?) -> Void
+    let onPerformReadyForReview: () -> Void
     let onSelectMergeMethod: (PullRequestMergeMethod) -> Void
 
     @State private var selectedMergeMethod: PullRequestMergeMethod?
@@ -2447,9 +2493,11 @@ private struct PullRequestFocusView: View {
         viewerLogin: String?,
         referenceDate: Date,
         reviewMergeState: PullRequestReviewMergeState,
+        readyForReviewState: PullRequestReadyForReviewState,
         onOpenURL: @escaping (URL) -> Void,
         onPresentWorkflowApproval: @escaping (WorkflowApprovalSheetRequest) -> Void,
         onPerformReviewMerge: @escaping (PullRequestMergeMethod?) -> Void,
+        onPerformReadyForReview: @escaping () -> Void,
         onSelectMergeMethod: @escaping (PullRequestMergeMethod) -> Void
     ) {
         self.focus = focus
@@ -2457,9 +2505,11 @@ private struct PullRequestFocusView: View {
         self.viewerLogin = viewerLogin
         self.referenceDate = referenceDate
         self.reviewMergeState = reviewMergeState
+        self.readyForReviewState = readyForReviewState
         self.onOpenURL = onOpenURL
         self.onPresentWorkflowApproval = onPresentWorkflowApproval
         self.onPerformReviewMerge = onPerformReviewMerge
+        self.onPerformReadyForReview = onPerformReadyForReview
         self.onSelectMergeMethod = onSelectMergeMethod
         _selectedMergeMethod = State(initialValue: focus.reviewMergeAction?.preferredMergeMethod)
     }
@@ -2478,6 +2528,10 @@ private struct PullRequestFocusView: View {
         }
 
         return nil
+    }
+
+    private var showsReadyForReviewAction: Bool {
+        focus.readyForReviewAction != nil && displayedMergeOutcome == nil
     }
 
     private var reviewMergeButtonTint: Color? {
@@ -2501,12 +2555,21 @@ private struct PullRequestFocusView: View {
         focus.reviewMergeAction != nil && displayedMergeOutcome != nil
     }
 
+    private var isReadyForReviewActionInteractive: Bool {
+        guard let readyForReviewAction = focus.readyForReviewAction else {
+            return false
+        }
+
+        return readyForReviewState != .running && readyForReviewAction.isEnabled
+    }
+
     private var isReviewMergeActionInteractive: Bool {
         guard let reviewMergeAction = focus.reviewMergeAction else {
             return false
         }
 
-        return reviewMergeState != .running &&
+        return !showsReadyForReviewAction &&
+            reviewMergeState != .running &&
             displayedMergeOutcome == nil &&
             reviewMergeAction.isEnabled &&
             resolvedReviewMergeMethod != nil
@@ -2567,7 +2630,26 @@ private struct PullRequestFocusView: View {
             if focus.reviewMergeAction != nil || !focus.actions.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
-                        if let reviewMergeAction = focus.reviewMergeAction {
+                        if let readyForReviewAction = focus.readyForReviewAction,
+                           showsReadyForReviewAction {
+                            Button {
+                                onPerformReadyForReview()
+                            } label: {
+                                readyForReviewButtonLabel(readyForReviewAction: readyForReviewAction)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!isReadyForReviewActionInteractive)
+                            .modifier(
+                                ConditionalInteractiveHoverModifier(
+                                    isEnabled: isReadyForReviewActionInteractive
+                                )
+                            )
+                            .help("Mark this draft pull request ready for review")
+                            .accessibilityIdentifier("ready-for-review-button")
+                        }
+
+                        if let reviewMergeAction = focus.reviewMergeAction,
+                           !showsReadyForReviewAction {
                             if shouldShowMergeMethodSelector {
                                 Menu {
                                     ForEach(reviewMergeAction.allowedMergeMethods, id: \.self) { method in
@@ -2635,7 +2717,18 @@ private struct PullRequestFocusView: View {
                     }
                 }
 
-                if let reviewMergeAction = focus.reviewMergeAction {
+                if let readyForReviewAction = focus.readyForReviewAction,
+                   showsReadyForReviewAction,
+                   let disabledReason = readyForReviewAction.disabledReason,
+                   !readyForReviewAction.isEnabled {
+                    Text(disabledReason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if case let .failed(message) = readyForReviewState {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                } else if let reviewMergeAction = focus.reviewMergeAction {
                     if case let .failed(message) = reviewMergeState {
                         Text(message)
                             .font(.caption)
@@ -2771,6 +2864,24 @@ private struct PullRequestFocusView: View {
                     ?? (reviewMergeAction.requiresApproval
                         ? "checkmark.circle.badge.questionmark"
                         : "checkmark.circle")
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func readyForReviewButtonLabel(
+        readyForReviewAction: PullRequestReadyForReviewAction
+    ) -> some View {
+        if readyForReviewState == .running {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Marking Ready…")
+            }
+        } else {
+            Label(
+                readyForReviewAction.title,
+                systemImage: "paperplane.circle.fill"
             )
         }
     }

@@ -1788,6 +1788,7 @@ final class AttentionClassificationTests: XCTestCase {
             sections: [],
             timeline: [],
             actions: [],
+            readyForReviewAction: nil,
             reviewMergeAction: nil,
             emptyStateTitle: "Done",
             emptyStateDetail: "No details"
@@ -1809,6 +1810,7 @@ final class AttentionClassificationTests: XCTestCase {
             sections: [],
             timeline: [],
             actions: [],
+            readyForReviewAction: nil,
             reviewMergeAction: nil,
             emptyStateTitle: "Done",
             emptyStateDetail: "No details"
@@ -3091,13 +3093,14 @@ final class AttentionClassificationTests: XCTestCase {
             sections: [],
             timeline: [],
             actions: [],
+            readyForReviewAction: nil,
             reviewMergeAction: nil,
             emptyStateTitle: "",
             emptyStateDetail: ""
         )
 
         XCTAssertTrue(
-            focus.displayedContextBadges(excluding: .workflowApprovalRequired).isEmpty
+            focus.displayedContextBadges(excluding: AttentionItemType.workflowApprovalRequired).isEmpty
         )
     }
 
@@ -3726,6 +3729,73 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(action?.disabledReason, "Reviews are still requested on this pull request.")
     }
 
+    func testAuthoredDraftPullRequestShowsReadyForReviewAction() {
+        let action = PullRequestReadyForReviewAction.makeAction(
+            mode: .authored,
+            resolution: .open,
+            isDraft: true
+        )
+
+        XCTAssertEqual(action?.title, "Ready for Review")
+        XCTAssertEqual(action?.isEnabled, true)
+        XCTAssertNil(action?.disabledReason)
+    }
+
+    func testReadyForReviewActionHiddenForNonDraftPullRequests() {
+        XCTAssertNil(
+            PullRequestReadyForReviewAction.makeAction(
+                mode: .authored,
+                resolution: .open,
+                isDraft: false
+            )
+        )
+        XCTAssertNil(
+            PullRequestReadyForReviewAction.makeAction(
+                mode: .participating,
+                resolution: .open,
+                isDraft: true
+            )
+        )
+    }
+
+    func testDraftPullRequestSidebarContextShowsDraftPrefix() {
+        let item = AttentionItem(
+            id: "draft-sidebar",
+            subjectKey: "https://github.com/example/octowatch/pull/42",
+            type: .authoredPullRequest,
+            title: "Draft sidebar item",
+            subtitle: "example/octowatch · Draft · Created by you",
+            repository: "example/octowatch",
+            timestamp: Date(),
+            url: URL(string: "https://github.com/example/octowatch/pull/42")!,
+            isDraft: true
+        )
+
+        XCTAssertEqual(
+            AttentionItemPresentationPolicy.sidebarContext(for: item),
+            "example/octowatch · Draft · Your pull request"
+        )
+    }
+
+    func testNonDraftSidebarContextOmitsDraftPrefix() {
+        let item = AttentionItem(
+            id: "non-draft-sidebar",
+            subjectKey: "https://github.com/example/octowatch/pull/43",
+            type: .authoredPullRequest,
+            title: "Regular sidebar item",
+            subtitle: "example/octowatch · Created by you",
+            repository: "example/octowatch",
+            timestamp: Date(),
+            url: URL(string: "https://github.com/example/octowatch/pull/43")!,
+            isDraft: false
+        )
+
+        XCTAssertEqual(
+            AttentionItemPresentationPolicy.sidebarContext(for: item),
+            "example/octowatch · Your pull request"
+        )
+    }
+
     func testBotReviewRequestedActionDisablesWhenOtherReviewRequestsRemain() {
         let action = PullRequestReviewMergeAction.makeAction(
             sourceType: .reviewRequested,
@@ -3896,6 +3966,38 @@ final class AttentionClassificationTests: XCTestCase {
 
         XCTAssertEqual(summary?.title, "Closed")
         XCTAssertEqual(summary?.detail, "This pull request is already closed.")
+        XCTAssertEqual(summary?.accent, .warning)
+    }
+
+    func testPullRequestStatusSummaryShowsDraftState() {
+        let action = PullRequestReviewMergeAction.makeAction(
+            sourceType: .authoredPullRequest,
+            mode: .authored,
+            author: AttentionActor(login: "alberto", avatarURL: nil, isBot: false),
+            viewerPermission: "WRITE",
+            allowMergeCommit: true,
+            allowSquashMerge: true,
+            allowRebaseMerge: true,
+            mergeable: "MERGEABLE",
+            isDraft: true,
+            reviewDecision: nil,
+            approvalCount: 0,
+            hasChangesRequested: false,
+            pendingReviewRequestCount: 0,
+            checkSummary: .empty,
+            openThreadCount: 0
+        )
+
+        let summary = PullRequestStatusSummary.build(
+            mode: .authored,
+            resolution: .open,
+            checkSummary: .empty,
+            openThreadCount: 0,
+            reviewMergeAction: action
+        )
+
+        XCTAssertEqual(summary?.title, "Draft pull request")
+        XCTAssertEqual(summary?.detail, "This pull request is still a draft.")
         XCTAssertEqual(summary?.accent, .warning)
     }
 
