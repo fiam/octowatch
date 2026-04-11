@@ -40,11 +40,231 @@ enum AppStartupUnavailableState: Equatable, Sendable {
     }
 }
 
+enum AuthenticationStartupGuideContext: Equatable, Sendable {
+    case onboarding
+    case recovery
+}
+
+enum SettingsAuthenticationSource: Equatable, Sendable {
+    case githubCLI
+    case personalAccessToken
+}
+
+enum SettingsNavigationTarget: Equatable, Sendable {
+    case authentication(preferredSource: SettingsAuthenticationSource)
+}
+
+enum GitHubCLIAuthStatus: Equatable, Sendable {
+    case checking
+    case notInstalled
+    case tokenUnavailable
+    case tokenRejected
+    case ready
+
+    var stateLabel: String {
+        switch self {
+        case .checking:
+            return "Checking"
+        case .notInstalled:
+            return "Not Found"
+        case .tokenUnavailable:
+            return "Needs Login"
+        case .tokenRejected:
+            return "Needs Attention"
+        case .ready:
+            return "Ready"
+        }
+    }
+
+    var installationLabel: String {
+        isDetected ? "Found" : "Not Found"
+    }
+
+    var detail: String {
+        switch self {
+        case .checking:
+            return "Octowatch is checking whether GitHub CLI can provide a token."
+        case .notInstalled:
+            return "GitHub CLI is not installed on this Mac."
+        case .tokenUnavailable:
+            return "GitHub CLI is installed, but `gh auth token` did not return a usable token."
+        case .tokenRejected:
+            return "GitHub CLI returned a token, but GitHub rejected it for Octowatch."
+        case .ready:
+            return "GitHub CLI is installed and can provide a validated token."
+        }
+    }
+
+    var isDetected: Bool {
+        self != .notInstalled
+    }
+}
+
+enum PersonalAccessTokenAuthStatus: Equatable, Sendable {
+    case unavailable
+    case storedInKeychain
+    case rejected
+
+    var stateLabel: String {
+        switch self {
+        case .unavailable:
+            return "Not Set Up"
+        case .storedInKeychain:
+            return "Saved in Keychain"
+        case .rejected:
+            return "Needs Replacement"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .unavailable:
+            return "No saved personal access token is currently available."
+        case .storedInKeychain:
+            return "A personal access token is saved in Keychain and can be reused on launch."
+        case .rejected:
+            return "A saved personal access token was rejected and needs to be replaced."
+        }
+    }
+}
+
+struct AuthenticationStartupGuide: Equatable, Sendable {
+    let context: AuthenticationStartupGuideContext
+    let gitHubCLIStatus: GitHubCLIAuthStatus
+    let personalAccessTokenStatus: PersonalAccessTokenAuthStatus
+
+    var title: String {
+        switch context {
+        case .onboarding:
+            return "Welcome to Octowatch"
+        case .recovery:
+            return "Connect GitHub"
+        }
+    }
+
+    var requiresManualIntervention: Bool {
+        gitHubCLIStatus != .ready && personalAccessTokenStatus != .storedInKeychain
+    }
+
+    var summary: String {
+        switch context {
+        case .onboarding:
+            switch (gitHubCLIStatus, personalAccessTokenStatus) {
+            case (.ready, _):
+                return "GitHub CLI was found and Octowatch will use it to authenticate."
+            case (_, .storedInKeychain):
+                return "A saved personal access token was found in Keychain and is ready to use."
+            case (.notInstalled, _):
+                return "GitHub CLI was not found. Finish setup with a personal access token."
+            case (.tokenUnavailable, _):
+                return "GitHub CLI was found, but Octowatch still needs manual setup."
+            case (.tokenRejected, _):
+                return "GitHub CLI was found, but its token needs attention."
+            case (.checking, _):
+                return "Octowatch is still checking how to connect GitHub."
+            }
+        case .recovery:
+            switch gitHubCLIStatus {
+            case .notInstalled:
+                return "GitHub CLI was not found. Manual setup is required."
+            case .tokenUnavailable:
+                return "GitHub CLI was found, but Octowatch still needs manual setup."
+            case .tokenRejected:
+                return "GitHub CLI was found, but its token needs attention."
+            case .checking:
+                return "Octowatch is still checking how to connect GitHub."
+            case .ready:
+                return "GitHub CLI is ready."
+            }
+        }
+    }
+
+    var manualInterventionLabel: String {
+        switch context {
+        case .onboarding:
+            return requiresManualIntervention ? "Manual Intervention" : "Authentication"
+        case .recovery:
+            return "Manual Intervention"
+        }
+    }
+
+    var manualInterventionDetail: String {
+        if context == .onboarding {
+            switch (gitHubCLIStatus, personalAccessTokenStatus) {
+            case (.ready, _):
+                return "Octowatch will reuse your GitHub CLI login unless you switch to a personal access token."
+            case (_, .storedInKeychain):
+                return "Octowatch can start with the saved personal access token, or you can switch to GitHub CLI later."
+            default:
+                break
+            }
+        }
+
+        switch (gitHubCLIStatus, personalAccessTokenStatus) {
+        case (_, .rejected):
+            return "Update the saved personal access token or paste a new one in Settings."
+        case (.notInstalled, _):
+            return "Create a personal access token and connect it in Octowatch."
+        case (.tokenUnavailable, _):
+            return "Sign in with `gh auth login`, or set up a personal access token instead."
+        case (.tokenRejected, _):
+            return "Re-authenticate GitHub CLI with `gh auth login`, or use a personal access token."
+        case (.checking, _):
+            return "Wait for the authentication check to finish."
+        case (.ready, _):
+            return "No manual action is required."
+        }
+    }
+
+    var nextSteps: [String] {
+        var steps = [String]()
+
+        if context == .onboarding && !requiresManualIntervention {
+            return [
+                "Continue with the detected authentication to finish setup.",
+                "Open Authentication settings if you want to switch to a personal access token instead."
+            ]
+        }
+
+        switch gitHubCLIStatus {
+        case .notInstalled:
+            steps.append("Create a personal access token on GitHub.")
+        case .tokenUnavailable:
+            steps.append("Run `gh auth login` if you want Octowatch to reuse GitHub CLI.")
+            steps.append("Or create a personal access token on GitHub instead.")
+        case .tokenRejected:
+            steps.append("Run `gh auth login` to refresh GitHub CLI credentials.")
+            steps.append("Or create a personal access token on GitHub instead.")
+        case .checking, .ready:
+            break
+        }
+
+        if personalAccessTokenStatus != .storedInKeychain || gitHubCLIStatus != .ready {
+            steps.append("Grant read access to notifications, pull requests, issues, and actions.")
+            steps.append("Open Authentication settings and paste the token.")
+            steps.append("Leave Keychain storage on if you want Octowatch to reuse the token on future launches.")
+        }
+
+        return steps
+    }
+}
+
+enum GitHubPersonalAccessTokenSetup {
+    static let settingsURL = URL(string: "https://github.com/settings/tokens")!
+    static let recommendedScopes = [
+        "Notifications",
+        "Pull requests",
+        "Issues",
+        "Actions"
+    ]
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     private enum TokenSource: Sendable {
         case githubCLI
-        case personalAccessToken
+        case personalAccessTokenInput
+        case personalAccessTokenKeychain
     }
 
     private struct PendingTokenCandidate: Sendable {
@@ -69,6 +289,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var rateLimit: GitHubRateLimit?
     @Published private(set) var rateLimitBuckets: [GitHubRateLimit] = []
     @Published private(set) var connectivityStatus: AppConnectivityStatus = .unknown
+    @Published private(set) var storesPersonalAccessTokenInKeychain = true
+    @Published private(set) var usingKeychainStoredPersonalAccessToken = false
+    @Published private(set) var gitHubCLIAuthStatus: GitHubCLIAuthStatus = .checking
+    @Published private(set) var personalAccessTokenAuthStatus: PersonalAccessTokenAuthStatus = .unavailable
+    @Published private(set) var hasCompletedInitialSetup = true
+    @Published private(set) var settingsNavigationTarget: SettingsNavigationTarget?
 
     @Published var tokenInput = ""
     @Published private(set) var isResolvingInitialContent = true
@@ -101,6 +327,9 @@ final class AppModel: ObservableObject {
     private let notifyOnSelfTriggeredUpdatesStoreKey = "notify-on-self-triggered-updates-v1"
     private let showsMenuBarIconStoreKey = "shows-menu-bar-icon-v1"
     private let debugRateLimitDetailsStoreKey = "debug-rate-limit-details-v1"
+    private let storesPersonalAccessTokenInKeychainStoreKey =
+        "stores-personal-access-token-in-keychain-v1"
+    private let completedInitialSetupStoreKey = "completed-initial-setup-v1"
     private let inboxSectionConfigStoreKey = "needs-action-configuration-v3"
     private let legacyInboxSectionConfigStoreKey = "needs-action-configuration-v2"
     private let legacyInboxSectionConfigStoreKeyV1 = "needs-action-configuration-v1"
@@ -110,6 +339,8 @@ final class AppModel: ObservableObject {
     private let mergeMethodPreferenceStoreKey = "merge-method-preferences-v1"
     private let acknowledgedWorkflowsStoreKey = "acknowledged-workflows-v1"
     private let attentionUpdateHistoryStoreKey = "attention-update-history-v1"
+    private let keychainStore = KeychainStore(service: "dev.octowatch.app.auth")
+    private let personalAccessTokenKeychainAccount = "personal-access-token"
     private let client = GitHubClient()
     private let workflowRunCache = WorkflowRunCache()
     private let notifier = UserNotifier()
@@ -163,7 +394,23 @@ final class AppModel: ObservableObject {
     }()
 
     init() {
+        let hadExistingPersistentState = Self.hasExistingPersistentState()
         gitHubCLIAvailable = GitHubCLITokenProvider.isInstalled
+        gitHubCLIAuthStatus = gitHubCLIAvailable ? .checking : .notInstalled
+        hasCompletedInitialSetup = Self.loadBooleanSetting(
+            from: UserDefaults.standard,
+            key: completedInitialSetupStoreKey,
+            defaultValue: hadExistingPersistentState
+        )
+        storesPersonalAccessTokenInKeychain = Self.loadBooleanSetting(
+            from: UserDefaults.standard,
+            key: storesPersonalAccessTokenInKeychainStoreKey,
+            defaultValue: true
+        )
+        personalAccessTokenAuthStatus = storesPersonalAccessTokenInKeychain &&
+            keychainStore.read(account: personalAccessTokenKeychainAccount) != nil
+            ? .storedInKeychain
+            : .unavailable
         pollIntervalSeconds = Self.loadPollInterval(
             from: UserDefaults.standard,
             key: pollIntervalStoreKey
@@ -268,6 +515,42 @@ final class AppModel: ObservableObject {
 
     var viewerLogin: String? {
         userLogin
+    }
+
+    var hasStoredPersonalAccessToken: Bool {
+        personalAccessTokenAuthStatus == .storedInKeychain
+    }
+
+    var usingPersonalAccessToken: Bool {
+        hasToken && !usingGitHubCLIToken
+    }
+
+    var showsInitialSetupGuide: Bool {
+        !isResolvingInitialContent && !hasCompletedInitialSetup
+    }
+
+    var initialSetupGuide: AuthenticationStartupGuide? {
+        guard showsInitialSetupGuide else {
+            return nil
+        }
+
+        return AuthenticationStartupGuide(
+            context: .onboarding,
+            gitHubCLIStatus: gitHubCLIAuthStatus,
+            personalAccessTokenStatus: personalAccessTokenAuthStatus
+        )
+    }
+
+    var authenticationStartupGuide: AuthenticationStartupGuide? {
+        guard startupUnavailableState == .connectionRequired else {
+            return nil
+        }
+
+        return AuthenticationStartupGuide(
+            context: .recovery,
+            gitHubCLIStatus: gitHubCLIAuthStatus,
+            personalAccessTokenStatus: personalAccessTokenAuthStatus
+        )
     }
 
     var startupUnavailableState: AppStartupUnavailableState? {
@@ -561,11 +844,16 @@ final class AppModel: ObservableObject {
         let cleaned = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if cleaned.isEmpty {
-            clearToken()
+            clearPersonalAccessToken()
             return false
         }
 
-        return await validateAndApplyToken(cleaned, source: .personalAccessToken)
+        let saved = await validateAndApplyToken(cleaned, source: .personalAccessTokenInput)
+        if saved {
+            tokenInput = ""
+            completeInitialSetup()
+        }
+        return saved
     }
 
     func clearToken() {
@@ -574,7 +862,9 @@ final class AppModel: ObservableObject {
         token = nil
         tokenInput = ""
         usingGitHubCLIToken = false
+        usingKeychainStoredPersonalAccessToken = false
         pendingTokenCandidate = nil
+        clearStoredPersonalAccessToken()
         latestSnapshotAttentionItems = []
         latestSnapshotPullRequestDashboard = .empty
         latestSnapshotIssueDashboard = .empty
@@ -613,8 +903,61 @@ final class AppModel: ObservableObject {
         clearQueuedPostMergeWatchLoop()
     }
 
+    func clearPersonalAccessToken() {
+        tokenInput = ""
+        clearStoredPersonalAccessToken()
+
+        guard usingPersonalAccessToken else {
+            return
+        }
+
+        clearToken()
+    }
+
+    func completeInitialSetup() {
+        guard !hasCompletedInitialSetup else {
+            return
+        }
+
+        hasCompletedInitialSetup = true
+        UserDefaults.standard.set(true, forKey: completedInitialSetupStoreKey)
+    }
+
+    func requestAuthenticationSettings(preferredSource: SettingsAuthenticationSource) {
+        settingsNavigationTarget = .authentication(preferredSource: preferredSource)
+    }
+
+    func consumeSettingsNavigationTarget() {
+        settingsNavigationTarget = nil
+    }
+
     func reloadTokenFromGitHubCLI() async -> Bool {
-        await importTokenFromGitHubCLIIfAvailable(force: true)
+        let reloaded = await importTokenFromGitHubCLIIfAvailable(force: true)
+        if reloaded {
+            completeInitialSetup()
+        }
+        return reloaded
+    }
+
+    func setStoresPersonalAccessTokenInKeychain(_ value: Bool) {
+        guard storesPersonalAccessTokenInKeychain != value else {
+            return
+        }
+
+        storesPersonalAccessTokenInKeychain = value
+        UserDefaults.standard.set(value, forKey: storesPersonalAccessTokenInKeychainStoreKey)
+
+        if value {
+            if usingPersonalAccessToken, let token {
+                persistStoredPersonalAccessToken(token)
+            } else {
+                personalAccessTokenAuthStatus = keychainStore.read(
+                    account: personalAccessTokenKeychainAccount
+                ) != nil ? .storedInKeychain : .unavailable
+            }
+        } else {
+            clearStoredPersonalAccessToken()
+        }
     }
 
     func setPollIntervalSeconds(_ seconds: Int) {
@@ -1142,7 +1485,7 @@ final class AppModel: ObservableObject {
     }
 
     private var canRecoverConnectionWithoutOpeningSettings: Bool {
-        pendingTokenCandidate != nil || gitHubCLIAvailable
+        pendingTokenCandidate != nil || gitHubCLIAvailable || hasStoredPersonalAccessToken
     }
 
     private func startConnectivityMonitoring() {
@@ -1193,7 +1536,12 @@ final class AppModel: ObservableObject {
         }
 
         if !hasToken {
-            _ = await importTokenFromGitHubCLIIfAvailable(force: forceTokenReload)
+            let loadedFromCLI = await importTokenFromGitHubCLIIfAvailable(force: forceTokenReload)
+            if loadedFromCLI {
+                return
+            }
+
+            _ = await importStoredPersonalAccessTokenIfAvailable()
             return
         }
 
@@ -1415,13 +1763,18 @@ final class AppModel: ObservableObject {
 
     private func bootstrapToken() async {
         let importedToken = await importTokenFromGitHubCLIIfAvailable(force: false)
-        if !importedToken {
+        let importedStoredToken = importedToken
+            ? false
+            : await importStoredPersonalAccessTokenIfAvailable()
+
+        if !importedToken && !importedStoredToken {
             isResolvingInitialContent = false
         }
     }
 
     private func importTokenFromGitHubCLIIfAvailable(force: Bool) async -> Bool {
         guard gitHubCLIAvailable else {
+            gitHubCLIAuthStatus = .notInstalled
             if force {
                 lastError = "GitHub CLI is not installed."
             }
@@ -1432,7 +1785,10 @@ final class AppModel: ObservableObject {
             return true
         }
 
+        gitHubCLIAuthStatus = .checking
+
         guard let cliToken = await GitHubCLITokenProvider.fetchToken() else {
+            gitHubCLIAuthStatus = .tokenUnavailable
             if force {
                 lastError = "Could not load token from `gh auth token`."
             }
@@ -1440,6 +1796,24 @@ final class AppModel: ObservableObject {
         }
 
         return await validateAndApplyToken(cliToken, source: .githubCLI)
+    }
+
+    private func importStoredPersonalAccessTokenIfAvailable() async -> Bool {
+        guard storesPersonalAccessTokenInKeychain else {
+            personalAccessTokenAuthStatus = .unavailable
+            return false
+        }
+
+        guard let token = keychainStore.read(account: personalAccessTokenKeychainAccount)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !token.isEmpty
+        else {
+            personalAccessTokenAuthStatus = .unavailable
+            return false
+        }
+
+        personalAccessTokenAuthStatus = .storedInKeychain
+        return await validateAndApplyToken(token, source: .personalAccessTokenKeychain)
     }
 
     private func validateAndApplyToken(
@@ -1461,7 +1835,8 @@ final class AppModel: ObservableObject {
             pendingTokenCandidate = nil
             userLogin = validatedLogin
             usingGitHubCLIToken = source == .githubCLI
-            tokenInput = source == .githubCLI ? "" : candidate
+            usingKeychainStoredPersonalAccessToken = source == .personalAccessTokenKeychain
+            tokenInput = ""
             knownLatestUpdateKeyBySubjectKey.removeAll()
             lastError = nil
             connectivityStatus = .online
@@ -1489,6 +1864,19 @@ final class AppModel: ObservableObject {
                 clearQueuedPostMergeWatchLoop()
             }
 
+            switch source {
+            case .githubCLI:
+                gitHubCLIAuthStatus = .ready
+            case .personalAccessTokenInput:
+                if storesPersonalAccessTokenInKeychain {
+                    persistStoredPersonalAccessToken(candidate)
+                } else {
+                    clearStoredPersonalAccessToken()
+                }
+            case .personalAccessTokenKeychain:
+                personalAccessTokenAuthStatus = .storedInKeychain
+            }
+
             startPollingIfNeeded()
             syncQueuedPostMergeWatchLoop()
             refreshNow()
@@ -1502,6 +1890,7 @@ final class AppModel: ObservableObject {
                 recordConnectivityFailureIfNeeded(for: error)
             } else {
                 pendingTokenCandidate = nil
+                updateAuthenticationStatusAfterFailure(for: error, source: source)
             }
             lastError = userFacingTokenError(for: error, source: source)
             return false
@@ -1554,6 +1943,59 @@ final class AppModel: ObservableObject {
         }
 
         return error.localizedDescription
+    }
+
+    private func updateAuthenticationStatusAfterFailure(
+        for error: Error,
+        source: TokenSource
+    ) {
+        guard let clientError = error as? GitHubClientError else {
+            return
+        }
+
+        switch source {
+        case .githubCLI:
+            switch clientError {
+            case .offline, .transport:
+                break
+            default:
+                gitHubCLIAuthStatus = .tokenRejected
+            }
+        case .personalAccessTokenInput:
+            switch clientError {
+            case .offline, .transport:
+                break
+            default:
+                if storesPersonalAccessTokenInKeychain {
+                    clearStoredPersonalAccessToken()
+                }
+            }
+        case .personalAccessTokenKeychain:
+            switch clientError {
+            case .offline, .transport:
+                break
+            default:
+                clearStoredPersonalAccessToken(rejected: true)
+            }
+        }
+    }
+
+    private func persistStoredPersonalAccessToken(_ token: String) {
+        guard storesPersonalAccessTokenInKeychain else {
+            clearStoredPersonalAccessToken()
+            return
+        }
+
+        _ = keychainStore.save(
+            value: token,
+            account: personalAccessTokenKeychainAccount
+        )
+        personalAccessTokenAuthStatus = .storedInKeychain
+    }
+
+    private func clearStoredPersonalAccessToken(rejected: Bool = false) {
+        _ = keychainStore.delete(account: personalAccessTokenKeychainAccount)
+        personalAccessTokenAuthStatus = rejected ? .rejected : .unavailable
     }
 
     private func shouldRetainTokenCandidate(after error: Error) -> Bool {
@@ -2491,6 +2933,18 @@ final class AppModel: ObservableObject {
         defaults.object(forKey: key) as? Bool ?? defaultValue
     }
 
+    private static func hasExistingPersistentState() -> Bool {
+        let defaults = UserDefaults.standard
+        let domainNames = [
+            Bundle.main.bundleIdentifier ?? "dev.octowatch.app",
+            "dev.octobar.app"
+        ]
+
+        return domainNames.contains { domainName in
+            defaults.persistentDomain(forName: domainName) != nil
+        }
+    }
+
     private func clearRateLimitState() {
         rateLimitBuckets = []
         rateLimit = nil
@@ -2582,7 +3036,13 @@ final class AppModel: ObservableObject {
         lastError = fixture.lastError
         isResolvingInitialContent = false
         gitHubCLIAvailable = fixture.gitHubCLIAvailable
-        usingGitHubCLIToken = false
+        gitHubCLIAuthStatus = fixture.gitHubCLIAuthStatus
+        personalAccessTokenAuthStatus = fixture.personalAccessTokenAuthStatus
+        storesPersonalAccessTokenInKeychain = fixture.storesPersonalAccessTokenInKeychain
+        usingGitHubCLIToken = fixture.usingGitHubCLIToken
+        usingKeychainStoredPersonalAccessToken = fixture.usingKeychainStoredPersonalAccessToken
+        hasCompletedInitialSetup = fixture.hasCompletedInitialSetup
+        settingsNavigationTarget = nil
         isValidatingToken = false
         connectivityStatus = fixture.connectivityStatus
         clearRateLimitState()
@@ -2640,14 +3100,32 @@ private struct LaunchFixture {
     let lastError: String?
     let connectivityStatus: AppConnectivityStatus
     let gitHubCLIAvailable: Bool
+    let gitHubCLIAuthStatus: GitHubCLIAuthStatus
+    let personalAccessTokenAuthStatus: PersonalAccessTokenAuthStatus
+    let storesPersonalAccessTokenInKeychain: Bool
+    let usingGitHubCLIToken: Bool
+    let usingKeychainStoredPersonalAccessToken: Bool
+    let hasCompletedInitialSetup: Bool
     let hasPendingGitHubCLIToken: Bool
 
     static func load(from environment: [String: String]) -> LaunchFixture? {
         switch environment["OCTOWATCH_UI_TEST_FIXTURE"] {
         case "auto-mark-read":
             return autoMarkReadFixture
+        case "auth-wizard-gh-found":
+            return authWizardFixture(
+                gitHubCLIAvailable: true,
+                gitHubCLIAuthStatus: .tokenUnavailable
+            )
+        case "auth-wizard-gh-missing":
+            return authWizardFixture(
+                gitHubCLIAvailable: false,
+                gitHubCLIAuthStatus: .notInstalled
+            )
         case "draft-authored-pull-request":
             return draftAuthoredPullRequestFixture
+        case "first-run-gh-ready":
+            return firstRunGitHubCLIFixture
         case "notification-security-alert":
             return notificationSecurityAlertFixture(isUnread: true)
         case "notification-security-alert-read":
@@ -2703,6 +3181,12 @@ private struct LaunchFixture {
             lastError: nil,
             connectivityStatus: .online,
             gitHubCLIAvailable: false,
+            gitHubCLIAuthStatus: .notInstalled,
+            personalAccessTokenAuthStatus: .unavailable,
+            storesPersonalAccessTokenInKeychain: true,
+            usingGitHubCLIToken: false,
+            usingKeychainStoredPersonalAccessToken: false,
+            hasCompletedInitialSetup: true,
             hasPendingGitHubCLIToken: false
         )
     }
@@ -2807,6 +3291,35 @@ private struct LaunchFixture {
             lastError: nil,
             connectivityStatus: .online,
             gitHubCLIAvailable: false,
+            gitHubCLIAuthStatus: .notInstalled,
+            personalAccessTokenAuthStatus: .unavailable,
+            storesPersonalAccessTokenInKeychain: true,
+            usingGitHubCLIToken: false,
+            usingKeychainStoredPersonalAccessToken: false,
+            hasCompletedInitialSetup: true,
+            hasPendingGitHubCLIToken: false
+        )
+    }
+
+    private static var firstRunGitHubCLIFixture: LaunchFixture {
+        let now = Date()
+
+        return LaunchFixture(
+            token: "ui-test-token",
+            login: "octowatch-ui-test",
+            attentionItems: [],
+            pullRequestFocusesBySubjectKey: [:],
+            autoMarkReadSetting: .threeSeconds,
+            lastUpdated: now,
+            lastError: nil,
+            connectivityStatus: .online,
+            gitHubCLIAvailable: true,
+            gitHubCLIAuthStatus: .ready,
+            personalAccessTokenAuthStatus: .unavailable,
+            storesPersonalAccessTokenInKeychain: true,
+            usingGitHubCLIToken: true,
+            usingKeychainStoredPersonalAccessToken: false,
+            hasCompletedInitialSetup: false,
             hasPendingGitHubCLIToken: false
         )
     }
@@ -2877,6 +3390,36 @@ private struct LaunchFixture {
             lastError: nil,
             connectivityStatus: .online,
             gitHubCLIAvailable: false,
+            gitHubCLIAuthStatus: .notInstalled,
+            personalAccessTokenAuthStatus: .unavailable,
+            storesPersonalAccessTokenInKeychain: true,
+            usingGitHubCLIToken: false,
+            usingKeychainStoredPersonalAccessToken: false,
+            hasCompletedInitialSetup: true,
+            hasPendingGitHubCLIToken: false
+        )
+    }
+
+    private static func authWizardFixture(
+        gitHubCLIAvailable: Bool,
+        gitHubCLIAuthStatus: GitHubCLIAuthStatus
+    ) -> LaunchFixture {
+        LaunchFixture(
+            token: nil,
+            login: nil,
+            attentionItems: [],
+            pullRequestFocusesBySubjectKey: [:],
+            autoMarkReadSetting: .threeSeconds,
+            lastUpdated: Date(),
+            lastError: nil,
+            connectivityStatus: .online,
+            gitHubCLIAvailable: gitHubCLIAvailable,
+            gitHubCLIAuthStatus: gitHubCLIAuthStatus,
+            personalAccessTokenAuthStatus: .unavailable,
+            storesPersonalAccessTokenInKeychain: true,
+            usingGitHubCLIToken: false,
+            usingKeychainStoredPersonalAccessToken: false,
+            hasCompletedInitialSetup: true,
             hasPendingGitHubCLIToken: false
         )
     }
@@ -2892,6 +3435,12 @@ private struct LaunchFixture {
             lastError: "You're offline. Octowatch will retry when the connection returns.",
             connectivityStatus: .offline,
             gitHubCLIAvailable: true,
+            gitHubCLIAuthStatus: .checking,
+            personalAccessTokenAuthStatus: .unavailable,
+            storesPersonalAccessTokenInKeychain: true,
+            usingGitHubCLIToken: false,
+            usingKeychainStoredPersonalAccessToken: false,
+            hasCompletedInitialSetup: true,
             hasPendingGitHubCLIToken: true
         )
     }

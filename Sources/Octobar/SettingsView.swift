@@ -61,6 +61,7 @@ struct SettingsView: View {
 
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openURL) private var openURL
     @FocusState private var tokenFieldFocused: Bool
     @State private var selectedTokenSource: TokenSource = .personalAccessToken
     @State private var selectedPane: SettingsPane = .general
@@ -83,12 +84,16 @@ struct SettingsView: View {
         .onAppear {
             syncSelectedTokenSource()
             syncSelectedPaneIfNeeded()
+            applyPendingSettingsNavigationIfNeeded()
             focusTokenFieldIfNeeded()
         }
         .onChange(of: model.usingGitHubCLIToken) { _, usingCLI in
             if usingCLI {
                 selectedTokenSource = .githubCLI
             }
+        }
+        .onChange(of: model.settingsNavigationTarget) { _, _ in
+            applyPendingSettingsNavigationIfNeeded()
         }
         .onChange(of: selectedPane) { _, _ in
             focusTokenFieldIfNeeded()
@@ -258,7 +263,7 @@ struct SettingsView: View {
             if selectedTokenSource == .githubCLI {
                 settingsRow(
                     title: "GitHub CLI",
-                    subtitle: "Octowatch validates `gh auth token` before using it."
+                    subtitle: model.gitHubCLIAuthStatus.detail
                 ) {
                     Button(model.usingGitHubCLIToken ? "Check Again" : "Use GitHub CLI") {
                         Task {
@@ -482,6 +487,15 @@ struct SettingsView: View {
                 .font(.system(.body, design: .monospaced))
                 .focused($tokenFieldFocused)
 
+            Toggle(
+                "Remember this token in Keychain",
+                isOn: Binding(
+                    get: { model.storesPersonalAccessTokenInKeychain },
+                    set: { model.setStoresPersonalAccessTokenInKeychain($0) }
+                )
+            )
+            .toggleStyle(.switch)
+
             HStack {
                 Button("Apply Token") {
                     Task {
@@ -493,9 +507,9 @@ struct SettingsView: View {
                 .appInteractiveHover()
 
                 Button("Clear") {
-                    model.clearToken()
+                    model.clearPersonalAccessToken()
                 }
-                .disabled(model.isValidatingToken || (!model.hasToken && model.tokenInput.isEmpty))
+                .disabled(model.isValidatingToken || !canClearPersonalAccessToken)
                 .appInteractiveHover()
 
                 if model.isValidatingToken {
@@ -506,9 +520,35 @@ struct SettingsView: View {
                 Spacer()
             }
 
-            Text("Octowatch validates the token before it starts using it.")
+            Text(customTokenPersistenceSummary)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+
+            settingsSectionDivider
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Prepare a Token")
+                    .font(.subheadline.weight(.semibold))
+
+                Text(
+                    "If GitHub CLI is unavailable or not authenticated, create a token with read access to:"
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+                Text(GitHubPersonalAccessTokenSetup.recommendedScopes.joined(separator: " · "))
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Button("Open GitHub Token Settings") {
+                        openURL(GitHubPersonalAccessTokenSetup.settingsURL)
+                    }
+                    .appInteractiveHover()
+
+                    Spacer()
+                }
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -517,6 +557,18 @@ struct SettingsView: View {
     private var tokenSummary: String {
         if model.usingGitHubCLIToken {
             return "GitHub CLI was detected and its token validated automatically."
+        }
+
+        if model.usingKeychainStoredPersonalAccessToken {
+            return "A personal access token was loaded from Keychain."
+        }
+
+        if model.usingPersonalAccessToken {
+            if model.hasStoredPersonalAccessToken {
+                return "A personal access token is active and saved in Keychain."
+            }
+
+            return "A personal access token is active for this session."
         }
 
         if model.gitHubCLIAvailable {
@@ -528,10 +580,26 @@ struct SettingsView: View {
 
     private var authSubtitle: String {
         if model.gitHubCLIAvailable {
-            return "Select a validated GitHub CLI token or provide a personal access token."
+            return "Select a validated GitHub CLI token or provide a personal access token, optionally saved in Keychain."
         }
 
-        return "GitHub CLI is not installed, so use a personal access token."
+        return "GitHub CLI is not installed, so use a personal access token and save it in Keychain if you want future launches to reconnect automatically."
+    }
+
+    private var canClearPersonalAccessToken: Bool {
+        model.usingPersonalAccessToken || !model.tokenInput.isEmpty || model.hasStoredPersonalAccessToken
+    }
+
+    private var customTokenPersistenceSummary: String {
+        if model.hasStoredPersonalAccessToken {
+            return "A personal access token is currently saved in Keychain for future launches."
+        }
+
+        if model.storesPersonalAccessTokenInKeychain {
+            return "Octowatch validates the token before using it, then saves it in Keychain for future launches."
+        }
+
+        return "Octowatch validates the token before using it. With Keychain storage off, the token stays session-only."
     }
 
     private var ignoredItemsSummary: String {
@@ -621,6 +689,26 @@ struct SettingsView: View {
         if !model.usingGitHubCLIToken && !model.hasToken {
             selectedPane = .github
         }
+    }
+
+    private func applyPendingSettingsNavigationIfNeeded() {
+        guard let target = model.settingsNavigationTarget else {
+            return
+        }
+
+        switch target {
+        case let .authentication(preferredSource):
+            selectedPane = .github
+            switch preferredSource {
+            case .githubCLI:
+                selectedTokenSource = .githubCLI
+            case .personalAccessToken:
+                selectedTokenSource = .personalAccessToken
+            }
+            focusTokenFieldIfNeeded(force: preferredSource == .personalAccessToken)
+        }
+
+        model.consumeSettingsNavigationTarget()
     }
 
     private func focusTokenFieldIfNeeded(force: Bool = false) {

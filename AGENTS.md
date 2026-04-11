@@ -53,7 +53,8 @@ This file captures project-specific guidance for coding agents working in `octob
 
 ## Security And Privacy
 - Default token source is GitHub CLI via `gh auth token`, read at runtime.
-- User-entered custom tokens are session-only and are not persisted.
+- User-entered custom tokens can be left session-only or saved in
+  Keychain when the user opts into persistence.
 - Never print tokens or persist them in logs/files.
 - Keep token scopes minimal for read-only monitoring.
 

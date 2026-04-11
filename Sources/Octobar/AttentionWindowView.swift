@@ -161,6 +161,13 @@ struct AttentionWindowView: View {
                 }
             )
         }
+        .sheet(isPresented: onboardingSheetIsPresented) {
+            if let guide = model.initialSetupGuide {
+                authenticationSetupView(guide)
+                    .frame(width: 700, height: 500)
+                    .interactiveDismissDisabled()
+            }
+        }
         .toolbar {
             if !selectionActionItems.isEmpty, model.hasToken {
                 ToolbarItemGroup {
@@ -275,6 +282,15 @@ struct AttentionWindowView: View {
                 }
             }
         }
+    }
+
+    private var onboardingSheetIsPresented: Binding<Bool> {
+        Binding(
+            get: {
+                model.initialSetupGuide != nil && model.connectivityStatus != .offline
+            },
+            set: { _ in }
+        )
     }
 
     private var showsLoadingState: Bool {
@@ -975,27 +991,404 @@ struct AttentionWindowView: View {
     private func startupUnavailableView(
         for state: AppStartupUnavailableState
     ) -> some View {
-        ContentUnavailableView {
-            Label(state.title, systemImage: state.systemImage)
-                .accessibilityIdentifier("startup-unavailable-title")
-        } description: {
-            Text(state.description)
-        } actions: {
+        Group {
             switch state {
             case .connectionRequired:
-                Button("Open Settings") {
-                    openWindow(id: AppSceneID.settingsWindow)
+                if let guide = model.authenticationStartupGuide {
+                    authenticationSetupView(guide)
+                } else {
+                    ContentUnavailableView {
+                        Label(state.title, systemImage: state.systemImage)
+                            .accessibilityIdentifier("startup-unavailable-title")
+                    } description: {
+                        Text(state.description)
+                    } actions: {
+                        Button("Open Settings") {
+                            openWindow(id: AppSceneID.settingsWindow)
+                        }
+                        .appInteractiveHover()
+                    }
+                    .accessibilityIdentifier("startup-unavailable-view")
                 }
-                .appInteractiveHover()
             case .offline:
-                Button("Retry") {
-                    model.retryConnection()
+                ContentUnavailableView {
+                    Label(state.title, systemImage: state.systemImage)
+                        .accessibilityIdentifier("startup-unavailable-title")
+                } description: {
+                    Text(state.description)
+                } actions: {
+                    Button("Retry") {
+                        model.retryConnection()
+                    }
+                    .appInteractiveHover()
+                    .accessibilityIdentifier("offline-retry-button")
                 }
-                .appInteractiveHover()
-                .accessibilityIdentifier("offline-retry-button")
+                .accessibilityIdentifier("startup-unavailable-view")
             }
         }
+    }
+
+    private func authenticationSetupView(
+        _ guide: AuthenticationStartupGuide
+    ) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(alignment: .top, spacing: 14) {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.14))
+                        .frame(width: 44, height: 44)
+                        .overlay {
+                            Image(systemName: "lock.open.display")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                        }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(guide.title)
+                            .font(.title3.weight(.semibold))
+                            .accessibilityIdentifier("auth-setup-title")
+
+                        Text(guide.summary)
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if guide.context == .onboarding {
+                            Text("You can change this later in Authentication settings.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                authenticationSetupSection(
+                    title: "Automatic Setup",
+                    summary: automaticSetupSummary(for: guide)
+                ) {
+                    authenticationSetupPanel {
+                        authenticationSetupRow(
+                            title: "GitHub CLI",
+                            subtitle: automaticSetupDetail(for: guide)
+                        ) {
+                            authenticationStatusBadge(
+                                guide.gitHubCLIStatus.stateLabel,
+                                tone: statusTone(for: guide.gitHubCLIStatus)
+                            )
+                        }
+                    }
+                    .accessibilityIdentifier("auth-setup-github-cli")
+                }
+
+                authenticationSetupSection(
+                    title: "Personal Access Token",
+                    summary: personalAccessTokenSummary(for: guide)
+                ) {
+                    authenticationSetupPanel {
+                        authenticationSetupRow(
+                            title: "Personal Access Token",
+                            subtitle: guide.personalAccessTokenStatus.detail
+                        ) {
+                            HStack(spacing: 10) {
+                                authenticationStatusBadge(
+                                    guide.personalAccessTokenStatus.stateLabel,
+                                    tone: statusTone(for: guide.personalAccessTokenStatus)
+                                )
+
+                                Button(
+                                    guide.context == .onboarding
+                                        ? "Switch"
+                                        : "Open Settings"
+                                ) {
+                                    openPersonalAccessTokenSettings()
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                        .accessibilityIdentifier("auth-setup-pat")
+
+                        authenticationSetupSectionDivider
+
+                        authenticationSetupRow(
+                            title: "Recommended Access",
+                            subtitle: GitHubPersonalAccessTokenSetup.recommendedScopes.joined(separator: " · ")
+                        ) {
+                            Button("GitHub Token Settings") {
+                                openURL(GitHubPersonalAccessTokenSetup.settingsURL)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+
+                if guide.requiresManualIntervention, !guide.nextSteps.isEmpty {
+                    authenticationSetupSection(
+                        title: "Next Steps",
+                        summary: guide.manualInterventionDetail
+                    ) {
+                        authenticationSetupPanel {
+                            VStack(alignment: .leading, spacing: 12) {
+                                ForEach(Array(guide.nextSteps.enumerated()), id: \.offset) { _, step in
+                                    HStack(alignment: .top, spacing: 10) {
+                                        Circle()
+                                            .fill(Color.secondary.opacity(0.6))
+                                            .frame(width: 6, height: 6)
+                                            .padding(.top, 5)
+
+                                        Text(step)
+                                            .font(.system(size: 12))
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                            .accessibilityIdentifier("auth-setup-intervention")
+                        }
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    Spacer()
+
+                    if guide.context == .recovery,
+                        guide.gitHubCLIStatus.isDetected,
+                        guide.gitHubCLIStatus != .ready {
+                        Button("Retry GitHub CLI") {
+                            Task {
+                                _ = await model.reloadTokenFromGitHubCLI()
+                            }
+                        }
+                        .appInteractiveHover()
+                    }
+
+                    if guide.context == .recovery {
+                        Button("Open Settings") {
+                            openWindow(id: AppSceneID.settingsWindow)
+                        }
+                        .appInteractiveHover()
+                    }
+
+                    if guide.context == .onboarding {
+                        Button("Use Personal Access Token") {
+                            openPersonalAccessTokenSettings()
+                        }
+                        .appInteractiveHover()
+                    }
+
+                    if guide.context == .onboarding, model.hasToken {
+                        Button(startupGuideContinueTitle) {
+                            model.completeInitialSetup()
+                        }
+                        .appInteractiveHover()
+                        .keyboardShortcut(.defaultAction)
+                    }
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: 620, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .scrollIndicators(.never)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .windowBackgroundColor))
         .accessibilityIdentifier("startup-unavailable-view")
+    }
+
+    private func authenticationSetupSection<Content: View>(
+        title: String,
+        summary: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+
+                if let summary, !summary.isEmpty {
+                    Text(summary)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            content()
+        }
+    }
+
+    private func authenticationSetupPanel<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            content()
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(
+                    Color(nsColor: .separatorColor).opacity(0.12),
+                    lineWidth: 1
+                )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func authenticationSetupRow<Accessory: View>(
+        title: String,
+        subtitle: String,
+        @ViewBuilder accessory: () -> Accessory
+    ) -> some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer(minLength: 16)
+
+            accessory()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private var authenticationSetupSectionDivider: some View {
+        Divider()
+            .padding(.leading, 14)
+    }
+
+    private func authenticationStatusBadge(
+        _ title: String,
+        tone: AuthenticationSetupStatusTone
+    ) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(tone.foreground)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(tone.background)
+            )
+    }
+
+    private func automaticSetupSummary(for guide: AuthenticationStartupGuide) -> String {
+        switch guide.context {
+        case .onboarding:
+            return "Octowatch prefers GitHub CLI when this Mac is already authenticated."
+        case .recovery:
+            return "Use GitHub CLI if you want Octowatch to reuse `gh auth token`."
+        }
+    }
+
+    private func automaticSetupDetail(for guide: AuthenticationStartupGuide) -> String {
+        if guide.context == .onboarding, guide.gitHubCLIStatus == .ready {
+            return "This Mac already has a validated GitHub CLI token, so Octowatch can start immediately."
+        }
+
+        return guide.gitHubCLIStatus.detail
+    }
+
+    private func personalAccessTokenSummary(for guide: AuthenticationStartupGuide) -> String {
+        switch guide.context {
+        case .onboarding:
+            return "Optional alternative if you prefer to manage credentials directly in Octowatch."
+        case .recovery:
+            return "Use this when GitHub CLI is unavailable or still needs attention."
+        }
+    }
+
+    private func statusTone(for status: GitHubCLIAuthStatus) -> AuthenticationSetupStatusTone {
+        switch status {
+        case .ready:
+            return .success
+        case .tokenUnavailable:
+            return .warning
+        case .tokenRejected:
+            return .critical
+        case .checking:
+            return .accent
+        case .notInstalled:
+            return .neutral
+        }
+    }
+
+    private func statusTone(
+        for status: PersonalAccessTokenAuthStatus
+    ) -> AuthenticationSetupStatusTone {
+        switch status {
+        case .storedInKeychain:
+            return .success
+        case .rejected:
+            return .critical
+        case .unavailable:
+            return .neutral
+        }
+    }
+
+    private enum AuthenticationSetupStatusTone {
+        case accent
+        case success
+        case warning
+        case critical
+        case neutral
+
+        var foreground: Color {
+            switch self {
+            case .accent:
+                return .accentColor
+            case .success:
+                return .green
+            case .warning:
+                return .orange
+            case .critical:
+                return .red
+            case .neutral:
+                return .secondary
+            }
+        }
+
+        var background: Color {
+            switch self {
+            case .accent:
+                return Color.accentColor.opacity(0.14)
+            case .success:
+                return Color.green.opacity(0.14)
+            case .warning:
+                return Color.orange.opacity(0.14)
+            case .critical:
+                return Color.red.opacity(0.14)
+            case .neutral:
+                return Color.secondary.opacity(0.14)
+            }
+        }
+    }
+
+    private var startupGuideContinueTitle: String {
+        if model.usingGitHubCLIToken {
+            return "Continue with GitHub CLI"
+        }
+
+        if model.usingPersonalAccessToken || model.usingKeychainStoredPersonalAccessToken {
+            return "Continue with Personal Access Token"
+        }
+
+        return "Continue"
+    }
+
+    private func openPersonalAccessTokenSettings() {
+        model.requestAuthenticationSettings(preferredSource: .personalAccessToken)
+        openWindow(id: AppSceneID.settingsWindow)
     }
 
     private var browsePullRequestCount: Int {

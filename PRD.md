@@ -68,12 +68,19 @@ in noise.
 - Undo affordances for local ignore and snooze actions.
 
 ### Settings & Auth
-- GitHub CLI token auto-load + manual token entry (session-only).
+- GitHub CLI token auto-load + manual token entry, with optional
+  Keychain persistence for manually entered tokens.
+- First-run authentication wizard that appears even when GitHub CLI is
+  already ready, explains that Octowatch will reuse `gh`, and offers a
+  direct path to switch to a personal access token instead.
 - Polling interval (30–900 s).
 - Rate-limit diagnostics toggle.
 - Ignored items and snoozed items managers with restore actions.
 - Offline startup handling with a single recovery state, manual retry,
   and automatic reconnect refresh when network access returns.
+- Startup authentication guide that reports whether GitHub CLI was
+  found, whether manual intervention is required, and how to set up a
+  personal access token when needed after initial onboarding.
 
 ---
 
@@ -104,6 +111,13 @@ and menu bar, stay eligible for `Your Turn` rules, and authored draft
 PRs surface a direct ready-for-review action in the detail pane.
 - **Files:** `Models.swift`, `AttentionWindowView.swift`,
   `MenuBarContentView.swift`, `GitHubClient.swift`
+- **Status:** Shipped
+
+#### Manual Token Keychain Persistence
+Manually entered personal access tokens can now be saved to Keychain,
+loaded again on launch, and cleared independently from GitHub CLI.
+- **Files:** `KeychainStore.swift`, `SettingsView.swift`,
+  `AppModel.swift`
 - **Status:** Shipped
 
 ### Partial
@@ -148,14 +162,7 @@ Flag PRs with no activity for a configurable period (for example,
 - **Files:** `Models.swift`, `AttentionWindowView.swift`
 - **Status:** Missing
 
-#### 6. Persist Token in Keychain
-`KeychainStore.swift` exists but is still unused. Users should be able
-to opt in to persisting their token across launches.
-- **Files:** `KeychainStore.swift`, `SettingsView.swift`,
-  `AppModel.swift`
-- **Status:** Missing
-
-#### 7. Deep-Link Support (`octobar://`)
+#### 6. Deep-Link Support (`octobar://`)
 Register a custom URL scheme so external tools / scripts can open
 specific items in the app.
 - **Files:** `AppDelegate.swift`, `Info.plist`, `project.yml`
@@ -178,8 +185,8 @@ specific items in the app.
   membership. Issue tracking deferred to the Issues dashboard; workflow
   watch candidates derived from already-fetched PR data; open+merged
   queries combined into single calls with in-memory splitting.
-- **Token:** runtime-only from `gh` CLI or manual entry; Keychain
-  available but unused.
+- **Token:** `gh` CLI is preferred when available; manually entered
+  personal access tokens can be saved in Keychain and reused on launch.
 - **Persistence:** `UserDefaults` for read state, ignored items,
   snoozed items, rules, and preferences; versioned keys.
 - **Build:** SwiftPM primary, XcodeGen for `.xcodeproj` generation.

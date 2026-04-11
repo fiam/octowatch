@@ -80,7 +80,9 @@ struct MenuBarContentView: View {
         VStack(alignment: .leading, spacing: LayoutMetrics.sectionSpacing) {
             header
 
-            if let unavailableState = model.startupUnavailableState {
+            if let guide = model.initialSetupGuide {
+                authenticationSetupView(guide)
+            } else if let unavailableState = model.startupUnavailableState {
                 unavailableStateView(for: unavailableState)
             } else if model.hasToken {
                 inboxSectionList
@@ -239,19 +241,53 @@ struct MenuBarContentView: View {
         for state: AppStartupUnavailableState
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(state.title)
-                .font(.callout.weight(.semibold))
-            Text(state.description)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
             switch state {
             case .connectionRequired:
-                Button(action: requestSettings) {
-                    Text("Open Settings")
+                let guide = model.authenticationStartupGuide
+
+                Text(guide?.title ?? state.title)
+                    .font(.callout.weight(.semibold))
+                Text(guide?.summary ?? state.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let guide {
+                    Text("GitHub CLI: \(guide.gitHubCLIStatus.installationLabel)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(guide.manualInterventionDetail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .appInteractiveHover()
+
+                HStack(spacing: 8) {
+                    if guide?.gitHubCLIStatus.isDetected == true,
+                        guide?.gitHubCLIStatus != .ready {
+                        Button("Retry GitHub CLI") {
+                            Task {
+                                _ = await model.reloadTokenFromGitHubCLI()
+                            }
+                        }
+                        .appInteractiveHover()
+                    }
+
+                    Button(action: requestSettings) {
+                        Text("Open Settings")
+                    }
+                    .appInteractiveHover()
+
+                    Button("GitHub Tokens") {
+                        openURL(GitHubPersonalAccessTokenSetup.settingsURL)
+                    }
+                    .appInteractiveHover()
+                }
             case .offline:
+                Text(state.title)
+                    .font(.callout.weight(.semibold))
+                Text(state.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Button {
                     model.retryConnection()
                 } label: {
@@ -263,12 +299,84 @@ struct MenuBarContentView: View {
         }
     }
 
+    private func authenticationSetupView(
+        _ guide: AuthenticationStartupGuide
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(guide.title)
+                .font(.callout.weight(.semibold))
+            Text(guide.summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("GitHub CLI: \(guide.gitHubCLIStatus.installationLabel)")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(guide.manualInterventionDetail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                if guide.context == .onboarding, model.hasToken {
+                    Button(startupGuideContinueTitle) {
+                        model.completeInitialSetup()
+                    }
+                    .appInteractiveHover()
+                }
+
+                if guide.gitHubCLIStatus.isDetected,
+                    guide.gitHubCLIStatus != .ready {
+                    Button("Retry GitHub CLI") {
+                        Task {
+                            _ = await model.reloadTokenFromGitHubCLI()
+                        }
+                    }
+                    .appInteractiveHover()
+                }
+
+                if guide.context == .onboarding {
+                    Button("Use Personal Access Token") {
+                        requestPersonalAccessTokenSettings()
+                    }
+                    .appInteractiveHover()
+                } else {
+                    Button(action: requestSettings) {
+                        Text("Open Settings")
+                    }
+                    .appInteractiveHover()
+                }
+
+                Button("GitHub Tokens") {
+                    openURL(GitHubPersonalAccessTokenSetup.settingsURL)
+                }
+                .appInteractiveHover()
+            }
+        }
+    }
+
+    private var startupGuideContinueTitle: String {
+        if model.usingGitHubCLIToken {
+            return "Continue with GitHub CLI"
+        }
+
+        if model.usingPersonalAccessToken || model.usingKeychainStoredPersonalAccessToken {
+            return "Continue with Personal Access Token"
+        }
+
+        return "Continue"
+    }
+
     private func itemContext(for item: AttentionItem) -> String {
         AttentionItemPresentationPolicy.sidebarContext(for: item)
     }
 
     private func requestSettings() {
         NotificationCenter.default.post(name: .openSettingsRequested, object: nil)
+    }
+
+    private func requestPersonalAccessTokenSettings() {
+        model.requestAuthenticationSettings(preferredSource: .personalAccessToken)
+        requestSettings()
     }
 
     private func requestMainWindow() {

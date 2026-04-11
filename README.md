@@ -79,8 +79,20 @@ Use a GitHub personal access token (classic or fine-grained) with read access to
 If `gh` is installed and authenticated, Octowatch will try `gh auth token`
 first and validate it before using it.
 
-You can also enter a custom token in Settings. Custom tokens are
-session-only and are not written to Keychain.
+You can also enter a custom token in Settings. Manual personal access
+tokens can now be saved to Keychain for future launches, or left
+session-only if you prefer.
+
+On first launch, Octowatch now shows a startup setup guide even when
+GitHub CLI is already authenticated. The guide explains that Octowatch
+will reuse `gh auth token` by default, lets you continue with GitHub
+CLI immediately, and still offers a direct path to switch to a personal
+access token instead.
+
+If Octowatch starts without a usable token after that, it falls back to
+the same startup guide in recovery mode and explains whether GitHub CLI
+was found, whether manual intervention is required, and how to prepare
+a personal access token if needed.
 
 Because Octowatch reads GitHub notifications, the token must work with the
 Notifications API. GitHub's documentation says the "List notifications
