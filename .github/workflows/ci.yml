@@ -6,8 +6,21 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
-  build-and-test:
+  swift-package-tests:
+    runs-on: macos-15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run Swift package tests
+        run: swift test
+
+  xcode-unit-tests:
     runs-on: macos-15
 
     steps:
@@ -20,10 +33,7 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Run Swift package tests
-        run: swift test
-
-      - name: Run Xcode tests
+      - name: Run Xcode unit tests
         run: |
           xcodebuild \
             -project Octowatch.xcodeproj \
