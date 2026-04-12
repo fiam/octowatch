@@ -11,11 +11,11 @@ permissions:
 
 jobs:
   build-release:
-    runs-on: macos-15
+    runs-on: macos-26
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -36,13 +36,13 @@ jobs:
         run: ./scripts/build-release-assets.sh "$RELEASE_VERSION"
 
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: octowatch-release-${{ env.RELEASE_VERSION }}
           path: dist/*
 
       - name: Create draft GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: Octowatch ${{ env.RELEASE_VERSION }}
