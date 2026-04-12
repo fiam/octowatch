@@ -91,11 +91,4 @@ final class NotificationPresentationUITests: XCTestCase {
         XCTAssertTrue(app.searchFields["Search inbox"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["Welcome to Octowatch"].exists)
     }
-
-    private func launchFixture(named fixtureName: String) -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launchEnvironment["OCTOWATCH_UI_TEST_FIXTURE"] = fixtureName
-        app.launch()
-        return app
-    }
 }

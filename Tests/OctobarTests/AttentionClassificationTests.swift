@@ -310,7 +310,7 @@ final class AttentionClassificationTests: XCTestCase {
             title: "Workflow succeeded",
             detail: "Push on main",
             timestamp: mergedAt.addingTimeInterval(5),
-            actor: AttentionActor(login: "fiam", avatarURL: nil),
+            actor: AttentionActor(login: "octowatch-user", avatarURL: nil),
             url: nil
         )
         let reviewUpdate = AttentionUpdate(
@@ -319,7 +319,7 @@ final class AttentionClassificationTests: XCTestCase {
             title: "Review approved",
             detail: nil,
             timestamp: mergedAt.addingTimeInterval(-5),
-            actor: AttentionActor(login: "fiam", avatarURL: nil),
+            actor: AttentionActor(login: "octowatch-user", avatarURL: nil),
             url: nil
         )
 
@@ -926,12 +926,12 @@ final class AttentionClassificationTests: XCTestCase {
     }
 
     func testAttentionViewerPresentationPolicyUsesYouForCurrentActor() {
-        let actor = AttentionActor(login: "fiam", avatarURL: nil)
+        let actor = AttentionActor(login: "octowatch-user", avatarURL: nil)
 
         XCTAssertEqual(
             AttentionViewerPresentationPolicy.actorLabel(
                 for: actor,
-                viewerLogin: "fiam"
+                viewerLogin: "octowatch-user"
             ),
             "you"
         )
@@ -940,35 +940,35 @@ final class AttentionClassificationTests: XCTestCase {
                 for: actor,
                 viewerLogin: "someone-else"
             ),
-            "fiam"
+            "octowatch-user"
         )
     }
 
     func testAttentionViewerPresentationPolicyPersonalizesLeadingViewerLogin() {
         XCTAssertEqual(
             AttentionViewerPresentationPolicy.personalizing(
-                "fiam · ExampleOrg/sample-services · Review approved",
-                viewerLogin: "fiam"
+                "octowatch-user · ExampleOrg/sample-services · Review approved",
+                viewerLogin: "octowatch-user"
             ),
             "you · ExampleOrg/sample-services · Review approved"
         )
         XCTAssertEqual(
             AttentionViewerPresentationPolicy.personalizing(
-                "fiam/repo",
-                viewerLogin: "fiam"
+                "octowatch-user/repo",
+                viewerLogin: "octowatch-user"
             ),
-            "fiam/repo"
+            "octowatch-user/repo"
         )
     }
 
     func testAttentionViewerPresentationPolicyAvoidsDuplicateUpdateActorPrefix() {
-        let actor = AttentionActor(login: "fiam", avatarURL: nil)
+        let actor = AttentionActor(login: "octowatch-user", avatarURL: nil)
 
         XCTAssertEqual(
             AttentionViewerPresentationPolicy.updateDetailText(
                 actor: actor,
-                detail: "fiam · ExampleOrg/sample-services · Review approved",
-                viewerLogin: "fiam"
+                detail: "octowatch-user · ExampleOrg/sample-services · Review approved",
+                viewerLogin: "octowatch-user"
             ),
             "you · ExampleOrg/sample-services · Review approved"
         )
@@ -976,7 +976,7 @@ final class AttentionClassificationTests: XCTestCase {
             AttentionViewerPresentationPolicy.updateDetailText(
                 actor: actor,
                 detail: "ExampleOrg/sample-services · Review approved",
-                viewerLogin: "fiam"
+                viewerLogin: "octowatch-user"
             ),
             "you · ExampleOrg/sample-services · Review approved"
         )
@@ -3160,7 +3160,7 @@ final class AttentionClassificationTests: XCTestCase {
             sourceType: .readyToMerge,
             resolution: .open,
             sourceActor: nil,
-            author: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
+            author: AttentionActor(login: "octowatch-user", avatarURL: nil, isBot: false),
             assigner: nil,
             latestApprover: AttentionActor(login: "nicksieger", avatarURL: nil, isBot: false),
             approvalCount: 3,
@@ -3168,7 +3168,7 @@ final class AttentionClassificationTests: XCTestCase {
         )
 
         XCTAssertEqual(facts.map(\.label), ["created by", "approved by"])
-        XCTAssertEqual(facts.map(\.actor.login), ["fiam", "nicksieger"])
+        XCTAssertEqual(facts.map(\.actor.login), ["octowatch-user", "nicksieger"])
         XCTAssertEqual(facts.last?.overflowLabel, "and 2 more people")
     }
 
@@ -3177,9 +3177,9 @@ final class AttentionClassificationTests: XCTestCase {
             sourceType: .readyToMerge,
             resolution: .open,
             sourceActor: nil,
-            author: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
+            author: AttentionActor(login: "octowatch-user", avatarURL: nil, isBot: false),
             assigner: nil,
-            latestApprover: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
+            latestApprover: AttentionActor(login: "octowatch-user", avatarURL: nil, isBot: false),
             approvalCount: 2,
             mergedBy: nil
         )
@@ -3187,7 +3187,7 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(facts.count, 1)
         XCTAssertEqual(facts.first?.id, "created-and-approved-by")
         XCTAssertEqual(facts.first?.label, "created and approved by")
-        XCTAssertEqual(facts.first?.actor.login, "fiam")
+        XCTAssertEqual(facts.first?.actor.login, "octowatch-user")
         XCTAssertEqual(facts.first?.overflowLabel, "and 1 more person")
     }
 
@@ -3196,7 +3196,7 @@ final class AttentionClassificationTests: XCTestCase {
             sourceType: .reviewApproved,
             resolution: .open,
             sourceActor: AttentionActor(login: "nicksieger", avatarURL: nil, isBot: false),
-            author: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
+            author: AttentionActor(login: "octowatch-user", avatarURL: nil, isBot: false),
             assigner: nil,
             latestApprover: nil,
             approvalCount: 1,
@@ -3204,15 +3204,15 @@ final class AttentionClassificationTests: XCTestCase {
         )
 
         XCTAssertEqual(facts.map(\.label), ["created by", "approved by"])
-        XCTAssertEqual(facts.map(\.actor.login), ["fiam", "nicksieger"])
+        XCTAssertEqual(facts.map(\.actor.login), ["octowatch-user", "nicksieger"])
     }
 
     func testReviewApprovedHeaderFactsCombineSameAuthorAndApprover() {
         let facts = PullRequestHeaderFact.build(
             sourceType: .reviewApproved,
             resolution: .open,
-            sourceActor: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
-            author: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
+            sourceActor: AttentionActor(login: "octowatch-user", avatarURL: nil, isBot: false),
+            author: AttentionActor(login: "octowatch-user", avatarURL: nil, isBot: false),
             assigner: nil,
             latestApprover: nil,
             approvalCount: 1,
@@ -3222,7 +3222,7 @@ final class AttentionClassificationTests: XCTestCase {
         XCTAssertEqual(facts.count, 1)
         XCTAssertEqual(facts.first?.id, "created-and-approved-by")
         XCTAssertEqual(facts.first?.label, "created and approved by")
-        XCTAssertEqual(facts.first?.actor.login, "fiam")
+        XCTAssertEqual(facts.first?.actor.login, "octowatch-user")
     }
 
     func testAssignedPullRequestHeaderFactsIncludeAuthorAndAssigner() {
@@ -3231,14 +3231,14 @@ final class AttentionClassificationTests: XCTestCase {
             resolution: .open,
             sourceActor: nil,
             author: AttentionActor(login: "renovate-custom-app", avatarURL: nil, isBot: true),
-            assigner: AttentionActor(login: "fiam", avatarURL: nil, isBot: false),
+            assigner: AttentionActor(login: "octowatch-user", avatarURL: nil, isBot: false),
             latestApprover: nil,
             approvalCount: 0,
             mergedBy: nil
         )
 
         XCTAssertEqual(facts.map(\.label), ["created by", "assigned by"])
-        XCTAssertEqual(facts.map(\.actor.login), ["renovate-custom-app", "fiam"])
+        XCTAssertEqual(facts.map(\.actor.login), ["renovate-custom-app", "octowatch-user"])
     }
 
     func testAssignedPullRequestHeaderFactsCombineSameAuthorAndAssigner() {

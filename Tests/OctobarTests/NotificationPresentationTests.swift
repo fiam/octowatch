@@ -29,11 +29,11 @@ final class NotificationPresentationTests: XCTestCase {
 
         XCTAssertEqual(
             client.subjectWebURL(
-                subjectURL: URL(string: "https://api.github.com/repos/fiam/dc2/dependabot/alerts/42"),
-                repositoryWebURL: URL(string: "https://github.com/fiam/dc2")!,
+                subjectURL: URL(string: "https://api.github.com/repos/example/security-lab/dependabot/alerts/42"),
+                repositoryWebURL: URL(string: "https://github.com/example/security-lab")!,
                 subjectType: "RepositoryVulnerabilityAlert"
             ),
-            URL(string: "https://github.com/fiam/dc2/security/dependabot/42")!
+            URL(string: "https://github.com/example/security-lab/security/dependabot/42")!
         )
     }
 
@@ -43,10 +43,10 @@ final class NotificationPresentationTests: XCTestCase {
         XCTAssertEqual(
             client.subjectWebURL(
                 subjectURL: nil,
-                repositoryWebURL: URL(string: "https://github.com/fiam/dc2")!,
+                repositoryWebURL: URL(string: "https://github.com/example/security-lab")!,
                 subjectType: "RepositoryVulnerabilityAlert"
             ),
-            URL(string: "https://github.com/fiam/dc2/security/dependabot")!
+            URL(string: "https://github.com/example/security-lab/security/dependabot")!
         )
     }
 
@@ -68,7 +68,7 @@ final class NotificationPresentationTests: XCTestCase {
 
         XCTAssertEqual(
             client.openActionTitle(
-                for: URL(string: "https://github.com/fiam/dc2/security/dependabot/42")!
+                for: URL(string: "https://github.com/example/security-lab/security/dependabot/42")!
             ),
             "Open Security Alert"
         )

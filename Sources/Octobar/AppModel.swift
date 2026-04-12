@@ -3028,6 +3028,7 @@ final class AppModel: ObservableObject {
         issueDashboardLastUpdated = nil
         pullRequestDashboardLastError = nil
         issueDashboardLastError = nil
+        inboxSectionConfig = .default
         inboxSections = InboxSectionPolicy.matchingItemsBySection(
             in: fixture.attentionItems,
             configuration: inboxSectionConfig
@@ -3109,7 +3110,10 @@ private struct LaunchFixture {
     let hasPendingGitHubCLIToken: Bool
 
     static func load(from environment: [String: String]) -> LaunchFixture? {
-        switch environment["OCTOWATCH_UI_TEST_FIXTURE"] {
+        let fixtureName = environment["OCTOWATCH_LAUNCH_FIXTURE"] ??
+            environment["OCTOWATCH_UI_TEST_FIXTURE"]
+
+        switch fixtureName {
         case "auto-mark-read":
             return autoMarkReadFixture
         case "auth-wizard-gh-found":
@@ -3132,6 +3136,8 @@ private struct LaunchFixture {
             return notificationSecurityAlertFixture(isUnread: false)
         case "offline-startup":
             return offlineStartupFixture
+        case "readme-demo":
+            return readmeDemoFixture
         default:
             return nil
         }
@@ -3324,9 +3330,306 @@ private struct LaunchFixture {
         )
     }
 
+    private static var readmeDemoFixture: LaunchFixture {
+        let now = Date()
+        let repository = "example/octowatch"
+        let reference = PullRequestReference(
+            owner: "example",
+            name: "octowatch",
+            number: 42
+        )
+        let subjectKey = reference.pullRequestURL.absoluteString
+        let author = AttentionActor(
+            login: "product-maintainer",
+            avatarURL: URL(string: "https://avatars.githubusercontent.com/u/9919?v=4")
+        )
+        let reviewer = AttentionActor(
+            login: "octowatch-user",
+            avatarURL: URL(string: "https://avatars.githubusercontent.com/u/1296269?v=4")
+        )
+        let automation = AttentionActor(
+            login: "release-assistant[bot]",
+            avatarURL: URL(string: "https://avatars.githubusercontent.com/u/49699333?v=4"),
+            isBot: true
+        )
+        let checkSummary = PullRequestCheckSummary(
+            passedCount: 18,
+            skippedCount: 2,
+            failedCount: 1,
+            pendingCount: 0
+        )
+
+        let reviewRequestedItem = AttentionItem(
+            id: "fixture-readme-pr",
+            subjectKey: subjectKey,
+            stream: .pullRequests,
+            type: .reviewRequested,
+            secondaryIndicatorType: .pullRequestFailedChecks,
+            focusType: .reviewRequested,
+            title: "Polish the first-run setup experience",
+            subtitle: "\(repository) · Review requested",
+            repository: repository,
+            labels: [
+                GitHubLabel(name: "macOS", colorHex: "1f6feb", description: "Native app work"),
+                GitHubLabel(name: "SwiftUI", colorHex: "bf3989", description: "SwiftUI surface"),
+                GitHubLabel(name: "onboarding", colorHex: "0e8a16", description: "First-run flow")
+            ],
+            timestamp: now.addingTimeInterval(-240),
+            url: reference.pullRequestURL,
+            actor: reviewer,
+            detail: AttentionDetail(
+                why: AttentionWhy(
+                    summary: "A pull request is waiting for your review.",
+                    detail: "Checks regressed after the latest onboarding polish."
+                ),
+                evidence: [
+                    AttentionEvidence(
+                        id: "repository",
+                        title: "Repository",
+                        detail: repository,
+                        iconName: "shippingbox",
+                        url: URL(string: "https://github.com/\(repository)")!
+                    )
+                ],
+                updates: [
+                    AttentionUpdate(
+                        id: "fixture-readme-update-review-requested",
+                        type: .reviewRequested,
+                        title: "Review requested",
+                        detail: "The latest onboarding pass needs a fresh review.",
+                        timestamp: now.addingTimeInterval(-240),
+                        actor: reviewer,
+                        url: reference.pullRequestURL
+                    ),
+                    AttentionUpdate(
+                        id: "fixture-readme-update-failed-check",
+                        type: .pullRequestFailedChecks,
+                        title: "Checks failed",
+                        detail: "Screenshot capture",
+                        timestamp: now.addingTimeInterval(-180),
+                        actor: automation,
+                        url: reference.checksURL
+                    )
+                ],
+                actions: AttentionAction.pullRequestActions(
+                    reference: reference,
+                    mode: .participating,
+                    checkSummary: checkSummary,
+                    hasNewCommits: true,
+                    hasPrimaryMutationAction: false
+                )
+            ),
+            currentUpdateTypes: [.pullRequestFailedChecks],
+            currentRelationshipTypes: [.reviewRequested],
+            isUnread: true
+        )
+
+        let reviewFocus = PullRequestFocus(
+            reference: reference,
+            baseBranch: "main",
+            sourceType: .reviewRequested,
+            mode: .participating,
+            resolution: .open,
+            mergedAt: nil,
+            author: author,
+            labels: reviewRequestedItem.labels,
+            headerFacts: PullRequestHeaderFact.build(
+                sourceType: .reviewRequested,
+                resolution: .open,
+                sourceActor: reviewer,
+                author: author,
+                assigner: nil,
+                latestApprover: nil,
+                approvalCount: 0,
+                mergedBy: nil
+            ),
+            contextBadges: [
+                PullRequestContextBadge(
+                    id: "checks-failed",
+                    title: "Checks failed",
+                    iconName: "xmark.octagon.fill",
+                    accent: .failure
+                )
+            ],
+            descriptionHTML: """
+                <p>Refresh the first-run flow so the app explains GitHub CLI,
+                personal access tokens, and offline recovery without dropping
+                people into a dead end.</p>
+                <ul>
+                  <li>Keep the setup path native to macOS.</li>
+                  <li>Explain when manual PAT setup is required.</li>
+                  <li>Leave the main window mounted behind the setup sheet.</li>
+                </ul>
+                """,
+            statusSummary: PullRequestStatusSummary.build(
+                mode: .participating,
+                checkSummary: checkSummary,
+                openThreadCount: 1,
+                reviewMergeAction: nil,
+                commitsSinceReview: [
+                    PullRequestFocusEntry(
+                        id: "fixture-readme-commit-summary",
+                        title: "Tighten onboarding copy and recovery flow",
+                        detail: "9f4d1a2",
+                        metadata: automation.login,
+                        timestamp: now.addingTimeInterval(-600),
+                        iconName: "arrow.trianglehead.branch",
+                        accent: .change,
+                        url: reference.commitsURL
+                    )
+                ]
+            ),
+            postMergeWorkflowPreview: nil,
+            sections: [
+                PullRequestFocusSection(
+                    id: "open-threads",
+                    title: "Your Open Conversations",
+                    items: [
+                        PullRequestFocusEntry(
+                            id: "fixture-readme-thread",
+                            title: "Sources/Octobar/AttentionWindowView.swift:214",
+                            detail: "Explain why GitHub CLI is preferred before the PAT path.",
+                            metadata: reviewer.login,
+                            timestamp: now.addingTimeInterval(-540),
+                            iconName: "bubble.left.and.text.bubble.right",
+                            accent: .warning,
+                            url: reference.pullRequestURL
+                        )
+                    ]
+                ),
+                PullRequestFocusSection(
+                    id: "changes-since-review",
+                    title: "Changes Since Your Review",
+                    items: [
+                        PullRequestFocusEntry(
+                            id: "fixture-readme-commit",
+                            title: "Add a dedicated recovery state for offline launch",
+                            detail: "9f4d1a2",
+                            metadata: automation.login,
+                            timestamp: now.addingTimeInterval(-420),
+                            iconName: "arrow.trianglehead.branch",
+                            accent: .change,
+                            url: reference.commitsURL
+                        )
+                    ]
+                ),
+                PullRequestFocusSection(
+                    id: "failed-checks",
+                    title: "Failing Checks",
+                    items: [
+                        PullRequestFocusEntry(
+                            id: "fixture-readme-check",
+                            title: "Screenshot capture",
+                            detail: "failure",
+                            metadata: "github-actions",
+                            timestamp: now.addingTimeInterval(-210),
+                            iconName: "xmark.octagon",
+                            accent: .failure,
+                            url: reference.checksURL
+                        )
+                    ]
+                )
+            ],
+            timeline: [
+                PullRequestTimelineEntry(
+                    id: "fixture-readme-timeline-comment",
+                    kind: .comment,
+                    author: reviewer,
+                    bodyHTML: "<p>The sheet is good now. The copy still needs to explain what happens when the Mac is offline.</p>",
+                    timestamp: now.addingTimeInterval(-1_200),
+                    url: reference.pullRequestURL
+                ),
+                PullRequestTimelineEntry(
+                    id: "fixture-readme-timeline-review",
+                    kind: .review(state: "COMMENTED"),
+                    author: reviewer,
+                    bodyHTML: "<p>Please make the first-run path explicit when GitHub CLI is already configured.</p>",
+                    timestamp: now.addingTimeInterval(-900),
+                    url: reference.pullRequestURL
+                )
+            ],
+            actions: AttentionAction.pullRequestActions(
+                reference: reference,
+                mode: .participating,
+                checkSummary: checkSummary,
+                hasNewCommits: true,
+                hasPrimaryMutationAction: false
+            ),
+            readyForReviewAction: nil,
+            reviewMergeAction: nil,
+            emptyStateTitle: "No additional pull request signals",
+            emptyStateDetail: "The latest review request already tells the story here."
+        )
+
+        let workflowItem = AttentionItem(
+            id: "fixture-readme-workflow",
+            subjectKey: "https://github.com/\(repository)/actions/runs/9001",
+            type: .workflowApprovalRequired,
+            title: "Approve production deployment",
+            subtitle: "\(repository) · Workflow waiting for approval",
+            repository: repository,
+            timestamp: now.addingTimeInterval(-480),
+            url: URL(string: "https://github.com/\(repository)/actions/runs/9001")!,
+            actor: automation,
+            isUnread: true
+        )
+
+        let securityItem = AttentionItem(
+            id: "fixture-readme-security",
+            subjectKey: "https://github.com/example/security-lab/security/dependabot/7",
+            stream: .notifications,
+            type: .securityAlert,
+            title: "Security alert in dependency snapshot",
+            subtitle: "example/security-lab · Security alert",
+            repository: "example/security-lab",
+            timestamp: now.addingTimeInterval(-720),
+            url: URL(string: "https://github.com/example/security-lab/security/dependabot/7")!,
+            isUnread: false
+        )
+
+        let draftItem = AttentionItem(
+            id: "fixture-readme-draft",
+            subjectKey: "https://github.com/example/octowatch/pull/38",
+            stream: .pullRequests,
+            type: .authoredPullRequest,
+            title: "Draft: add a lighter menu bar quick-view",
+            subtitle: "\(repository) · Draft · Created by you",
+            repository: repository,
+            timestamp: now.addingTimeInterval(-1_080),
+            url: URL(string: "https://github.com/\(repository)/pull/38")!,
+            actor: author,
+            isDraft: true,
+            isUnread: false
+        )
+
+        return LaunchFixture(
+            token: "ui-test-token",
+            login: "octowatch-user",
+            attentionItems: [
+                reviewRequestedItem,
+                workflowItem,
+                securityItem,
+                draftItem
+            ],
+            pullRequestFocusesBySubjectKey: [subjectKey: reviewFocus],
+            autoMarkReadSetting: .threeSeconds,
+            lastUpdated: now.addingTimeInterval(-18),
+            lastError: nil,
+            connectivityStatus: .online,
+            gitHubCLIAvailable: true,
+            gitHubCLIAuthStatus: .ready,
+            personalAccessTokenAuthStatus: .unavailable,
+            storesPersonalAccessTokenInKeychain: true,
+            usingGitHubCLIToken: true,
+            usingKeychainStoredPersonalAccessToken: false,
+            hasCompletedInitialSetup: true,
+            hasPendingGitHubCLIToken: false
+        )
+    }
+
     private static func notificationSecurityAlertFixture(isUnread: Bool) -> LaunchFixture {
         let now = Date()
-        let repository = "fiam/dc2"
+        let repository = "example/security-lab"
         let alertURL = URL(string: "https://github.com/\(repository)/security/dependabot/42")!
 
         let item = AttentionItem(
