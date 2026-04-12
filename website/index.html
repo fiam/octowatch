@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Octowatch</title>
+    <meta
+      name="description"
+      content="Octowatch is a native macOS app that watches GitHub and pulls the work that needs your attention into one place."
+    >
+    <link rel="icon" href="assets/icon.png">
+    <link rel="stylesheet" href="site.css">
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="site-header">
+        <a class="brand" href="/">
+          <img src="assets/icon.png" alt="Octowatch logo" width="44" height="44">
+          <span>Octowatch</span>
+        </a>
+        <nav class="site-nav">
+          <a href="https://github.com/fiam/octowatch">GitHub</a>
+          <a href="https://github.com/fiam/octowatch/releases">Releases</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="hero">
+          <div class="hero-copy">
+            <p class="eyebrow">Native macOS triage for GitHub</p>
+            <h1>Watch GitHub without living in GitHub.</h1>
+            <p class="lede">
+              Octowatch keeps pull requests, notifications, workflow runs,
+              and security alerts in one focused inbox with a menu bar view,
+              full detail window, and direct actions.
+            </p>
+
+            <div class="hero-actions">
+              <a
+                id="download-button"
+                class="button button-primary"
+                href="https://github.com/fiam/octowatch/releases"
+              >
+                View Releases
+              </a>
+              <a
+                class="button button-secondary"
+                href="https://github.com/fiam/octowatch"
+              >
+                Browse Source
+              </a>
+            </div>
+
+            <p id="release-status" class="release-status">
+              Looking up the latest release…
+            </p>
+          </div>
+
+          <div class="hero-card">
+            <div class="metric-grid">
+              <div class="metric">
+                <span class="metric-label">Inputs</span>
+                <strong>PRs, issues, workflows, alerts</strong>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Auth</span>
+                <strong>GitHub CLI or personal access token</strong>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Update Model</span>
+                <strong>Polling, local state, no GitHub App</strong>
+              </div>
+              <div class="metric">
+                <span class="metric-label">Platform</span>
+                <strong>macOS 26+</strong>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="feature-grid">
+          <article class="feature-card">
+            <h2>One inbox</h2>
+            <p>
+              Pull requests, issues, workflow failures, and GitHub
+              notifications come together in one stream.
+            </p>
+          </article>
+          <article class="feature-card">
+            <h2>Your Turn</h2>
+            <p>
+              Bring the work that actually needs action right now to the
+              top with configurable inbox rules.
+            </p>
+          </article>
+          <article class="feature-card">
+            <h2>Native actions</h2>
+            <p>
+              Review, merge, snooze, open checks, and jump to GitHub from
+              a native macOS window instead of a browser tab pile.
+            </p>
+          </article>
+        </section>
+
+        <section class="screenshots">
+          <div class="section-header">
+            <p class="eyebrow">Screenshots</p>
+            <h2>Built for fast triage</h2>
+          </div>
+          <div class="shot-grid">
+            <figure class="shot">
+              <img src="assets/readme-main-window.png" alt="Octowatch main window">
+              <figcaption>Main inbox and pull request detail view.</figcaption>
+            </figure>
+            <figure class="shot">
+              <img src="assets/readme-onboarding.png" alt="Octowatch first-run setup sheet">
+              <figcaption>First-run authentication setup in a native modal sheet.</figcaption>
+            </figure>
+          </div>
+        </section>
+
+        <section class="install">
+          <div class="section-header">
+            <p class="eyebrow">Install</p>
+            <h2>Download a release or build from source</h2>
+          </div>
+
+          <div class="install-grid">
+            <article class="install-card">
+              <h3>Direct download</h3>
+              <p>
+                The website always points at the latest published GitHub
+                Release. Signing and notarization will be added next.
+              </p>
+              <a
+                id="download-card-link"
+                class="text-link"
+                href="https://github.com/fiam/octowatch/releases"
+              >
+                Open release downloads
+              </a>
+            </article>
+
+            <article class="install-card">
+              <h3>Build from source</h3>
+              <p>
+                Octowatch is a SwiftUI macOS app. Clone the repo, run
+                <code>swift build</code>, or generate the Xcode project with
+                <code>xcodegen generate</code>.
+              </p>
+              <a class="text-link" href="https://github.com/fiam/octowatch#getting-started">
+                Read setup instructions
+              </a>
+            </article>
+
+            <article class="install-card">
+              <h3>Homebrew cask</h3>
+              <p>
+                Homebrew distribution is planned alongside the public
+                release flow. The release pipeline already produces the
+                artifacts and checksums that cask publishing will use.
+              </p>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="site.js" defer></script>
+  </body>
+  </html>

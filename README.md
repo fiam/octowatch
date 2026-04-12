@@ -63,7 +63,9 @@ the Notifications API. In practice, that usually means:
 
 ## Getting Started
 
-There is no packaged release yet. For now, run it from source:
+Public release automation and the `octowatch.app` website are scaffolded
+in this repo, but signing and notarization are not wired in yet. For
+now, the supported path is still to run Octowatch from source:
 
 ```bash
 git clone <repo-url>
@@ -80,6 +82,15 @@ open Octowatch.xcodeproj
 ```
 
 The generated `.xcodeproj` is local-only and is not committed.
+
+## Website And Releases
+
+- The project website sources live in [`website/`](website/).
+- GitHub Pages deployment is defined in
+  [`.github/workflows/pages.yml`](.github/workflows/pages.yml).
+- Unsigned release packaging is defined in
+  [`.github/workflows/release.yml`](.github/workflows/release.yml).
+- Release operation notes live in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Product Notes
 

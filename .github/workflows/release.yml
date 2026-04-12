@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: macos-15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Derive release version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+            echo "RELEASE_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          else
+            VERSION="$(date +%Y.%m.%d)-manual"
+            echo "RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
+            echo "RELEASE_TAG=v$VERSION" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build unsigned release artifacts
+        run: ./scripts/build-release-assets.sh "$RELEASE_VERSION"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: octowatch-release-${{ env.RELEASE_VERSION }}
+          path: dist/*
+
+      - name: Create draft GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Octowatch ${{ env.RELEASE_VERSION }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            dist/Octowatch-${{ env.RELEASE_VERSION }}.dmg
+            dist/Octowatch-${{ env.RELEASE_VERSION }}.zip
+            dist/checksums.txt
+
+      - name: Publish release summary
+        shell: bash
+        run: |
+          {
+            echo "## Release artifacts"
+            echo
+            echo "- Tag: \`${RELEASE_TAG}\`"
+            echo "- Version: \`${RELEASE_VERSION}\`"
+            echo "- Draft release created with unsigned DMG and ZIP artifacts"
+            echo
+            echo '```text'
+            cat dist/checksums.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

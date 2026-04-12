@@ -339,7 +339,10 @@ final class AppModel: ObservableObject {
     private let mergeMethodPreferenceStoreKey = "merge-method-preferences-v1"
     private let acknowledgedWorkflowsStoreKey = "acknowledged-workflows-v1"
     private let attentionUpdateHistoryStoreKey = "attention-update-history-v1"
-    private let keychainStore = KeychainStore(service: "dev.octowatch.app.auth")
+    private let keychainStore = KeychainStore(service: "app.octowatch.auth")
+    private let legacyKeychainStores = [
+        KeychainStore(service: "dev.octowatch.app.auth")
+    ]
     private let personalAccessTokenKeychainAccount = "personal-access-token"
     private let client = GitHubClient()
     private let workflowRunCache = WorkflowRunCache()
@@ -384,7 +387,7 @@ final class AppModel: ObservableObject {
     private var pendingTokenCandidate: PendingTokenCandidate?
     private var connectivityMonitor: NWPathMonitor?
     private let connectivityMonitorQueue = DispatchQueue(
-        label: "dev.octowatch.app.connectivity"
+        label: "app.octowatch.macos.connectivity"
     )
     private var connectivityRecoveryTask: Task<Void, Never>?
     private let relativeDateFormatter: RelativeDateTimeFormatter = {
@@ -408,7 +411,7 @@ final class AppModel: ObservableObject {
             defaultValue: true
         )
         personalAccessTokenAuthStatus = storesPersonalAccessTokenInKeychain &&
-            keychainStore.read(account: personalAccessTokenKeychainAccount) != nil
+            storedPersonalAccessToken() != nil
             ? .storedInKeychain
             : .unavailable
         pollIntervalSeconds = Self.loadPollInterval(
@@ -951,9 +954,9 @@ final class AppModel: ObservableObject {
             if usingPersonalAccessToken, let token {
                 persistStoredPersonalAccessToken(token)
             } else {
-                personalAccessTokenAuthStatus = keychainStore.read(
-                    account: personalAccessTokenKeychainAccount
-                ) != nil ? .storedInKeychain : .unavailable
+                personalAccessTokenAuthStatus = storedPersonalAccessToken() != nil
+                    ? .storedInKeychain
+                    : .unavailable
             }
         } else {
             clearStoredPersonalAccessToken()
@@ -1804,9 +1807,7 @@ final class AppModel: ObservableObject {
             return false
         }
 
-        guard let token = keychainStore.read(account: personalAccessTokenKeychainAccount)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-            !token.isEmpty
+        guard let token = storedPersonalAccessToken()
         else {
             personalAccessTokenAuthStatus = .unavailable
             return false
@@ -1995,7 +1996,57 @@ final class AppModel: ObservableObject {
 
     private func clearStoredPersonalAccessToken(rejected: Bool = false) {
         _ = keychainStore.delete(account: personalAccessTokenKeychainAccount)
+        for legacyKeychainStore in legacyKeychainStores {
+            _ = legacyKeychainStore.delete(account: personalAccessTokenKeychainAccount)
+        }
         personalAccessTokenAuthStatus = rejected ? .rejected : .unavailable
+    }
+
+    private func storedPersonalAccessToken() -> String? {
+        if let token = normalizedStoredPersonalAccessToken(
+            from: keychainStore,
+            deleteAfterRead: false
+        ) {
+            return token
+        }
+
+        for legacyKeychainStore in legacyKeychainStores {
+            if let token = normalizedStoredPersonalAccessToken(
+                from: legacyKeychainStore,
+                deleteAfterRead: true
+            ) {
+                _ = keychainStore.save(
+                    value: token,
+                    account: personalAccessTokenKeychainAccount
+                )
+                return token
+            }
+        }
+
+        return nil
+    }
+
+    private func normalizedStoredPersonalAccessToken(
+        from store: KeychainStore,
+        deleteAfterRead: Bool
+    ) -> String? {
+        guard let rawToken = store.read(account: personalAccessTokenKeychainAccount) else {
+            return nil
+        }
+
+        let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        if token.isEmpty {
+            if deleteAfterRead {
+                _ = store.delete(account: personalAccessTokenKeychainAccount)
+            }
+            return nil
+        }
+
+        if deleteAfterRead {
+            _ = store.delete(account: personalAccessTokenKeychainAccount)
+        }
+
+        return token
     }
 
     private func shouldRetainTokenCandidate(after error: Error) -> Bool {
@@ -2936,7 +2987,9 @@ final class AppModel: ObservableObject {
     private static func hasExistingPersistentState() -> Bool {
         let defaults = UserDefaults.standard
         let domainNames = [
-            Bundle.main.bundleIdentifier ?? "dev.octowatch.app",
+            Bundle.main.bundleIdentifier ?? "app.octowatch.macos",
+            "app.octowatch.macos",
+            "dev.octowatch.app",
             "dev.octobar.app"
         ]
 

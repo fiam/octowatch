@@ -4,7 +4,7 @@ import Foundation
 import ImageIO
 import XCTest
 
-private let octowatchBundleIdentifier = "dev.octowatch.app"
+private let octowatchBundleIdentifier = "app.octowatch.macos"
 
 func terminateRunningOctowatchIfNeeded(timeout: TimeInterval = 5) {
     let deadline = Date().addingTimeInterval(timeout)

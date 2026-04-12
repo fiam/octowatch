@@ -82,6 +82,15 @@ in noise.
   found, whether manual intervention is required, and how to set up a
   personal access token when needed after initial onboarding.
 
+### Website & Release Infrastructure
+- Static marketing/download site source for `octowatch.app`, deployed by
+  GitHub Pages.
+- Tag-driven GitHub Actions workflow that builds unsigned macOS ZIP and
+  DMG release artifacts, uploads them, and creates a draft GitHub
+  Release.
+- Local release-packaging script for reproducing the unsigned build
+  artifacts outside CI.
+
 ---
 
 ## Roadmap Status
@@ -168,6 +177,21 @@ specific items in the app.
 - **Files:** `AppDelegate.swift`, `Info.plist`, `project.yml`
 - **Status:** Missing
 
+#### 7. Signed Public Distribution
+The repo now scaffolds website deployment and unsigned GitHub Releases,
+but public distribution still needs Developer ID signing, Apple
+notarization, stapling, and release versioning sourced cleanly from
+project settings.
+- **Files:** `project.yml`, `.github/workflows/release.yml`,
+  `scripts/build-release-assets.sh`, `docs/RELEASING.md`
+- **Status:** Missing
+
+#### 8. Sparkle + Homebrew Cask Distribution
+Sparkle appcast/signature publishing and Homebrew tap automation are not
+implemented yet.
+- **Files:** release/distribution tooling
+- **Status:** Missing
+
 ---
 
 ## Non-Goals (for now)
@@ -190,4 +214,6 @@ specific items in the app.
 - **Persistence:** `UserDefaults` for read state, ignored items,
   snoozed items, rules, and preferences; versioned keys.
 - **Build:** SwiftPM primary, XcodeGen for `.xcodeproj` generation.
+- **Release scaffolding:** GitHub Actions for CI, Pages deployment, and
+  unsigned release packaging; signing/notarization still pending.
 - **Deps:** Yams (YAML parsing for workflow prediction).
