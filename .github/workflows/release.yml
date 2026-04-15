@@ -5,65 +5,123 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the leading v (for example 1.2.3)
+        required: true
+        type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref_name || github.event.inputs.version || github.run_id }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
+  prepare-release:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.vars.outputs.release_tag }}
+      release_version: ${{ steps.vars.outputs.release_version }}
+
+    steps:
+      - name: Derive release version
+        id: vars
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+
+          if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){2}([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release version: $VERSION" >&2
+            echo "Expected a value like 1.2.3 or 1.2.3-rc.1." >&2
+            exit 1
+          fi
+
+          TAG="v$VERSION"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_NAME}" != "$TAG" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match derived tag ${TAG}." >&2
+            exit 1
+          fi
+
+          echo "release_version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+
   build-release:
+    name: Build Release Artifacts
+    needs: prepare-release
     runs-on: macos-26
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Derive release version
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-            echo "RELEASE_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
-          else
-            VERSION="$(date +%Y.%m.%d)-manual"
-            echo "RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
-            echo "RELEASE_TAG=v$VERSION" >> "$GITHUB_ENV"
-          fi
-
       - name: Build unsigned release artifacts
-        run: ./scripts/build-release-assets.sh "$RELEASE_VERSION"
+        run: ./scripts/build-release-assets.sh "${{ needs.prepare-release.outputs.release_version }}"
 
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: octowatch-release-${{ env.RELEASE_VERSION }}
-          path: dist/*
-
-      - name: Create draft GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: Octowatch ${{ env.RELEASE_VERSION }}
-          draft: true
-          generate_release_notes: true
-          files: |
-            dist/Octowatch-${{ env.RELEASE_VERSION }}.dmg
-            dist/Octowatch-${{ env.RELEASE_VERSION }}.zip
+          name: octowatch-release-${{ needs.prepare-release.outputs.release_version }}
+          path: |
+            dist/Octowatch-${{ needs.prepare-release.outputs.release_version }}.dmg
+            dist/Octowatch-${{ needs.prepare-release.outputs.release_version }}.zip
             dist/checksums.txt
+            dist/release-metadata.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Publish release summary
-        shell: bash
         run: |
           {
             echo "## Release artifacts"
             echo
-            echo "- Tag: \`${RELEASE_TAG}\`"
-            echo "- Version: \`${RELEASE_VERSION}\`"
-            echo "- Draft release created with unsigned DMG and ZIP artifacts"
+            echo "- Tag: \`${{ needs.prepare-release.outputs.release_tag }}\`"
+            echo "- Version: \`${{ needs.prepare-release.outputs.release_version }}\`"
+            echo "- Unsigned DMG, ZIP, and metadata artifacts built successfully"
             echo
             echo '```text'
             cat dist/checksums.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  publish-release:
+    name: Create Draft GitHub Release
+    needs:
+      - prepare-release
+      - build-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download built release artifacts
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: octowatch-release-${{ needs.prepare-release.outputs.release_version }}
+          path: dist
+
+      - name: Create draft GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ needs.prepare-release.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          name: Octowatch ${{ needs.prepare-release.outputs.release_version }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            dist/Octowatch-${{ needs.prepare-release.outputs.release_version }}.dmg
+            dist/Octowatch-${{ needs.prepare-release.outputs.release_version }}.zip
+            dist/checksums.txt
+            dist/release-metadata.json

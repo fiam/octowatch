@@ -10,6 +10,11 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
+if [[ ! "$VERSION" =~ ^[0-9A-Za-z._-]+$ ]]; then
+  echo "version may only contain letters, numbers, dots, underscores, and dashes" >&2
+  exit 1
+fi
+
 DERIVED_DATA_PATH="$ROOT_DIR/.derived-release"
 DIST_DIR="$ROOT_DIR/dist"
 APP_PATH="$DERIVED_DATA_PATH/Build/Products/Release/Octowatch.app"
@@ -30,6 +35,7 @@ xcodebuild \
   -configuration Release \
   -derivedDataPath "$DERIVED_DATA_PATH" \
   -destination "platform=macOS" \
+  -quiet \
   CODE_SIGNING_ALLOWED=NO \
   build
 

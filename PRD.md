@@ -85,9 +85,12 @@ in noise.
 ### Website & Release Infrastructure
 - Static marketing/download site source for `octowatch.app`, deployed by
   GitHub Pages.
+- GitHub Actions CI for SwiftPM tests, Xcode unit tests, and unsigned
+  release-packaging smoke coverage on pull requests and `main`.
 - Tag-driven GitHub Actions workflow that builds unsigned macOS ZIP and
   DMG release artifacts, uploads them, and creates a draft GitHub
-  Release.
+  Release; the same workflow also supports manually dispatched,
+  versioned draft releases from the current commit.
 - Local release-packaging script for reproducing the unsigned build
   artifacts outside CI.
 

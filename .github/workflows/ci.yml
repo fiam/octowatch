@@ -5,27 +5,40 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
   swift-package-tests:
+    name: Swift Package Tests
     runs-on: macos-26
+    timeout-minutes: 20
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Run Swift package tests
         run: swift test
 
   xcode-unit-tests:
+    name: Xcode Unit Tests
     runs-on: macos-26
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -38,6 +51,37 @@ jobs:
           xcodebuild \
             -project Octowatch.xcodeproj \
             -scheme Octowatch \
+            -configuration Debug \
+            -derivedDataPath .derived-data-ci \
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO \
             test
+
+  release-packaging-smoke:
+    name: Release Packaging Smoke Test
+    runs-on: macos-26
+    needs:
+      - swift-package-tests
+      - xcode-unit-tests
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build unsigned release artifacts
+        run: ./scripts/build-release-assets.sh "0.0.0-ci.${GITHUB_RUN_NUMBER}"
+
+      - name: Upload release smoke-test metadata
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: octowatch-release-smoke-${{ github.run_id }}
+          path: |
+            dist/checksums.txt
+            dist/release-metadata.json
+          if-no-files-found: error
+          retention-days: 7

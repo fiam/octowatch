@@ -63,9 +63,10 @@ the Notifications API. In practice, that usually means:
 
 ## Getting Started
 
-Public release automation and the `octowatch.app` website are scaffolded
-in this repo, but signing and notarization are not wired in yet. For
-now, the supported path is still to run Octowatch from source:
+GitHub Actions now validates SwiftPM tests, Xcode unit tests, and the
+unsigned macOS release-packaging path in CI. Signing and notarization
+are still not wired in yet, so the supported runtime path is still to
+run Octowatch from source:
 
 ```bash
 git clone <repo-url>
@@ -88,6 +89,7 @@ The generated `.xcodeproj` is local-only and is not committed.
 - The project website sources live in [`website/`](website/).
 - GitHub Pages deployment is defined in
   [`.github/workflows/pages.yml`](.github/workflows/pages.yml).
+- CI validation is defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 - Unsigned release packaging is defined in
   [`.github/workflows/release.yml`](.github/workflows/release.yml).
 - Release operation notes live in [docs/RELEASING.md](docs/RELEASING.md).
