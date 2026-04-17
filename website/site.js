@@ -7,6 +7,11 @@ const downloadButton = document.getElementById("download-button");
 const downloadCardLink = document.getElementById("download-card-link");
 const releaseStatus = document.getElementById("release-status");
 
+function preferredAsset(assets, exactName, suffix) {
+  return assets.find((asset) => asset.name === exactName) ??
+    assets.find((asset) => asset.name.endsWith(suffix));
+}
+
 function useFallback(message) {
   downloadButton.href = releasesURL;
   downloadButton.textContent = "View Releases";
@@ -27,8 +32,9 @@ async function loadLatestRelease() {
     }
 
     const release = await response.json();
-    const dmg = release.assets.find((asset) => asset.name.endsWith(".dmg"));
-    const zip = release.assets.find((asset) => asset.name.endsWith(".zip"));
+    const assets = release.assets ?? [];
+    const dmg = preferredAsset(assets, "Octowatch.dmg", ".dmg");
+    const zip = preferredAsset(assets, "Octowatch.zip", ".zip");
 
     if (!dmg && !zip) {
       useFallback("No packaged release is published yet. Source builds are available today.");

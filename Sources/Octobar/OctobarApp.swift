@@ -4,6 +4,7 @@ import SwiftUI
 struct OctowatchApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     private let model = AppModel.shared
+    private let appUpdateController = AppUpdateController.shared
 
     var body: some Scene {
         Window("Octowatch", id: AppSceneID.mainWindow) {
@@ -11,6 +12,13 @@ struct OctowatchApp: App {
         }
         .defaultSize(width: 1080, height: 720)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    appUpdateController.checkForUpdates()
+                }
+                .disabled(!appUpdateController.isAvailable)
+            }
+
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") {
                     NotificationCenter.default.post(name: .openSettingsRequested, object: nil)

@@ -87,12 +87,16 @@ in noise.
   GitHub Pages.
 - GitHub Actions CI for SwiftPM tests, Xcode unit tests, and unsigned
   release-packaging smoke coverage on pull requests and `main`.
-- Tag-driven GitHub Actions workflow that builds unsigned macOS ZIP and
-  DMG release artifacts, uploads them, and creates a draft GitHub
-  Release; the same workflow also supports manually dispatched,
-  versioned draft releases from the current commit.
-- Local release-packaging script for reproducing the unsigned build
-  artifacts outside CI.
+- `release-please`-driven GitHub Actions workflow that opens and updates
+  Release PRs from Conventional Commits, then on merge creates the
+  version tag and GitHub Release, builds universal macOS binaries,
+  signs them with Developer ID, notarizes and staples the app + DMG,
+  publishes Sparkle appcast metadata, and uploads a generated Homebrew
+  cask alongside the release assets.
+- The website resolves the latest published binary release
+  automatically, and the repo ships a tap-installable Homebrew cask.
+- Local release-packaging script for reproducing unsigned or signed
+  release artifacts outside CI, depending on the available credentials.
 
 ---
 
@@ -180,21 +184,6 @@ specific items in the app.
 - **Files:** `AppDelegate.swift`, `Info.plist`, `project.yml`
 - **Status:** Missing
 
-#### 7. Signed Public Distribution
-The repo now scaffolds website deployment and unsigned GitHub Releases,
-but public distribution still needs Developer ID signing, Apple
-notarization, stapling, and release versioning sourced cleanly from
-project settings.
-- **Files:** `project.yml`, `.github/workflows/release.yml`,
-  `scripts/build-release-assets.sh`, `docs/RELEASING.md`
-- **Status:** Missing
-
-#### 8. Sparkle + Homebrew Cask Distribution
-Sparkle appcast/signature publishing and Homebrew tap automation are not
-implemented yet.
-- **Files:** release/distribution tooling
-- **Status:** Missing
-
 ---
 
 ## Non-Goals (for now)
@@ -217,6 +206,8 @@ implemented yet.
 - **Persistence:** `UserDefaults` for read state, ignored items,
   snoozed items, rules, and preferences; versioned keys.
 - **Build:** SwiftPM primary, XcodeGen for `.xcodeproj` generation.
-- **Release scaffolding:** GitHub Actions for CI, Pages deployment, and
-  unsigned release packaging; signing/notarization still pending.
+- **Release automation:** GitHub Actions for CI, Pages deployment,
+  release-please versioning, universal binary packaging, Developer ID
+  signing, Apple notarization, Sparkle appcast publishing, and Homebrew
+  cask generation.
 - **Deps:** Yams (YAML parsing for workflow prediction).

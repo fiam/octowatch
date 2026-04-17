@@ -76,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private weak var settingsWindow: NSWindow?
     private var localPopoverEventMonitor: Any?
     private var globalPopoverEventMonitor: Any?
+    private let appUpdateController = AppUpdateController.shared
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configurePopover()
@@ -277,6 +278,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         settingsItem.target = self
         menu.addItem(settingsItem)
 
+        let updatesItem = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(checkForUpdatesFromContextMenu),
+            keyEquivalent: ""
+        )
+        updatesItem.target = self
+        updatesItem.isEnabled = appUpdateController.isAvailable
+        menu.addItem(updatesItem)
+
         let quitItem = NSMenuItem(
             title: "Quit Octowatch",
             action: #selector(quitFromContextMenu),
@@ -296,6 +306,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc
     private func openSettingsFromContextMenu() {
         openSettingsWindow()
+    }
+
+    @objc
+    private func checkForUpdatesFromContextMenu() {
+        appUpdateController.checkForUpdates()
     }
 
     @objc

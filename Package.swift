@@ -11,7 +11,8 @@ let package = Package(
         .executable(name: "Octowatch", targets: ["Octowatch"])
     ],
     dependencies: [
-        .package(url: "https://github.com/jpsim/Yams.git", from: "6.2.1")
+        .package(url: "https://github.com/jpsim/Yams.git", from: "6.2.1"),
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.9.1")
     ],
     targets: [
         .target(
@@ -24,7 +25,8 @@ let package = Package(
         .executableTarget(
             name: "Octowatch",
             dependencies: [
-                "GitHubWorkflowParsing"
+                "GitHubWorkflowParsing",
+                .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/Octobar",
             resources: [

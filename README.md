@@ -61,12 +61,23 @@ the Notifications API. In practice, that usually means:
 - Swift 6.2+
 - XcodeGen for local Xcode project generation
 
+## Install
+
+Published releases are universal (`arm64` + `x86_64`), Developer ID
+signed, notarized, and support Sparkle in-app updates.
+
+- Direct download: [octowatch.app](https://octowatch.app) or
+  [GitHub Releases](https://github.com/fiam/octowatch/releases)
+- Homebrew:
+
+```bash
+brew tap fiam/octowatch https://github.com/fiam/octowatch
+brew install --cask octowatch
+```
+
 ## Getting Started
 
-GitHub Actions now validates SwiftPM tests, Xcode unit tests, and the
-unsigned macOS release-packaging path in CI. Signing and notarization
-are still not wired in yet, so the supported runtime path is still to
-run Octowatch from source:
+To run Octowatch from source:
 
 ```bash
 git clone <repo-url>
@@ -90,9 +101,10 @@ The generated `.xcodeproj` is local-only and is not committed.
 - GitHub Pages deployment is defined in
   [`.github/workflows/pages.yml`](.github/workflows/pages.yml).
 - CI validation is defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
-- Unsigned release packaging is defined in
+- Release automation is defined in
   [`.github/workflows/release.yml`](.github/workflows/release.yml).
-- Release operation notes live in [docs/RELEASING.md](docs/RELEASING.md).
+- Releases are versioned with `release-please`; see
+  [docs/RELEASING.md](docs/RELEASING.md) for the public release flow.
 
 ## Product Notes
 

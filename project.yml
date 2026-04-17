@@ -7,11 +7,17 @@ configs:
 settings:
   base:
     PRODUCT_BUNDLE_IDENTIFIER: app.octowatch.macos
+    MARKETING_VERSION: 1.0.0
+    CURRENT_PROJECT_VERSION: 1.0.0
+    SPARKLE_PUBLIC_ED_KEY: ""
     SWIFT_VERSION: 6.0
 packages:
   Yams:
     url: https://github.com/jpsim/Yams
     from: 6.2.1
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.9.1
 targets:
   GitHubWorkflowParsing:
     type: framework
@@ -32,6 +38,7 @@ targets:
       - path: Sources/Octobar
     dependencies:
       - target: GitHubWorkflowParsing
+      - package: Sparkle
     settings:
       base:
         PRODUCT_NAME: Octowatch
