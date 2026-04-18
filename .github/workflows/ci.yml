@@ -57,12 +57,51 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             test
 
+  xcode-ui-tests:
+    name: Xcode UI Tests
+    runs-on: macos-26
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Run Xcode UI tests
+        run: |
+          xcodebuild \
+            -project Octowatch.xcodeproj \
+            -scheme OctowatchUI \
+            -configuration Debug \
+            -derivedDataPath .derived-data-ui-ci \
+            -resultBundlePath .artifacts/OctowatchUI.xcresult \
+            -destination 'platform=macOS' \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY='-' \
+            CODE_SIGNING_ALLOWED=YES \
+            test
+
+      - name: Upload UI test results
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: octowatch-ui-tests-${{ github.run_id }}
+          path: .artifacts/OctowatchUI.xcresult
+          if-no-files-found: error
+          retention-days: 7
+
   release-packaging-smoke:
     name: Release Packaging Smoke Test
     runs-on: macos-26
     needs:
       - swift-package-tests
       - xcode-unit-tests
+      - xcode-ui-tests
     timeout-minutes: 30
 
     steps:

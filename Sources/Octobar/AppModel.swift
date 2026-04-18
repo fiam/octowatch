@@ -40,6 +40,35 @@ enum AppStartupUnavailableState: Equatable, Sendable {
     }
 }
 
+struct AttentionLocalReadState: Codable, Equatable, Sendable {
+    enum Kind: String, Codable, Sendable {
+        case read
+        case unread
+    }
+
+    let kind: Kind
+    let readAt: Date?
+
+    static func read(at date: Date) -> AttentionLocalReadState {
+        AttentionLocalReadState(kind: .read, readAt: date)
+    }
+
+    static let unread = AttentionLocalReadState(kind: .unread, readAt: nil)
+
+    func resolving(snapshotIsUnread: Bool, itemTimestamp: Date) -> Bool {
+        switch kind {
+        case .unread:
+            return true
+        case .read:
+            guard let readAt else {
+                return snapshotIsUnread
+            }
+
+            return snapshotIsUnread && readAt < itemTimestamp
+        }
+    }
+}
+
 enum AuthenticationStartupGuideContext: Equatable, Sendable {
     case onboarding
     case recovery
@@ -318,7 +347,8 @@ final class AppModel: ObservableObject {
         inboxSections.flatMap(\.items)
     }
 
-    private let readStateStoreKey = "attention-subject-read-state-v2"
+    private let readStateStoreKey = "attention-subject-read-state-v3"
+    private let legacyReadStateStoreKey = "attention-subject-read-state-v2"
     private let ignoredSubjectStoreKey = "ignored-attention-subjects-v2"
     private let legacyIgnoredSubjectStoreKey = "ignored-attention-subjects-v1"
     private let snoozedSubjectStoreKey = "snoozed-attention-subjects-v1"
@@ -380,7 +410,7 @@ final class AppModel: ObservableObject {
     private var ignoreUndoDismissTask: Task<Void, Never>?
     private var snoozeUndoDismissTask: Task<Void, Never>?
     private var snoozeWakeTask: Task<Void, Never>?
-    private var readStateBySubjectKey: [String: Date] = [:]
+    private var readStateBySubjectKey = [String: AttentionLocalReadState]()
     private var updateHistoryBySubjectKey = [String: [AttentionUpdate]]()
     private var suppressedTransitionNotificationKeys = Set<String>()
     private var pendingForcedRefresh = false
@@ -462,7 +492,8 @@ final class AppModel: ObservableObject {
         )
         readStateBySubjectKey = Self.loadReadState(
             from: UserDefaults.standard,
-            key: readStateStoreKey
+            key: readStateStoreKey,
+            legacyKey: legacyReadStateStoreKey
         )
         updateHistoryBySubjectKey = AttentionUpdateHistoryStore.load(
             from: UserDefaults.standard,
@@ -2303,16 +2334,12 @@ final class AppModel: ObservableObject {
             updated.isUnread = false
             return updated
         }
-        let locallyUnread = isLocallyUnread(item)
-        updated.isUnread = item.isUnread && locallyUnread
+        let state = readStateBySubjectKey[item.subjectKey]
+        updated.isUnread = state?.resolving(
+            snapshotIsUnread: item.isUnread,
+            itemTimestamp: item.timestamp
+        ) ?? item.isUnread
         return updated
-    }
-
-    private func isLocallyUnread(_ item: AttentionItem) -> Bool {
-        guard let readAt = readStateBySubjectKey[item.subjectKey] else {
-            return true
-        }
-        return readAt < item.timestamp
     }
 
     private func updateReadState(for items: [AttentionItem], isUnread: Bool) {
@@ -2325,9 +2352,9 @@ final class AppModel: ObservableObject {
         let timestamp = Date()
         for subjectKey in subjectKeys {
             if isUnread {
-                readStateBySubjectKey[subjectKey] = nil
+                readStateBySubjectKey[subjectKey] = .unread
             } else {
-                readStateBySubjectKey[subjectKey] = timestamp
+                readStateBySubjectKey[subjectKey] = .read(at: timestamp)
             }
         }
 
@@ -2339,8 +2366,13 @@ final class AppModel: ObservableObject {
     }
 
     private func persistReadState() {
-        let raw = readStateBySubjectKey.mapValues(\.timeIntervalSince1970)
-        UserDefaults.standard.set(raw, forKey: readStateStoreKey)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+
+        if let data = try? encoder.encode(readStateBySubjectKey) {
+            UserDefaults.standard.set(data, forKey: readStateStoreKey)
+            UserDefaults.standard.removeObject(forKey: legacyReadStateStoreKey)
+        }
     }
 
     private func persistIgnoredItems() {
@@ -2694,13 +2726,23 @@ final class AppModel: ObservableObject {
 
     private static func loadReadState(
         from defaults: UserDefaults,
-        key: String
-    ) -> [String: Date] {
-        guard let raw = defaults.dictionary(forKey: key) as? [String: Double] else {
+        key: String,
+        legacyKey: String
+    ) -> [String: AttentionLocalReadState] {
+        if let data = defaults.data(forKey: key) {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+
+            if let states = try? decoder.decode([String: AttentionLocalReadState].self, from: data) {
+                return states
+            }
+        }
+
+        guard let raw = defaults.dictionary(forKey: legacyKey) as? [String: Double] else {
             return [:]
         }
 
-        return raw.mapValues { Date(timeIntervalSince1970: $0) }
+        return raw.mapValues { AttentionLocalReadState.read(at: Date(timeIntervalSince1970: $0)) }
     }
 
     private static func loadIgnoredItems(

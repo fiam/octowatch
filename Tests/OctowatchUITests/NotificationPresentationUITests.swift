@@ -10,12 +10,6 @@ final class NotificationPresentationUITests: XCTestCase {
     func testSecurityAlertNotificationUsesSecurityAlertPresentation() async throws {
         let app = launchFixture(named: "notification-security-alert")
 
-        let sidebarTitle = app.staticTexts["sidebar-item-title-fixture-security-alert"]
-
-        XCTAssertTrue(sidebarTitle.waitForExistence(timeout: 5))
-
-        sidebarTitle.click()
-
         XCTAssertTrue(
             app.staticTexts["Your repository has dependencies with security vulnerabilities"]
                 .waitForExistence(timeout: 5)
@@ -27,12 +21,6 @@ final class NotificationPresentationUITests: XCTestCase {
 
     func testReadSecurityAlertStillAppearsInInbox() async throws {
         let app = launchFixture(named: "notification-security-alert-read")
-
-        let sidebarTitle = app.staticTexts["sidebar-item-title-fixture-security-alert-read"]
-
-        XCTAssertTrue(sidebarTitle.waitForExistence(timeout: 5))
-
-        sidebarTitle.click()
 
         XCTAssertTrue(
             app.staticTexts["Your repository has dependencies with security vulnerabilities"]

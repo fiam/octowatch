@@ -44,7 +44,49 @@ func launchFixture(named fixtureName: String) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchEnvironment["OCTOWATCH_UI_TEST_FIXTURE"] = fixtureName
     app.launch()
+    activateOctowatch(app)
     return app
+}
+
+@MainActor
+func activateOctowatch(_ app: XCUIApplication, timeout: TimeInterval = 5) {
+    let window = app.windows.firstMatch
+    XCTAssertTrue(window.waitForExistence(timeout: timeout))
+    app.activate()
+    XCTAssertTrue(window.waitForExistence(timeout: timeout))
+}
+
+@MainActor
+func activateAndClick(
+    _ element: XCUIElement,
+    in app: XCUIApplication,
+    timeout: TimeInterval = 5
+) {
+    activateOctowatch(app, timeout: timeout)
+    XCTAssertTrue(element.waitForExistence(timeout: timeout))
+    element.click()
+}
+
+@MainActor
+func activateAndRightClick(
+    _ element: XCUIElement,
+    in app: XCUIApplication,
+    timeout: TimeInterval = 5
+) {
+    activateOctowatch(app, timeout: timeout)
+    XCTAssertTrue(element.waitForExistence(timeout: timeout))
+    element.rightClick()
+}
+
+@MainActor
+func activateAndTypeKey(
+    _ key: String,
+    modifiers: XCUIElement.KeyModifierFlags,
+    in app: XCUIApplication,
+    timeout: TimeInterval = 5
+) {
+    activateOctowatch(app, timeout: timeout)
+    app.typeKey(key, modifierFlags: modifiers)
 }
 
 @MainActor

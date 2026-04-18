@@ -6211,6 +6211,84 @@ enum AttentionItemSearchPolicy {
     }
 }
 
+enum AttentionSelectionStabilityPolicy {
+    static func stabilizing(
+        requestedSelection: Set<AttentionItem.ID>,
+        currentSelection: Set<AttentionItem.ID>,
+        displayedItemIDs: Set<AttentionItem.ID>
+    ) -> Set<AttentionItem.ID> {
+        let normalizedRequested = requestedSelection.intersection(displayedItemIDs)
+        guard normalizedRequested.isEmpty else {
+            return normalizedRequested
+        }
+
+        let normalizedCurrent = currentSelection.intersection(displayedItemIDs)
+        guard !normalizedCurrent.isEmpty else {
+            return []
+        }
+
+        return normalizedCurrent
+    }
+
+    static func stabilizing(
+        requestedSelection: Set<AttentionItem.ID>,
+        currentSelection: Set<AttentionItem.ID>,
+        rememberedSubjectKeys: Set<String>,
+        displayedItems: [AttentionItem]
+    ) -> Set<AttentionItem.ID> {
+        let displayedItemIDs = Set(displayedItems.map(\.id))
+        let normalizedSelection = stabilizing(
+            requestedSelection: requestedSelection,
+            currentSelection: currentSelection,
+            displayedItemIDs: displayedItemIDs
+        )
+        guard normalizedSelection.isEmpty else {
+            return normalizedSelection
+        }
+
+        guard !rememberedSubjectKeys.isEmpty else {
+            return []
+        }
+
+        return Set(
+            displayedItems
+                .filter { rememberedSubjectKeys.contains($0.subjectKey) }
+                .map(\.id)
+        )
+    }
+
+    static func retainingRememberedSubjectKeys(
+        from currentSubjectKeys: Set<String>,
+        selection: Set<AttentionItem.ID>,
+        displayedItems: [AttentionItem]
+    ) -> Set<String> {
+        let selectedSubjectKeys = Set(
+            displayedItems
+                .filter { selection.contains($0.id) }
+                .map(\.subjectKey)
+        )
+        guard selectedSubjectKeys.isEmpty else {
+            return selectedSubjectKeys
+        }
+
+        let visibleSubjectKeys = Set(displayedItems.map(\.subjectKey))
+        return currentSubjectKeys.intersection(visibleSubjectKeys)
+    }
+
+    static func preferredAutoSelectionItemID(
+        rememberedSubjectKeys: Set<String>,
+        displayedItems: [AttentionItem]
+    ) -> AttentionItem.ID? {
+        if let rememberedItem = displayedItems.first(
+            where: { rememberedSubjectKeys.contains($0.subjectKey) }
+        ) {
+            return rememberedItem.id
+        }
+
+        return displayedItems.first?.id
+    }
+}
+
 enum AttentionSelectionRequestPolicy {
     static func itemID(
         for subjectKey: String,

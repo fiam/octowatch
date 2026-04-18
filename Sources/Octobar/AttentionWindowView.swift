@@ -61,9 +61,12 @@ struct AttentionWindowView: View {
     @State private var showsUnreadOnly = false
     @State private var searchText = ""
     @State private var unreadFilterCachedSubjectKeys = Set<String>()
+    @State private var selectedSubjectKeys = Set<String>()
     @State private var pendingFocusedSubjectKey: String?
+    @State private var autoMarkReadSuppressedSubjectKey: String?
     @State private var autoMarkReadTask: Task<Void, Never>?
     @State private var autoSelectionTask: Task<Void, Never>?
+    @State private var autoMarkReadUITestToggleCount = 0
     @State private var pullRequestFocusState: PullRequestFocusLoadState = .idle
     @State private var reviewMergeState: PullRequestReviewMergeState = .idle
     @State private var readyForReviewState: PullRequestReadyForReviewState = .idle
@@ -592,30 +595,22 @@ struct AttentionWindowView: View {
         }
     }
 
+    private var isAutoMarkReadUITestFixture: Bool {
+        ProcessInfo.processInfo.environment["OCTOWATCH_UI_TEST_FIXTURE"] == "auto-mark-read"
+    }
+
+    private var autoMarkReadUITestStateSummary: String {
+        let selectedID = selectedItem?.subjectKey ?? "none"
+        let unread = selectedItem?.isUnread == true ? "true" : "false"
+        let suppressed = autoMarkReadSuppressedSubjectKey ?? "none"
+        return "selected=\(selectedID) unread=\(unread) suppressed=\(suppressed) toggles=\(autoMarkReadUITestToggleCount)"
+    }
+
     private var selectionBinding: Binding<Set<AttentionItem.ID>> {
         Binding(
             get: { selectedItemIDs },
             set: { newValue in
-                let normalizedSelection = normalizeSelection(newValue)
-                let selectionChanged = selectedItemIDs != normalizedSelection
-                selectedItemIDs = normalizedSelection
-                pendingFocusedSubjectKey = nil
-
-                if selectionChanged {
-                    cancelAutoMarkReadTask()
-                    reviewMergeState = .idle
-                    readyForReviewState = .idle
-
-                    if let newItem = displayedItems.first(where: { normalizedSelection.contains($0.id) }),
-                       let cached = model.cachedPullRequestFocus(for: newItem) {
-                        pullRequestFocusState = .loaded(cached)
-                    } else {
-                        pullRequestFocusState = .idle
-                    }
-
-                    armAutoMarkReadForCurrentSelection()
-                    updateWatchedPullRequestSelection()
-                }
+                applySelection(newValue)
             }
         )
     }
@@ -976,6 +971,47 @@ struct AttentionWindowView: View {
                         }
                     }
                 )
+                .overlay(alignment: .topTrailing) {
+                    if isAutoMarkReadUITestFixture {
+                        VStack(alignment: .trailing, spacing: 8) {
+                            HStack(spacing: 8) {
+                                Button("Select Primary") {
+                                    applySelection(
+                                        forSubjectKeys: ["https://github.com/example/octowatch/pull/1"]
+                                    )
+                                }
+                                .controlSize(.small)
+                                .accessibilityIdentifier("ui-test-select-primary")
+
+                                Button("Select Secondary") {
+                                    applySelection(
+                                        forSubjectKeys: ["https://github.com/example/octowatch/pull/2"]
+                                    )
+                                }
+                                .controlSize(.small)
+                                .accessibilityIdentifier("ui-test-select-secondary")
+                            }
+
+                            Button("Toggle Read State") {
+                                autoMarkReadUITestToggleCount += 1
+                                performPrimaryReadAction(for: selectionActionItems)
+                            }
+                            .controlSize(.small)
+                            .accessibilityIdentifier("ui-test-toggle-read-state")
+
+                            Text(autoMarkReadUITestStateSummary)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(.thinMaterial, in: Capsule())
+                                .accessibilityIdentifier("ui-test-auto-mark-read-state")
+                                .accessibilityLabel(autoMarkReadUITestStateSummary)
+                                .accessibilityValue(autoMarkReadUITestStateSummary)
+                        }
+                        .padding(16)
+                    }
+                }
             } else {
                 emptyStateView
             }
@@ -1655,6 +1691,12 @@ struct AttentionWindowView: View {
         let normalizedSelection = normalizeSelection(selectedItemIDs)
         let selectionChanged = selectedItemIDs != normalizedSelection
         selectedItemIDs = normalizedSelection
+        selectedSubjectKeys = AttentionSelectionStabilityPolicy.retainingRememberedSubjectKeys(
+            from: selectedSubjectKeys,
+            selection: normalizedSelection,
+            displayedItems: displayedItems
+        )
+        updateAutoMarkReadSuppression(for: normalizedSelection)
 
         if selectionChanged {
             cancelAutoMarkReadTask()
@@ -1674,9 +1716,56 @@ struct AttentionWindowView: View {
             return
         }
 
-        if selectedItemIDs.isEmpty, let firstItemID = displayedItems.first?.id {
-            scheduleAutoSelection(firstItemID)
+        if selectedItemIDs.isEmpty,
+           let itemID = AttentionSelectionStabilityPolicy.preferredAutoSelectionItemID(
+               rememberedSubjectKeys: selectedSubjectKeys,
+               displayedItems: displayedItems
+           ) {
+            scheduleAutoSelection(itemID)
         }
+    }
+
+    private func applySelection(_ requestedSelection: Set<AttentionItem.ID>) {
+        let normalizedSelection = AttentionSelectionStabilityPolicy.stabilizing(
+            requestedSelection: requestedSelection,
+            currentSelection: selectedItemIDs,
+            rememberedSubjectKeys: selectedSubjectKeys,
+            displayedItems: displayedItems
+        )
+        let selectionChanged = selectedItemIDs != normalizedSelection
+        selectedItemIDs = normalizedSelection
+        selectedSubjectKeys = AttentionSelectionStabilityPolicy.retainingRememberedSubjectKeys(
+            from: selectedSubjectKeys,
+            selection: normalizedSelection,
+            displayedItems: displayedItems
+        )
+        updateAutoMarkReadSuppression(for: normalizedSelection)
+        pendingFocusedSubjectKey = nil
+
+        if selectionChanged {
+            cancelAutoMarkReadTask()
+            reviewMergeState = .idle
+            readyForReviewState = .idle
+
+            if let newItem = displayedItems.first(where: { normalizedSelection.contains($0.id) }),
+               let cached = model.cachedPullRequestFocus(for: newItem) {
+                pullRequestFocusState = .loaded(cached)
+            } else {
+                pullRequestFocusState = .idle
+            }
+
+            armAutoMarkReadForCurrentSelection()
+            updateWatchedPullRequestSelection()
+        }
+    }
+
+    private func applySelection(forSubjectKeys subjectKeys: Set<String>) {
+        let requestedSelection = Set(
+            displayedItems
+                .filter { subjectKeys.contains($0.subjectKey) }
+                .map(\.id)
+        )
+        applySelection(requestedSelection)
     }
 
     private func updateWatchedPullRequestSelection() {
@@ -1722,6 +1811,12 @@ struct AttentionWindowView: View {
         let newSelection: Set<AttentionItem.ID> = [itemID]
         let selectionChanged = selectedItemIDs != newSelection
         selectedItemIDs = newSelection
+        selectedSubjectKeys = AttentionSelectionStabilityPolicy.retainingRememberedSubjectKeys(
+            from: selectedSubjectKeys,
+            selection: newSelection,
+            displayedItems: displayedItems
+        )
+        updateAutoMarkReadSuppression(for: newSelection)
         self.pendingFocusedSubjectKey = nil
 
         if selectionChanged {
@@ -1752,8 +1847,19 @@ struct AttentionWindowView: View {
     }
 
     private func normalizeSelection(_ selection: Set<AttentionItem.ID>) -> Set<AttentionItem.ID> {
-        let displayedItemIDs = Set(displayedItems.map(\.id))
-        return selection.intersection(displayedItemIDs)
+        AttentionSelectionStabilityPolicy.stabilizing(
+            requestedSelection: selection,
+            currentSelection: selection,
+            rememberedSubjectKeys: selectedSubjectKeys,
+            displayedItems: displayedItems
+        )
+    }
+
+    private func subjectKeys(
+        for selection: Set<AttentionItem.ID>,
+        in items: [AttentionItem]
+    ) -> Set<String> {
+        Set(items.filter { selection.contains($0.id) }.map(\.subjectKey))
     }
 
     private func itemCountLabel(for count: Int) -> String {
@@ -1821,6 +1927,12 @@ struct AttentionWindowView: View {
             }
 
             selectedItemIDs = [itemID]
+            selectedSubjectKeys = AttentionSelectionStabilityPolicy.retainingRememberedSubjectKeys(
+                from: selectedSubjectKeys,
+                selection: selectedItemIDs,
+                displayedItems: displayedItems
+            )
+            updateAutoMarkReadSuppression(for: selectedItemIDs)
             pullRequestFocusState = .idle
             reviewMergeState = .idle
             readyForReviewState = .idle
@@ -1848,11 +1960,15 @@ struct AttentionWindowView: View {
 
     private func markSelectionAsRead(_ items: [AttentionItem]) {
         cancelAutoMarkReadTask()
+        autoMarkReadSuppressedSubjectKey = nil
         model.markItemsAsRead(items)
     }
 
     private func markSelectionAsUnread(_ items: [AttentionItem]) {
         cancelAutoMarkReadTask()
+        if items.count == 1, let selectedItem, items[0].id == selectedItem.id {
+            autoMarkReadSuppressedSubjectKey = selectedItem.subjectKey
+        }
         model.markItemsAsUnread(items)
     }
 
@@ -2027,11 +2143,12 @@ struct AttentionWindowView: View {
         guard let item = selectedItem,
             item.supportsReadState,
             item.isUnread,
+            autoMarkReadSuppressedSubjectKey != item.subjectKey,
             let autoMarkReadDelay = model.autoMarkReadDelay else {
             return
         }
 
-        let expectedID = item.id
+        let expectedSubjectKey = item.subjectKey
         autoMarkReadTask = Task {
             try? await Task.sleep(for: autoMarkReadDelay)
             guard !Task.isCancelled else {
@@ -2040,7 +2157,7 @@ struct AttentionWindowView: View {
 
             await MainActor.run {
                 guard let currentItem = selectedItem,
-                    currentItem.id == expectedID,
+                    currentItem.subjectKey == expectedSubjectKey,
                     currentItem.isUnread else {
                     return
                 }
@@ -2116,6 +2233,19 @@ struct AttentionWindowView: View {
     private func cancelAutoSelectionTask() {
         autoSelectionTask?.cancel()
         autoSelectionTask = nil
+    }
+
+    private func updateAutoMarkReadSuppression(for selection: Set<AttentionItem.ID>) {
+        guard let suppressedSubjectKey = autoMarkReadSuppressedSubjectKey else {
+            return
+        }
+
+        let selectionSubjectKeys = subjectKeys(for: selection, in: displayedItems)
+        if selection.isEmpty || selectionSubjectKeys == [suppressedSubjectKey] {
+            return
+        }
+
+        autoMarkReadSuppressedSubjectKey = nil
     }
 
     private func loadPullRequestFocusForSelection(force: Bool = false) async {
@@ -2377,6 +2507,7 @@ private struct AttentionDetailView: View {
                                 onOpenURL(item.url)
                             }
                         )
+                        .accessibilityIdentifier("detail-title-\(item.id)")
                     }
 
                     if item.repository != nil || !displayedLabels.isEmpty {
