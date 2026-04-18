@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="icon_source.png" alt="Octowatch logo" width="128">
+  <img src="docs/images/icon-source.png" alt="Octowatch logo" width="128">
 </p>
 
 # Octowatch
