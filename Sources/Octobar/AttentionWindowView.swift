@@ -276,16 +276,6 @@ struct AttentionWindowView: View {
                     .help("Refresh selected item")
                 }
             }
-
-            ToolbarItem {
-                Button {
-                    openWindow(id: AppSceneID.settingsWindow)
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-                .appToolbarHover()
-                .help("Settings")
-            }
         }
     }
 
