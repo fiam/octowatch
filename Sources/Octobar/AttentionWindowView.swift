@@ -220,7 +220,7 @@ struct AttentionWindowView: View {
                     } label: {
                         Label("Open", systemImage: "safari")
                     }
-                    .appInteractiveHover()
+                    .appToolbarHover()
                     .help(selectionActionItems.count == 1 ? "Open on GitHub" : "Open selected items on GitHub")
 
                     if showsReadActions {
@@ -232,7 +232,7 @@ struct AttentionWindowView: View {
                                 systemImage: primaryReadActionSymbol
                             )
                         }
-                        .appInteractiveHover()
+                        .appToolbarHover()
                         .keyboardShortcut("u", modifiers: [.command, .shift])
                         .accessibilityIdentifier("item-toggle-read-state")
                         .accessibilityLabel(primaryReadActionTitle)
@@ -244,7 +244,7 @@ struct AttentionWindowView: View {
                     } label: {
                         Label("Snooze", systemImage: "moon.zzz")
                     }
-                    .appInteractiveHover()
+                    .appToolbarHover()
                     .help(selectionActionItems.count == 1 ? "Snooze selected item" : "Snooze selected items")
 
                     Button {
@@ -252,7 +252,7 @@ struct AttentionWindowView: View {
                     } label: {
                         Label("Ignore", systemImage: "eye.slash")
                     }
-                    .appInteractiveHover()
+                    .appToolbarHover()
                     .help(selectionActionItems.count == 1 ? selectionActionItems[0].ignoreActionTitle : "Ignore selected items")
                 }
             }
@@ -271,7 +271,7 @@ struct AttentionWindowView: View {
                         Label("Refresh Item", systemImage: "arrow.clockwise")
                     }
                     .disabled(isScopeRefreshing)
-                    .appInteractiveHover()
+                    .appToolbarHover()
                     .keyboardShortcut("r", modifiers: [.command])
                     .help("Refresh selected item")
                 }
@@ -283,7 +283,7 @@ struct AttentionWindowView: View {
                 } label: {
                     Image(systemName: "gearshape")
                 }
-                .appInteractiveHover()
+                .appToolbarHover()
                 .help("Settings")
             }
         }

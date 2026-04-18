@@ -4,6 +4,7 @@ import SwiftUI
 private struct InteractiveHoverModifier: ViewModifier {
     let backgroundOpacity: Double
     let cornerRadius: CGFloat
+    let strokeOpacityMultiplier: Double
 
     @State private var isHovering = false
 
@@ -17,7 +18,12 @@ private struct InteractiveHoverModifier: ViewModifier {
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(Color.primary.opacity(isHovering ? backgroundOpacity * 1.15 : 0), lineWidth: 1)
+                    .stroke(
+                        Color.primary.opacity(
+                            isHovering ? backgroundOpacity * strokeOpacityMultiplier : 0
+                        ),
+                        lineWidth: 1
+                    )
             }
             .animation(.easeInOut(duration: 0.12), value: isHovering)
             .onHover { hovering in
@@ -63,15 +69,25 @@ extension View {
         opacity: Double = 1,
         brightness: Double = 0,
         backgroundOpacity: Double = 0.08,
-        cornerRadius: CGFloat = 10
+        cornerRadius: CGFloat = 10,
+        strokeOpacityMultiplier: Double = 1.15
     ) -> some View {
         modifier(
             InteractiveHoverModifier(
                 backgroundOpacity: backgroundOpacity,
-                cornerRadius: cornerRadius
+                cornerRadius: cornerRadius,
+                strokeOpacityMultiplier: strokeOpacityMultiplier
             )
         )
         .modifier(PointerCursorHoverModifier())
+    }
+
+    func appToolbarHover() -> some View {
+        appInteractiveHover(
+            backgroundOpacity: 0.045,
+            cornerRadius: 999,
+            strokeOpacityMultiplier: 0.2
+        )
     }
 
     func appLinkHover() -> some View {
