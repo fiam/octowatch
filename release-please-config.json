@@ -11,11 +11,6 @@
           "type": "yaml",
           "path": "project.yml",
           "jsonpath": "$.settings.base.MARKETING_VERSION"
-        },
-        {
-          "type": "yaml",
-          "path": "project.yml",
-          "jsonpath": "$.settings.base.CURRENT_PROJECT_VERSION"
         }
       ]
     }

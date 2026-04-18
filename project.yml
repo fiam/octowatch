@@ -1,6 +1,12 @@
 name: Octowatch
 options:
   createIntermediateGroups: true
+  developmentLanguage: en-US
+attributes:
+  TargetAttributes:
+    Octowatch:
+      DevelopmentTeam: ${OCTOWATCH_DEVELOPMENT_TEAM}
+      ProvisioningStyle: Automatic
 configs:
   Debug: debug
   Release: release
@@ -8,7 +14,7 @@ settings:
   base:
     PRODUCT_BUNDLE_IDENTIFIER: app.octowatch.macos
     MARKETING_VERSION: 1.0.0
-    CURRENT_PROJECT_VERSION: 1.0.0
+    CURRENT_PROJECT_VERSION: 1
     SPARKLE_PUBLIC_ED_KEY: ""
     SWIFT_VERSION: 6.0
 packages:
@@ -45,6 +51,7 @@ targets:
         INFOPLIST_FILE: Octobar/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ${OCTOWATCH_DEVELOPMENT_TEAM}
         ENABLE_HARDENED_RUNTIME: YES
   OctowatchTests:
     type: bundle.unit-test

@@ -8,6 +8,7 @@ RELEASE_TAG="${OCTOWATCH_RELEASE_TAG:-v$VERSION}"
 REPOSITORY="${OCTOWATCH_REPOSITORY:-fiam/octowatch}"
 DOWNLOAD_URL_PREFIX="${OCTOWATCH_DOWNLOAD_URL_PREFIX:-https://github.com/$REPOSITORY/releases/download/$RELEASE_TAG}"
 LATEST_DOWNLOAD_URL_PREFIX="${OCTOWATCH_LATEST_DOWNLOAD_URL_PREFIX:-https://github.com/$REPOSITORY/releases/latest/download}"
+BUILD_NUMBER="${OCTOWATCH_BUILD_NUMBER:-1}"
 
 if [[ -z "$VERSION" ]]; then
   echo "usage: $0 <version>" >&2
@@ -19,11 +20,15 @@ if [[ ! "$VERSION" =~ ^[0-9A-Za-z._-]+$ ]]; then
   exit 1
 fi
 
+if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "build number must be an integer" >&2
+  exit 1
+fi
+
 DERIVED_DATA_PATH="$ROOT_DIR/.derived-release"
 DIST_DIR="$ROOT_DIR/dist"
 APP_PATH="$DERIVED_DATA_PATH/Build/Products/Release/Octowatch.app"
 APP_EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/Octowatch"
-DMG_STAGING_DIR="$DIST_DIR/dmg"
 APPCAST_DIR="$DIST_DIR/appcast"
 SPARKLE_TOOLS_DIR="$ROOT_DIR/.sparkle-tools"
 VERSIONED_ZIP_NAME="Octowatch-${VERSION}.zip"
@@ -87,7 +92,7 @@ xcodebuild_args=(
   ONLY_ACTIVE_ARCH=NO
   ARCHS="arm64 x86_64"
   MARKETING_VERSION="$VERSION"
-  CURRENT_PROJECT_VERSION="$VERSION"
+  CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
   -quiet
 )
 
@@ -154,18 +159,10 @@ if [[ "$SPARKLE_APPCAST" == "true" ]]; then
   cp "$APPCAST_DIR/$APPCAST_NAME" "$DIST_DIR/$APPCAST_NAME"
 fi
 
-rm -rf "$DMG_STAGING_DIR"
-mkdir -p "$DMG_STAGING_DIR"
-cp -R "$APP_PATH" "$DMG_STAGING_DIR/"
-ln -s /Applications "$DMG_STAGING_DIR/Applications"
-
-hdiutil create \
-  -volname "Octowatch" \
-  -srcfolder "$DMG_STAGING_DIR" \
-  -ov \
-  -format UDZO \
-  "$DIST_DIR/$VERSIONED_DMG_NAME" \
-  >/dev/null
+"$ROOT_DIR/scripts/build-dmg.sh" \
+  --app "$APP_PATH" \
+  --output "$DIST_DIR/$VERSIONED_DMG_NAME" \
+  --volume-name "Octowatch"
 
 if [[ "$NOTARIZED_RELEASE" == "true" ]]; then
   notarize "$DIST_DIR/$VERSIONED_DMG_NAME"
@@ -197,6 +194,7 @@ fi
 cat > "$DIST_DIR/release-metadata.json" <<EOF
 {
   "version": "$VERSION",
+  "buildNumber": "$BUILD_NUMBER",
   "tag": "$RELEASE_TAG",
   "repository": "$REPOSITORY",
   "architectures": "$ACTUAL_ARCHES",
@@ -212,7 +210,6 @@ cat > "$DIST_DIR/release-metadata.json" <<EOF
 }
 EOF
 
-rm -rf "$DMG_STAGING_DIR"
 rm -rf "$APPCAST_DIR"
 
 popd >/dev/null

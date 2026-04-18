@@ -69,8 +69,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install build tools
+        run: brew install xcodegen uv
 
       - name: Build unsigned release artifacts
         run: ./scripts/build-release-assets.sh "0.0.0-ci.${GITHUB_RUN_NUMBER}"

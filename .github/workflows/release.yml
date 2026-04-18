@@ -93,8 +93,8 @@ jobs:
             exit 1
           fi
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install build tools
+        run: brew install xcodegen uv
 
       - name: Import Developer ID certificate
         uses: Apple-Actions/import-codesign-certs@b610f78488812c1e56b20e6df63ec42d833f2d14 # v6.0.0
@@ -111,10 +111,25 @@ jobs:
           printf '%s' "$APPLE_NOTARY_API_PRIVATE_KEY" > "$KEY_PATH"
           echo "APPLE_NOTARY_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
 
+      - name: Compute release build number
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN != '' && secrets.RELEASE_PLEASE_TOKEN || github.token }}
+        run: |
+          BUILD_NUMBER="$(
+            gh api "repos/${{ github.repository }}/releases" --paginate \
+              --jq '[.[] | select(.draft == false and .prerelease == false)] | length'
+          )"
+          if [[ -z "$BUILD_NUMBER" || ! "$BUILD_NUMBER" =~ ^[0-9]+$ || "$BUILD_NUMBER" -lt 1 ]]; then
+            echo "invalid release build number: ${BUILD_NUMBER:-<empty>}" >&2
+            exit 1
+          fi
+          echo "OCTOWATCH_BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+
       - name: Build signed and notarized release artifacts
         env:
           OCTOWATCH_RELEASE_TAG: ${{ needs.release-please.outputs.release_tag }}
           OCTOWATCH_REPOSITORY: ${{ github.repository }}
+          OCTOWATCH_BUILD_NUMBER: ${{ env.OCTOWATCH_BUILD_NUMBER }}
           OCTOWATCH_CODESIGN_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
           OCTOWATCH_APPLE_TEAM_ID: ${{ secrets.APPLE_DEVELOPER_TEAM_ID }}
           OCTOWATCH_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
