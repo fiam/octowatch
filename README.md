@@ -71,8 +71,7 @@ signed, notarized, and support Sparkle in-app updates.
 - Homebrew:
 
 ```bash
-brew tap fiam/octowatch https://github.com/fiam/octowatch
-brew install --cask octowatch
+brew install --cask fiam/octowatch/octowatch
 ```
 
 ## Getting Started

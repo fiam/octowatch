@@ -3,14 +3,30 @@
 set -euo pipefail
 
 REPOSITORY="${OCTOWATCH_REPOSITORY:-fiam/octowatch}"
-RELEASES_URL="https://github.com/${REPOSITORY}/releases/latest/download/Octowatch.dmg"
+VERSION="${OCTOWATCH_HOMEBREW_CASK_VERSION:-}"
+SHA256="${OCTOWATCH_HOMEBREW_CASK_SHA256:-}"
+DOWNLOAD_URL="${OCTOWATCH_HOMEBREW_CASK_URL:-}"
+
+if [[ -n "$VERSION" || -n "$SHA256" || -n "$DOWNLOAD_URL" ]]; then
+  if [[ -z "$VERSION" || -z "$SHA256" || -z "$DOWNLOAD_URL" ]]; then
+    echo "versioned cask generation requires version, sha256, and download URL" >&2
+    exit 1
+  fi
+
+  VERSION_LINE="  version \"$VERSION\""
+  SHA256_LINE="  sha256 \"$SHA256\""
+else
+  DOWNLOAD_URL="https://github.com/${REPOSITORY}/releases/latest/download/Octowatch.dmg"
+  VERSION_LINE="  version :latest"
+  SHA256_LINE="  sha256 :no_check"
+fi
 
 cat <<EOF
 cask "octowatch" do
-  version :latest
-  sha256 :no_check
+${VERSION_LINE}
+${SHA256_LINE}
 
-  url "${RELEASES_URL}",
+  url "${DOWNLOAD_URL}",
       verified: "github.com/${REPOSITORY}/"
   name "Octowatch"
   desc "Native macOS triage inbox for GitHub work"

@@ -92,9 +92,11 @@ in noise.
   version tag and GitHub Release, builds universal macOS binaries,
   signs them with Developer ID, notarizes and staples the app + DMG,
   publishes Sparkle appcast metadata, and uploads a generated Homebrew
-  cask alongside the release assets.
+  cask alongside the release assets before syncing it to a dedicated
+  Homebrew tap repository.
 - The website resolves the latest published binary release
-  automatically, and the repo ships a tap-installable Homebrew cask.
+  automatically, and the app ships with a dedicated tap-installable
+  Homebrew cask.
 - Local release-packaging script for reproducing unsigned or signed
   release artifacts outside CI, depending on the available credentials.
 
@@ -208,6 +210,6 @@ specific items in the app.
 - **Build:** SwiftPM primary, XcodeGen for `.xcodeproj` generation.
 - **Release automation:** GitHub Actions for CI, Pages deployment,
   release-please versioning, universal binary packaging, Developer ID
-  signing, Apple notarization, Sparkle appcast publishing, and Homebrew
-  cask generation.
+  signing, Apple notarization, Sparkle appcast publishing, Homebrew
+  cask generation, and dedicated tap publishing.
 - **Deps:** Yams (YAML parsing for workflow prediction).
