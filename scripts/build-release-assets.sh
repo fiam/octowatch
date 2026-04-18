@@ -27,6 +27,8 @@ fi
 
 DERIVED_DATA_PATH="$ROOT_DIR/.derived-release"
 DIST_DIR="$ROOT_DIR/dist"
+PACKAGE_CACHE_PATH="$DERIVED_DATA_PATH/PackageCache"
+CLONED_SOURCE_PACKAGES_PATH="$DERIVED_DATA_PATH/SourcePackages"
 APP_PATH="$DERIVED_DATA_PATH/Build/Products/Release/Octowatch.app"
 APP_EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/Octowatch"
 APPCAST_DIR="$DIST_DIR/appcast"
@@ -78,6 +80,7 @@ fi
 
 rm -rf "$DERIVED_DATA_PATH" "$DIST_DIR"
 mkdir -p "$DIST_DIR"
+mkdir -p "$PACKAGE_CACHE_PATH" "$CLONED_SOURCE_PACKAGES_PATH"
 
 pushd "$ROOT_DIR" >/dev/null
 
@@ -88,6 +91,8 @@ xcodebuild_args=(
   -scheme Octowatch
   -configuration Release
   -derivedDataPath "$DERIVED_DATA_PATH"
+  -clonedSourcePackagesDirPath "$CLONED_SOURCE_PACKAGES_PATH"
+  -packageCachePath "$PACKAGE_CACHE_PATH"
   -destination "platform=macOS"
   ONLY_ACTIVE_ARCH=NO
   ARCHS="arm64 x86_64"
