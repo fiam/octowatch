@@ -299,23 +299,6 @@ struct GitHubClient {
 
     func validateToken(token: String) async throws -> String {
         let user: CurrentUser = try await request(path: "/user", token: token)
-
-        do {
-            let _: [NotificationThread] = try await request(
-                path: "/notifications",
-                queryItems: notificationThreadQueryItems(page: 1, perPage: 1),
-                token: token
-            )
-        } catch {
-            throw mapTokenValidationError(
-                error,
-                fallback: """
-                This token cannot access GitHub notifications. Octowatch needs a token \
-                that works with the notifications API.
-                """
-            )
-        }
-
         return user.login
     }
 

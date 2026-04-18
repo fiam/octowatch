@@ -63,16 +63,25 @@ in noise.
 - Dot-style read/unread with auto-mark-read delay (off / 1 / 3 / 5 s).
 - Inbox notification visibility comes from the full actionable GitHub
   notification set, while unread state remains local to Octowatch.
+- Repository coverage follows GitHub notifications: subscribing to a
+  repository on GitHub gives Octowatch more to surface from it, while a
+  repository ignored on GitHub stays silent in Octowatch too. Ignoring
+  an item in Octowatch only hides it in Octowatch and does not change
+  that repository's GitHub notification settings.
 - macOS notifications with subject-key threading.
 - Self-triggered update suppression toggle.
 - Undo affordances for local ignore and snooze actions.
 
 ### Settings & Auth
-- GitHub CLI token auto-load + manual token entry, with optional
-  Keychain persistence for manually entered tokens.
+- GitHub CLI token auto-load + manual token entry, with Keychain
+  persistence for manually entered tokens.
+- Authentication settings include a helper sheet for creating a
+  personal access token and opening GitHub token settings directly.
 - First-run authentication wizard that appears even when GitHub CLI is
-  already ready, explains that Octowatch will reuse `gh`, and offers a
-  direct path to switch to a personal access token instead.
+  already ready, walks through repository coverage and default inbox
+  sections before the auth choice, explains that Octowatch will reuse
+  `gh`, and offers a direct path to switch to a personal access token
+  instead.
 - Polling interval (30–900 s).
 - Rate-limit diagnostics toggle.
 - Ignored items and snoozed items managers with restore actions.
@@ -204,7 +213,7 @@ specific items in the app.
   watch candidates derived from already-fetched PR data; open+merged
   queries combined into single calls with in-memory splitting.
 - **Token:** `gh` CLI is preferred when available; manually entered
-  personal access tokens can be saved in Keychain and reused on launch.
+  personal access tokens are saved in Keychain and reused on launch.
 - **Persistence:** `UserDefaults` for read state, ignored items,
   snoozed items, rules, and preferences; versioned keys.
 - **Build:** SwiftPM primary, XcodeGen for `.xcodeproj` generation.

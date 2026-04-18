@@ -271,7 +271,7 @@ struct AuthenticationStartupGuide: Equatable, Sendable {
         if personalAccessTokenStatus != .storedInKeychain || gitHubCLIStatus != .ready {
             steps.append("Grant read access to notifications, pull requests, issues, and actions.")
             steps.append("Open Authentication settings and paste the token.")
-            steps.append("Leave Keychain storage on if you want Octowatch to reuse the token on future launches.")
+            steps.append("Octowatch saves personal access tokens in Keychain for future launches.")
         }
 
         return steps
@@ -435,13 +435,9 @@ final class AppModel: ObservableObject {
             key: completedInitialSetupStoreKey,
             defaultValue: hadExistingPersistentState
         )
-        storesPersonalAccessTokenInKeychain = Self.loadBooleanSetting(
-            from: UserDefaults.standard,
-            key: storesPersonalAccessTokenInKeychainStoreKey,
-            defaultValue: true
-        )
-        personalAccessTokenAuthStatus = storesPersonalAccessTokenInKeychain &&
-            storedPersonalAccessToken() != nil
+        storesPersonalAccessTokenInKeychain = true
+        UserDefaults.standard.set(true, forKey: storesPersonalAccessTokenInKeychainStoreKey)
+        personalAccessTokenAuthStatus = storedPersonalAccessToken() != nil
             ? .storedInKeychain
             : .unavailable
         pollIntervalSeconds = Self.loadPollInterval(
@@ -974,23 +970,15 @@ final class AppModel: ObservableObject {
     }
 
     func setStoresPersonalAccessTokenInKeychain(_ value: Bool) {
-        guard storesPersonalAccessTokenInKeychain != value else {
-            return
-        }
+        storesPersonalAccessTokenInKeychain = true
+        UserDefaults.standard.set(true, forKey: storesPersonalAccessTokenInKeychainStoreKey)
 
-        storesPersonalAccessTokenInKeychain = value
-        UserDefaults.standard.set(value, forKey: storesPersonalAccessTokenInKeychainStoreKey)
-
-        if value {
-            if usingPersonalAccessToken, let token {
-                persistStoredPersonalAccessToken(token)
-            } else {
-                personalAccessTokenAuthStatus = storedPersonalAccessToken() != nil
-                    ? .storedInKeychain
-                    : .unavailable
-            }
+        if usingPersonalAccessToken, let token {
+            persistStoredPersonalAccessToken(token)
         } else {
-            clearStoredPersonalAccessToken()
+            personalAccessTokenAuthStatus = storedPersonalAccessToken() != nil
+                ? .storedInKeychain
+                : .unavailable
         }
     }
 
@@ -1081,6 +1069,10 @@ final class AppModel: ObservableObject {
             pullRequestDashboardLastError = nil
             reconcileVisibleContentFromSnapshot()
         } catch {
+            if isCancellationError(error) {
+                return
+            }
+
             if let clientError = error as? GitHubClientError,
                 case let .rateLimited(rateLimit) = clientError {
                 mergeRateLimitState(with: rateLimit)
@@ -1122,6 +1114,10 @@ final class AppModel: ObservableObject {
             issueDashboardLastError = nil
             reconcileVisibleContentFromSnapshot()
         } catch {
+            if isCancellationError(error) {
+                return
+            }
+
             if let clientError = error as? GitHubClientError,
                 case let .rateLimited(rateLimit) = clientError {
                 mergeRateLimitState(with: rateLimit)
@@ -1782,6 +1778,10 @@ final class AppModel: ObservableObject {
             }
             await notifyIfNeeded(previousItems: previousItems, token: token)
         } catch {
+            if isCancellationError(error) {
+                return
+            }
+
             if let clientError = error as? GitHubClientError,
                 case let .rateLimited(rateLimit) = clientError {
                 mergeRateLimitState(with: rateLimit)
@@ -1833,11 +1833,6 @@ final class AppModel: ObservableObject {
     }
 
     private func importStoredPersonalAccessTokenIfAvailable() async -> Bool {
-        guard storesPersonalAccessTokenInKeychain else {
-            personalAccessTokenAuthStatus = .unavailable
-            return false
-        }
-
         guard let token = storedPersonalAccessToken()
         else {
             personalAccessTokenAuthStatus = .unavailable
@@ -1900,11 +1895,7 @@ final class AppModel: ObservableObject {
             case .githubCLI:
                 gitHubCLIAuthStatus = .ready
             case .personalAccessTokenInput:
-                if storesPersonalAccessTokenInKeychain {
-                    persistStoredPersonalAccessToken(candidate)
-                } else {
-                    clearStoredPersonalAccessToken()
-                }
+                persistStoredPersonalAccessToken(candidate)
             case .personalAccessTokenKeychain:
                 personalAccessTokenAuthStatus = .storedInKeychain
             }
@@ -1914,6 +1905,10 @@ final class AppModel: ObservableObject {
             refreshNow()
             return true
         } catch {
+            if isCancellationError(error) {
+                return false
+            }
+
             if shouldRetainTokenCandidate(after: error) {
                 pendingTokenCandidate = PendingTokenCandidate(
                     token: candidate,
@@ -1977,6 +1972,18 @@ final class AppModel: ObservableObject {
         return error.localizedDescription
     }
 
+    private func isCancellationError(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+
+        if let urlError = error as? URLError, urlError.code == .cancelled {
+            return true
+        }
+
+        return false
+    }
+
     private func updateAuthenticationStatusAfterFailure(
         for error: Error,
         source: TokenSource
@@ -1998,9 +2005,9 @@ final class AppModel: ObservableObject {
             case .offline, .transport:
                 break
             default:
-                if storesPersonalAccessTokenInKeychain {
-                    clearStoredPersonalAccessToken()
-                }
+                personalAccessTokenAuthStatus = storedPersonalAccessToken() != nil
+                    ? .storedInKeychain
+                    : .unavailable
             }
         case .personalAccessTokenKeychain:
             switch clientError {
@@ -2013,11 +2020,6 @@ final class AppModel: ObservableObject {
     }
 
     private func persistStoredPersonalAccessToken(_ token: String) {
-        guard storesPersonalAccessTokenInKeychain else {
-            clearStoredPersonalAccessToken()
-            return
-        }
-
         _ = keychainStore.save(
             value: token,
             account: personalAccessTokenKeychainAccount

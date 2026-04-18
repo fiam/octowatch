@@ -41,12 +41,17 @@ Octowatch prefers GitHub CLI when it is available:
   `gh auth token`
 - if you do not want to use GitHub CLI, you can enter a personal access
   token in Settings
-- manually entered tokens can stay session-only or be saved in Keychain
+- Settings includes a helper sheet that explains how to create a token
+  and links directly to GitHub token settings
+- manually entered tokens are saved in Keychain for future launches
 
 On first launch, Octowatch always shows a setup guide so the auth path
-is explicit. If GitHub CLI is already ready, the guide tells you that
-Octowatch will use it and still offers a direct path to switch to a
-personal access token.
+is explicit. The guide first explains how GitHub notifications shape
+repository coverage, then how the default `Your Turn` and
+`On Your Radar` inbox sections work, and finally how Octowatch will
+authenticate on this Mac. If GitHub CLI is already ready, the guide
+tells you that Octowatch will use it and still offers a direct path to
+switch to a personal access token.
 
 Because Octowatch reads GitHub notifications, the token must work with
 the Notifications API. In practice, that usually means:
@@ -54,6 +59,15 @@ the Notifications API. In practice, that usually means:
 - classic personal access tokens work
 - fine-grained personal access tokens are often not enough for the
   notifications endpoints Octowatch depends on
+
+Repository coverage follows GitHub notifications:
+
+- subscribe to a repository on GitHub if you want Octowatch to surface
+  more of that repository's activity
+- if a repository is ignored on GitHub, GitHub stops sending those
+  notifications and Octowatch will stay silent about that repository too
+- ignoring an item in Octowatch only hides it in Octowatch; it does not
+  change your notification settings for that repository on GitHub
 
 ## Requirements
 

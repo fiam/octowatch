@@ -43,6 +43,41 @@ struct AttentionWindowView: View {
         }
     }
 
+    private enum OnboardingPage: Int, CaseIterable, Identifiable {
+        case overview
+        case sections
+        case connect
+
+        var id: Int { rawValue }
+
+        var title: String {
+            switch self {
+            case .overview:
+                return "Welcome to Octowatch"
+            case .sections:
+                return "Inbox Sections"
+            case .connect:
+                return "Connect GitHub"
+            }
+        }
+
+        var summary: String {
+            switch self {
+            case .overview:
+                return "Octowatch builds a focused native inbox from the GitHub notifications and follow-up signals that matter to you."
+            case .sections:
+                return "Octowatch starts with Your Turn and On Your Radar, and you can edit, delete, or add more sections later."
+            case .connect:
+                return "Choose how Octowatch should authenticate on this Mac."
+            }
+        }
+    }
+
+    private enum OnboardingNavigationDirection {
+        case forward
+        case backward
+    }
+
     private struct SidebarSectionDescriptor: Identifiable {
         let id: String
         let title: String
@@ -71,6 +106,8 @@ struct AttentionWindowView: View {
     @State private var reviewMergeState: PullRequestReviewMergeState = .idle
     @State private var readyForReviewState: PullRequestReadyForReviewState = .idle
     @State private var workflowApprovalSheetRequest: WorkflowApprovalSheetRequest?
+    @State private var onboardingPage: OnboardingPage = .overview
+    @State private var onboardingNavigationDirection: OnboardingNavigationDirection = .forward
 
     private let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -169,6 +206,10 @@ struct AttentionWindowView: View {
                 authenticationSetupView(guide)
                     .frame(width: 700, height: 500)
                     .interactiveDismissDisabled()
+                    .onAppear {
+                        onboardingPage = .overview
+                        onboardingNavigationDirection = .forward
+                    }
             }
         }
         .toolbar {
@@ -1069,79 +1110,225 @@ struct AttentionWindowView: View {
     ) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                HStack(alignment: .top, spacing: 14) {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color.accentColor.opacity(0.14))
-                        .frame(width: 44, height: 44)
-                        .overlay {
-                            Image(systemName: "lock.open.display")
-                                .font(.system(size: 20, weight: .semibold))
-                                .foregroundStyle(Color.accentColor)
-                        }
+                authenticationSetupHeader(
+                    title: onboardingHeaderTitle(for: guide),
+                    summary: onboardingHeaderSummary(for: guide),
+                    showsSettingsHint: guide.context == .onboarding && onboardingPage == .connect
+                )
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(guide.title)
-                            .font(.title3.weight(.semibold))
-                            .accessibilityIdentifier("auth-setup-title")
+                if guide.context == .onboarding {
+                    onboardingPageIndicator
 
-                        Text(guide.summary)
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        if guide.context == .onboarding {
-                            Text("You can change this later in Authentication settings.")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
+                    ZStack(alignment: .topLeading) {
+                        switch onboardingPage {
+                        case .overview:
+                            onboardingOverviewContent
+                                .transition(onboardingPageTransition)
+                        case .sections:
+                            onboardingSectionsContent
+                                .transition(onboardingPageTransition)
+                        case .connect:
+                            authenticationConnectionContent(for: guide)
+                                .transition(onboardingPageTransition)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .clipped()
+                    .animation(
+                        .spring(response: 0.34, dampingFraction: 0.88),
+                        value: onboardingPage
+                    )
+                } else {
+                    authenticationConnectionContent(for: guide)
                 }
 
-                authenticationSetupSection(
-                    title: "Automatic Setup",
-                    summary: automaticSetupSummary(for: guide)
+                onboardingFooter(for: guide)
+            }
+            .padding(24)
+            .frame(maxWidth: 620, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .scrollIndicators(.never)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityIdentifier("startup-unavailable-view")
+    }
+
+    private func authenticationSetupHeader(
+        title: String,
+        summary: String,
+        showsSettingsHint: Bool
+    ) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.accentColor.opacity(0.14))
+                .frame(width: 44, height: 44)
+                .overlay {
+                    Image(systemName: "lock.open.display")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                    .accessibilityIdentifier("auth-setup-title")
+
+                Text(summary)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if showsSettingsHint {
+                    Text("You can change this later in Authentication settings.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var onboardingPageIndicator: some View {
+        HStack(spacing: 8) {
+            ForEach(OnboardingPage.allCases) { page in
+                Capsule(style: .continuous)
+                    .fill(page == onboardingPage ? Color.accentColor : Color.secondary.opacity(0.18))
+                    .frame(width: page == onboardingPage ? 24 : 8, height: 8)
+                    .animation(.easeInOut(duration: 0.16), value: onboardingPage)
+            }
+
+            Spacer()
+
+            Text("\(onboardingPage.rawValue + 1) of \(OnboardingPage.allCases.count)")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityIdentifier("auth-setup-page-indicator")
+    }
+
+    private var onboardingOverviewContent: some View {
+        authenticationSetupSection(
+            title: "Repository Coverage",
+            summary: "Octowatch follows the repository notification choices you make on GitHub."
+        ) {
+            authenticationSetupPanel {
+                authenticationSetupRow(
+                    title: "Subscribe on GitHub",
+                    subtitle: "Subscribe to a repository on GitHub if you want Octowatch to surface more of its activity."
                 ) {
-                    authenticationSetupPanel {
-                        authenticationSetupRow(
-                            title: "GitHub CLI",
-                            subtitle: automaticSetupDetail(for: guide)
-                        ) {
+                    authenticationSetupSymbol("bell.badge")
+                }
+                .accessibilityIdentifier("auth-setup-repo-subscribe")
+
+                authenticationSetupSectionDivider
+
+                authenticationSetupRow(
+                    title: "Ignored on GitHub stays silent",
+                    subtitle: "If a repository is ignored on GitHub, GitHub stops sending those notifications and Octowatch will not surface them."
+                ) {
+                    authenticationSetupSymbol("bell.slash")
+                }
+                .accessibilityIdentifier("auth-setup-repo-ignore")
+
+                authenticationSetupSectionDivider
+
+                authenticationSetupRow(
+                    title: "Ignoring here only affects Octowatch",
+                    subtitle: "Ignoring an item here only hides it in Octowatch. It does not change your notification settings for that repository on GitHub."
+                ) {
+                    authenticationSetupSymbol("eye.slash")
+                }
+                .accessibilityIdentifier("auth-setup-local-ignore")
+            }
+            .accessibilityIdentifier("auth-setup-repository-coverage")
+        }
+    }
+
+    private var onboardingSectionsContent: some View {
+        authenticationSetupSection(
+            title: "Pinned Sections",
+            summary: "Sections appear at the top of the inbox and group the work you want to keep visible."
+        ) {
+            authenticationSetupPanel {
+                authenticationSetupRow(
+                    title: "Your Turn",
+                    subtitle: "The default section for work that most likely needs action now."
+                ) {
+                    authenticationSetupSymbol("checklist")
+                }
+
+                authenticationSetupSectionDivider
+
+                authenticationSetupRow(
+                    title: "On Your Radar",
+                    subtitle: "The default section for follow-up signals that are worth keeping visible, even when they are less urgent."
+                ) {
+                    authenticationSetupSymbol("radar")
+                }
+
+                authenticationSetupSectionDivider
+
+                authenticationSetupRow(
+                    title: "Make it yours",
+                    subtitle: "Edit or delete the defaults, rename sections, change their rules, or add more sections later in Settings → Inbox."
+                ) {
+                    authenticationSetupSymbol("slider.horizontal.3")
+                }
+            }
+            .accessibilityIdentifier("auth-setup-sections")
+        }
+    }
+
+    private func authenticationConnectionContent(
+        for guide: AuthenticationStartupGuide
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 22) {
+            authenticationSetupSection(
+                title: "Automatic Setup",
+                summary: automaticSetupSummary(for: guide)
+            ) {
+                authenticationSetupPanel {
+                    authenticationSetupRow(
+                        title: "GitHub CLI",
+                        subtitle: automaticSetupDetail(for: guide)
+                    ) {
+                        authenticationStatusBadge(
+                            guide.gitHubCLIStatus.stateLabel,
+                            tone: statusTone(for: guide.gitHubCLIStatus)
+                        )
+                    }
+                }
+                .accessibilityIdentifier("auth-setup-github-cli")
+            }
+
+            authenticationSetupSection(
+                title: "Personal Access Token",
+                summary: personalAccessTokenSummary(for: guide)
+            ) {
+                authenticationSetupPanel {
+                    authenticationSetupRow(
+                        title: "Personal Access Token",
+                        subtitle: guide.personalAccessTokenStatus.detail
+                    ) {
+                        HStack(spacing: 10) {
                             authenticationStatusBadge(
-                                guide.gitHubCLIStatus.stateLabel,
-                                tone: statusTone(for: guide.gitHubCLIStatus)
+                                guide.personalAccessTokenStatus.stateLabel,
+                                tone: statusTone(for: guide.personalAccessTokenStatus)
                             )
+
+                            Button(
+                                guide.context == .onboarding
+                                    ? "Switch"
+                                    : "Open Settings"
+                            ) {
+                                openPersonalAccessTokenSettings()
+                            }
+                            .buttonStyle(.borderless)
                         }
                     }
-                    .accessibilityIdentifier("auth-setup-github-cli")
-                }
+                    .accessibilityIdentifier("auth-setup-pat")
 
-                authenticationSetupSection(
-                    title: "Personal Access Token",
-                    summary: personalAccessTokenSummary(for: guide)
-                ) {
-                    authenticationSetupPanel {
-                        authenticationSetupRow(
-                            title: "Personal Access Token",
-                            subtitle: guide.personalAccessTokenStatus.detail
-                        ) {
-                            HStack(spacing: 10) {
-                                authenticationStatusBadge(
-                                    guide.personalAccessTokenStatus.stateLabel,
-                                    tone: statusTone(for: guide.personalAccessTokenStatus)
-                                )
-
-                                Button(
-                                    guide.context == .onboarding
-                                        ? "Switch"
-                                        : "Open Settings"
-                                ) {
-                                    openPersonalAccessTokenSettings()
-                                }
-                                .buttonStyle(.borderless)
-                            }
-                        }
-                        .accessibilityIdentifier("auth-setup-pat")
-
+                    if guide.context == .recovery {
                         authenticationSetupSectionDivider
 
                         authenticationSetupRow(
@@ -1155,79 +1342,115 @@ struct AttentionWindowView: View {
                         }
                     }
                 }
+            }
 
-                if guide.requiresManualIntervention, !guide.nextSteps.isEmpty {
-                    authenticationSetupSection(
-                        title: "Next Steps",
-                        summary: guide.manualInterventionDetail
-                    ) {
-                        authenticationSetupPanel {
-                            VStack(alignment: .leading, spacing: 12) {
-                                ForEach(Array(guide.nextSteps.enumerated()), id: \.offset) { _, step in
-                                    HStack(alignment: .top, spacing: 10) {
-                                        Circle()
-                                            .fill(Color.secondary.opacity(0.6))
-                                            .frame(width: 6, height: 6)
-                                            .padding(.top, 5)
+            if guide.requiresManualIntervention, !guide.nextSteps.isEmpty {
+                authenticationSetupSection(
+                    title: "Next Steps",
+                    summary: guide.manualInterventionDetail
+                ) {
+                    authenticationSetupPanel {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(Array(guide.nextSteps.enumerated()), id: \.offset) { _, step in
+                                HStack(alignment: .top, spacing: 10) {
+                                    Circle()
+                                        .fill(Color.secondary.opacity(0.6))
+                                        .frame(width: 6, height: 6)
+                                        .padding(.top, 5)
 
-                                        Text(step)
-                                            .font(.system(size: 12))
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
+                                    Text(step)
+                                        .font(.system(size: 12))
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 14)
-                            .accessibilityIdentifier("auth-setup-intervention")
                         }
-                    }
-                }
-
-                HStack(spacing: 10) {
-                    Spacer()
-
-                    if guide.context == .recovery,
-                        guide.gitHubCLIStatus.isDetected,
-                        guide.gitHubCLIStatus != .ready {
-                        Button("Retry GitHub CLI") {
-                            Task {
-                                _ = await model.reloadTokenFromGitHubCLI()
-                            }
-                        }
-                        .appInteractiveHover()
-                    }
-
-                    if guide.context == .recovery {
-                        Button("Open Settings") {
-                            openWindow(id: AppSceneID.settingsWindow)
-                        }
-                        .appInteractiveHover()
-                    }
-
-                    if guide.context == .onboarding {
-                        Button("Use Personal Access Token") {
-                            openPersonalAccessTokenSettings()
-                        }
-                        .appInteractiveHover()
-                    }
-
-                    if guide.context == .onboarding, model.hasToken {
-                        Button(startupGuideContinueTitle) {
-                            model.completeInitialSetup()
-                        }
-                        .appInteractiveHover()
-                        .keyboardShortcut(.defaultAction)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .accessibilityIdentifier("auth-setup-intervention")
                     }
                 }
             }
-            .padding(24)
-            .frame(maxWidth: 620, alignment: .topLeading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .scrollIndicators(.never)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .accessibilityIdentifier("startup-unavailable-view")
+    }
+
+    private func onboardingHeaderTitle(
+        for guide: AuthenticationStartupGuide
+    ) -> String {
+        guard guide.context == .onboarding else {
+            return guide.title
+        }
+
+        return onboardingPage.title
+    }
+
+    private func onboardingHeaderSummary(
+        for guide: AuthenticationStartupGuide
+    ) -> String {
+        guard guide.context == .onboarding else {
+            return guide.summary
+        }
+
+        if onboardingPage == .connect {
+            return guide.summary
+        }
+
+        return onboardingPage.summary
+    }
+
+    private func onboardingFooter(
+        for guide: AuthenticationStartupGuide
+    ) -> some View {
+        HStack(spacing: 10) {
+            Spacer()
+
+            if guide.context == .onboarding, onboardingPage != .overview {
+                Button("Back") {
+                    if let previous = OnboardingPage(rawValue: onboardingPage.rawValue - 1) {
+                        navigateOnboarding(to: previous, direction: .backward)
+                    }
+                }
+                .appInteractiveHover()
+            }
+
+            if guide.context == .recovery,
+                guide.gitHubCLIStatus.isDetected,
+                guide.gitHubCLIStatus != .ready {
+                Button("Retry GitHub CLI") {
+                    Task {
+                        _ = await model.reloadTokenFromGitHubCLI()
+                    }
+                }
+                .appInteractiveHover()
+            }
+
+            if guide.context == .recovery {
+                Button("Open Settings") {
+                    openWindow(id: AppSceneID.settingsWindow)
+                }
+                .appInteractiveHover()
+            } else if onboardingPage != .connect {
+                Button("Next") {
+                    if let next = OnboardingPage(rawValue: onboardingPage.rawValue + 1) {
+                        navigateOnboarding(to: next, direction: .forward)
+                    }
+                }
+                .appInteractiveHover()
+                .keyboardShortcut(.defaultAction)
+            } else {
+                Button("Use Personal Access Token") {
+                    openPersonalAccessTokenSettings()
+                }
+                .appInteractiveHover()
+
+                if model.hasToken {
+                    Button(startupGuideContinueTitle) {
+                        model.completeInitialSetup()
+                    }
+                    .appInteractiveHover()
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+        }
     }
 
     private func authenticationSetupSection<Content: View>(
@@ -1295,7 +1518,33 @@ struct AttentionWindowView: View {
             accessory()
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+            .padding(.vertical, 12)
+    }
+
+    private func authenticationSetupSymbol(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: 18, height: 18)
+    }
+
+    private var onboardingPageTransition: AnyTransition {
+        let insertionEdge: Edge = onboardingNavigationDirection == .forward ? .trailing : .leading
+        let removalEdge: Edge = onboardingNavigationDirection == .forward ? .leading : .trailing
+        return .asymmetric(
+            insertion: .move(edge: insertionEdge).combined(with: .opacity),
+            removal: .move(edge: removalEdge).combined(with: .opacity)
+        )
+    }
+
+    private func navigateOnboarding(
+        to page: OnboardingPage,
+        direction: OnboardingNavigationDirection
+    ) {
+        onboardingNavigationDirection = direction
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+            onboardingPage = page
+        }
     }
 
     private var authenticationSetupSectionDivider: some View {

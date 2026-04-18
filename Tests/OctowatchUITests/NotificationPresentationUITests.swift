@@ -67,6 +67,23 @@ final class NotificationPresentationUITests: XCTestCase {
         let app = launchFixture(named: "first-run-gh-ready")
 
         XCTAssertTrue(app.staticTexts["Welcome to Octowatch"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Repository Coverage"].exists)
+        XCTAssertTrue(app.staticTexts["Subscribe on GitHub"].exists)
+        XCTAssertTrue(app.staticTexts["Ignored on GitHub stays silent"].exists)
+        XCTAssertTrue(app.buttons["Next"].exists)
+        XCTAssertFalse(app.buttons["Continue with GitHub CLI"].exists)
+
+        app.buttons["Next"].click()
+
+        XCTAssertTrue(app.staticTexts["Inbox Sections"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Pinned Sections"].exists)
+        XCTAssertTrue(app.staticTexts["Your Turn"].exists)
+        XCTAssertTrue(app.staticTexts["On Your Radar"].exists)
+        XCTAssertTrue(app.staticTexts["Make it yours"].exists)
+
+        app.buttons["Next"].click()
+
+        XCTAssertTrue(app.staticTexts["Connect GitHub"].waitForExistence(timeout: 5))
         XCTAssertTrue(
             app.staticTexts["GitHub CLI was found and Octowatch will use it to authenticate."]
                 .exists

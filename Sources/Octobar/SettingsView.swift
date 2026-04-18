@@ -2,9 +2,29 @@ import AppKit
 import SwiftUI
 
 struct SettingsView: View {
-    private enum TokenSource: Hashable {
+    private enum TokenSource: Hashable, CaseIterable, Identifiable {
         case githubCLI
         case personalAccessToken
+
+        var id: Self { self }
+
+        var title: String {
+            switch self {
+            case .githubCLI:
+                return "GitHub CLI"
+            case .personalAccessToken:
+                return "Personal Access Token"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .githubCLI:
+                return "terminal"
+            case .personalAccessToken:
+                return "key.horizontal.fill"
+            }
+        }
     }
 
     private enum SettingsPane: String, CaseIterable, Identifiable {
@@ -69,6 +89,8 @@ struct SettingsView: View {
     @State private var renamingSection: InboxSection?
     @State private var renamingSectionName = ""
     @State private var editingSectionForRules: InboxSection?
+    @State private var showsPersonalAccessTokenHelp = false
+    @State private var gitHubCLIReloadTask: Task<Void, Never>?
 
     var body: some View {
         NavigationSplitView {
@@ -97,6 +119,10 @@ struct SettingsView: View {
         }
         .onChange(of: selectedPane) { _, _ in
             focusTokenFieldIfNeeded()
+        }
+        .onDisappear {
+            gitHubCLIReloadTask?.cancel()
+            gitHubCLIReloadTask = nil
         }
         .confirmationDialog(
             "Reset Inbox Sections?",
@@ -135,6 +161,13 @@ struct SettingsView: View {
                 sectionID: section.id,
                 model: model,
                 onDismiss: { editingSectionForRules = nil }
+            )
+        }
+        .sheet(isPresented: $showsPersonalAccessTokenHelp) {
+            PersonalAccessTokenHelpSheet(
+                onOpenSettings: {
+                    openURL(GitHubPersonalAccessTokenSetup.settingsURL)
+                }
             )
         }
     }
@@ -236,59 +269,67 @@ struct SettingsView: View {
     }
 
     private var githubPaneContent: some View {
-        settingsSection(
-            title: "GitHub",
-            summary: tokenSummary
-        ) {
-            settingsRow(
-                title: "Token Source",
-                subtitle: authSubtitle
+        VStack(alignment: .leading, spacing: 24) {
+            settingsSection(
+                title: "GitHub",
+                summary: tokenSummary
             ) {
-                if model.gitHubCLIAvailable {
-                    Picker("Authentication", selection: tokenSourceSelection) {
-                        Text("GitHub CLI").tag(TokenSource.githubCLI)
-                        Text("Personal Access Token").tag(TokenSource.personalAccessToken)
+                settingsStackedRow(
+                    title: "Token Source",
+                    subtitle: authSubtitle
+                ) {
+                    if model.gitHubCLIAvailable {
+                        tokenSourceControl
+                    } else {
+                        Text("Personal Access Token")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 320)
-                    .labelsHidden()
-                } else {
-                    Text("Personal Access Token")
-                        .foregroundStyle(.secondary)
+                }
+
+                if let error = model.lastError {
+                    settingsSectionDivider
+
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
                 }
             }
-
-            settingsSectionDivider
 
             if selectedTokenSource == .githubCLI {
-                settingsRow(
+                settingsSection(
                     title: "GitHub CLI",
-                    subtitle: model.gitHubCLIAuthStatus.detail
+                    summary: "Reuse the GitHub CLI session that is already authenticated on this Mac."
                 ) {
-                    Button(model.usingGitHubCLIToken ? "Check Again" : "Use GitHub CLI") {
-                        Task {
-                            let success = await model.reloadTokenFromGitHubCLI()
-                            if !success {
-                                selectedTokenSource = .personalAccessToken
-                                focusTokenFieldIfNeeded(force: true)
+                    settingsStackedRow(
+                        title: "Connection Status",
+                        subtitle: model.gitHubCLIAuthStatus.detail
+                    ) {
+                        HStack(spacing: 12) {
+                            authenticationStatusBadge(
+                                model.gitHubCLIAuthStatus.stateLabel,
+                                tone: statusTone(for: model.gitHubCLIAuthStatus)
+                            )
+
+                            Spacer()
+
+                            Button(model.usingGitHubCLIToken ? "Check Again" : "Use GitHub CLI") {
+                                reloadGitHubCLIToken(fallbackToPersonalAccessTokenOnFailure: false)
                             }
+                            .disabled(model.isValidatingToken)
+                            .appInteractiveHover()
                         }
                     }
-                    .disabled(model.isValidatingToken)
-                    .appInteractiveHover()
                 }
             } else {
-                customTokenEditor
-            }
-
-            if let error = model.lastError {
-                settingsSectionDivider
-
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
+                settingsSection(
+                    title: "Personal Access Token",
+                    summary: "Use this when you want Octowatch to manage authentication directly instead of reusing GitHub CLI."
+                ) {
+                    customTokenEditor
+                }
             }
         }
     }
@@ -479,43 +520,40 @@ struct SettingsView: View {
 
     private var customTokenEditor: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Personal Access Token")
-                .font(.body.weight(.medium))
-
             SecureField("Personal access token", text: $model.tokenInput)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(.body, design: .monospaced))
                 .focused($tokenFieldFocused)
-
-            Toggle(
-                "Remember this token in Keychain",
-                isOn: Binding(
-                    get: { model.storesPersonalAccessTokenInKeychain },
-                    set: { model.setStoresPersonalAccessTokenInKeychain($0) }
-                )
-            )
-            .toggleStyle(.switch)
+                .disabled(model.isValidatingToken)
 
             HStack {
-                Button("Apply Token") {
+                Button {
                     Task {
                         _ = await model.saveToken()
                     }
+                } label: {
+                    HStack(spacing: 8) {
+                        if model.isValidatingToken {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+
+                        Text(model.isValidatingToken ? "Saving Token…" : "Save Token")
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
+                .disabled(model.isValidatingToken || !canSavePersonalAccessToken)
+                .appInteractiveHover()
+
+                Button("How do I create a token?") {
+                    showsPersonalAccessTokenHelp = true
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .underline()
                 .disabled(model.isValidatingToken)
-                .appInteractiveHover()
-
-                Button("Clear") {
-                    model.clearPersonalAccessToken()
-                }
-                .disabled(model.isValidatingToken || !canClearPersonalAccessToken)
-                .appInteractiveHover()
-
-                if model.isValidatingToken {
-                    ProgressView()
-                        .controlSize(.small)
-                }
+                .appLinkHover()
 
                 Spacer()
             }
@@ -523,32 +561,6 @@ struct SettingsView: View {
             Text(customTokenPersistenceSummary)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-
-            settingsSectionDivider
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Prepare a Token")
-                    .font(.subheadline.weight(.semibold))
-
-                Text(
-                    "If GitHub CLI is unavailable or not authenticated, create a token with read access to:"
-                )
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
-                Text(GitHubPersonalAccessTokenSetup.recommendedScopes.joined(separator: " · "))
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(.secondary)
-
-                HStack {
-                    Button("Open GitHub Token Settings") {
-                        openURL(GitHubPersonalAccessTokenSetup.settingsURL)
-                    }
-                    .appInteractiveHover()
-
-                    Spacer()
-                }
-            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -578,28 +590,75 @@ struct SettingsView: View {
         return "GitHub CLI was not found, so use a personal access token."
     }
 
-    private var authSubtitle: String {
-        if model.gitHubCLIAvailable {
-            return "Select a validated GitHub CLI token or provide a personal access token, optionally saved in Keychain."
+    private var tokenSourceControl: some View {
+        HStack(spacing: 8) {
+            ForEach(TokenSource.allCases) { source in
+                authSourceButton(source)
+            }
         }
-
-        return "GitHub CLI is not installed, so use a personal access token and save it in Keychain if you want future launches to reconnect automatically."
+        .fixedSize(horizontal: true, vertical: false)
+        .animation(.easeInOut(duration: 0.16), value: selectedTokenSource)
     }
 
-    private var canClearPersonalAccessToken: Bool {
-        model.usingPersonalAccessToken || !model.tokenInput.isEmpty || model.hasStoredPersonalAccessToken
+    private var authSubtitle: String {
+        if model.gitHubCLIAvailable {
+            return "Select a validated GitHub CLI token or provide a personal access token that Octowatch saves in Keychain."
+        }
+
+        return "GitHub CLI is not installed, so use a personal access token. Octowatch saves it in Keychain for future launches."
+    }
+
+    private var canSavePersonalAccessToken: Bool {
+        !model.tokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var customTokenPersistenceSummary: String {
         if model.hasStoredPersonalAccessToken {
-            return "A personal access token is currently saved in Keychain for future launches."
+            return "A personal access token is currently saved in Keychain. Saving a new token replaces it."
         }
 
-        if model.storesPersonalAccessTokenInKeychain {
-            return "Octowatch validates the token before using it, then saves it in Keychain for future launches."
-        }
+        return "Octowatch validates the token before using it, then saves it in Keychain for future launches."
+    }
 
-        return "Octowatch validates the token before using it. With Keychain storage off, the token stays session-only."
+    private func authSourceButton(_ source: TokenSource) -> some View {
+        let isSelected = selectedTokenSource == source
+
+        return Button {
+            tokenSourceSelection.wrappedValue = source
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: source.systemImage)
+                    .imageScale(.small)
+
+                Text(source.title)
+                    .lineLimit(1)
+            }
+            .font(.subheadline.weight(.medium))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .foregroundStyle(isSelected ? .white : .primary)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(
+                        isSelected
+                            ? Color.accentColor
+                            : Color(nsColor: .controlBackgroundColor)
+                    )
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(
+                        isSelected
+                            ? Color.accentColor.opacity(0.85)
+                            : Color(nsColor: .separatorColor).opacity(0.45),
+                        lineWidth: 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .appInteractiveHover(backgroundOpacity: isSelected ? 0 : 0.06, cornerRadius: 999)
+        .accessibilityLabel(source.title)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var ignoredItemsSummary: String {
@@ -665,16 +724,12 @@ struct SettingsView: View {
             set: { newValue in
                 if newValue == .githubCLI {
                     selectedTokenSource = .githubCLI
-                    Task {
-                        let success = await model.reloadTokenFromGitHubCLI()
-                        if !success {
-                            selectedTokenSource = .personalAccessToken
-                            focusTokenFieldIfNeeded(force: true)
-                        }
-                    }
+                    reloadGitHubCLIToken(fallbackToPersonalAccessTokenOnFailure: true)
                     return
                 }
 
+                gitHubCLIReloadTask?.cancel()
+                gitHubCLIReloadTask = nil
                 selectedTokenSource = .personalAccessToken
                 focusTokenFieldIfNeeded(force: true)
             }
@@ -722,6 +777,23 @@ struct SettingsView: View {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             tokenFieldFocused = true
+        }
+    }
+
+    private func reloadGitHubCLIToken(
+        fallbackToPersonalAccessTokenOnFailure: Bool
+    ) {
+        gitHubCLIReloadTask?.cancel()
+        gitHubCLIReloadTask = Task {
+            let success = await model.reloadTokenFromGitHubCLI()
+            guard !Task.isCancelled else {
+                return
+            }
+
+            if !success && fallbackToPersonalAccessTokenOnFailure {
+                selectedTokenSource = .personalAccessToken
+                focusTokenFieldIfNeeded(force: true)
+            }
         }
     }
 
@@ -832,6 +904,99 @@ struct SettingsView: View {
         .padding(.vertical, 11)
     }
 
+    private func settingsStackedRow<Content: View>(
+        title: String,
+        subtitle: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+    }
+
+    private func authenticationStatusBadge(
+        _ title: String,
+        tone: AuthenticationSettingsStatusTone
+    ) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(tone.foreground)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(tone.background)
+            )
+    }
+
+    private func statusTone(for status: GitHubCLIAuthStatus) -> AuthenticationSettingsStatusTone {
+        switch status {
+        case .ready:
+            return .success
+        case .tokenUnavailable:
+            return .warning
+        case .tokenRejected:
+            return .critical
+        case .checking:
+            return .accent
+        case .notInstalled:
+            return .neutral
+        }
+    }
+
+    private enum AuthenticationSettingsStatusTone {
+        case accent
+        case success
+        case warning
+        case critical
+        case neutral
+
+        var foreground: Color {
+            switch self {
+            case .accent:
+                return .accentColor
+            case .success:
+                return .green
+            case .warning:
+                return .orange
+            case .critical:
+                return .red
+            case .neutral:
+                return .secondary
+            }
+        }
+
+        var background: Color {
+            switch self {
+            case .accent:
+                return Color.accentColor.opacity(0.14)
+            case .success:
+                return Color.green.opacity(0.14)
+            case .warning:
+                return Color.orange.opacity(0.14)
+            case .critical:
+                return Color.red.opacity(0.14)
+            case .neutral:
+                return Color.secondary.opacity(0.14)
+            }
+        }
+    }
+
     private var settingsSectionDivider: some View {
         Divider()
             .padding(.leading, 14)
@@ -875,6 +1040,67 @@ private struct SettingsWindowConfigurator: NSViewRepresentable {
 
     final class Coordinator {
         var configuredWindowNumber: Int?
+    }
+}
+
+private struct PersonalAccessTokenHelpSheet: View {
+    let onOpenSettings: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("How to Create a Token")
+                .font(.title3.weight(.semibold))
+
+            Text(
+                "If GitHub CLI is unavailable or not authenticated, create a classic personal access token with read access to the GitHub data Octowatch monitors."
+            )
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 10) {
+                tokenHelpStep(
+                    "Open GitHub token settings and create a classic personal access token."
+                )
+                tokenHelpStep(
+                    "Grant read access to \(GitHubPersonalAccessTokenSetup.recommendedScopes.joined(separator: ", "))."
+                )
+                tokenHelpStep(
+                    "Copy the token, paste it into Octowatch, and save it."
+                )
+            }
+
+            Text(GitHubPersonalAccessTokenSetup.recommendedScopes.joined(separator: " · "))
+                .font(.system(.footnote, design: .monospaced))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 10) {
+                Button("Open GitHub Token Settings") {
+                    onOpenSettings()
+                }
+                .keyboardShortcut(.defaultAction)
+
+                Button("Done") {
+                    dismiss()
+                }
+
+                Spacer()
+            }
+        }
+        .padding(24)
+        .frame(width: 460)
+    }
+
+    private func tokenHelpStep(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Circle()
+                .fill(Color.secondary.opacity(0.5))
+                .frame(width: 6, height: 6)
+                .padding(.top, 6)
+
+            Text(text)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
