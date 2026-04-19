@@ -29,8 +29,10 @@ DERIVED_DATA_PATH="$ROOT_DIR/.derived-release"
 DIST_DIR="$ROOT_DIR/dist"
 PACKAGE_CACHE_PATH="$DERIVED_DATA_PATH/PackageCache"
 CLONED_SOURCE_PACKAGES_PATH="$DERIVED_DATA_PATH/SourcePackages"
-APP_PATH="$DERIVED_DATA_PATH/Build/Products/Release/Octowatch.app"
-APP_EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/Octowatch"
+ARCHIVE_PATH="$DERIVED_DATA_PATH/Octowatch.xcarchive"
+EXPORT_PATH="$DERIVED_DATA_PATH/export"
+EXPORT_OPTIONS_PATH="$DERIVED_DATA_PATH/ExportOptions.plist"
+APP_PATH=""
 APPCAST_DIR="$DIST_DIR/appcast"
 SPARKLE_TOOLS_DIR="$ROOT_DIR/.sparkle-tools"
 VERSIONED_ZIP_NAME="Octowatch-${VERSION}.zip"
@@ -134,7 +136,7 @@ xcodebuild_args=(
   -derivedDataPath "$DERIVED_DATA_PATH"
   -clonedSourcePackagesDirPath "$CLONED_SOURCE_PACKAGES_PATH"
   -packageCachePath "$PACKAGE_CACHE_PATH"
-  -destination "platform=macOS"
+  -destination "generic/platform=macOS"
   ONLY_ACTIVE_ARCH=NO
   ARCHS="arm64 x86_64"
   MARKETING_VERSION="$VERSION"
@@ -161,7 +163,39 @@ else
   )
 fi
 
-xcodebuild "${xcodebuild_args[@]}" build
+if [[ "$SIGNED_RELEASE" == "true" ]]; then
+  cat >"$EXPORT_OPTIONS_PATH" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>method</key>
+  <string>developer-id</string>
+  <key>signingStyle</key>
+  <string>manual</string>
+  <key>teamID</key>
+  <string>$OCTOWATCH_APPLE_TEAM_ID</string>
+</dict>
+</plist>
+EOF
+
+  xcodebuild "${xcodebuild_args[@]}" \
+    -archivePath "$ARCHIVE_PATH" \
+    archive
+
+  xcodebuild -exportArchive \
+    -archivePath "$ARCHIVE_PATH" \
+    -exportPath "$EXPORT_PATH" \
+    -exportOptionsPlist "$EXPORT_OPTIONS_PATH" \
+    -quiet
+
+  APP_PATH="$EXPORT_PATH/Octowatch.app"
+else
+  xcodebuild "${xcodebuild_args[@]}" build
+  APP_PATH="$DERIVED_DATA_PATH/Build/Products/Release/Octowatch.app"
+fi
+
+APP_EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/Octowatch"
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "expected app not found at $APP_PATH" >&2
