@@ -57,11 +57,51 @@ function require_env() {
 
 function notarize() {
   local path="$1"
+  local output_path
+  local submission_id
+  local status
+
+  output_path="$DIST_DIR/.notary-$(basename "$path").json"
+
   xcrun notarytool submit "$path" \
     --key "$OCTOWATCH_NOTARY_KEY_FILE" \
     --key-id "$OCTOWATCH_NOTARY_KEY_ID" \
     --issuer "$OCTOWATCH_NOTARY_ISSUER_ID" \
-    --wait
+    --wait \
+    --output-format json >"$output_path"
+
+  submission_id="$(
+    python3 - "$output_path" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    payload = json.load(fh)
+
+print(payload["id"])
+PY
+  )"
+
+  status="$(
+    python3 - "$output_path" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    payload = json.load(fh)
+
+print(payload["status"])
+PY
+  )"
+
+  if [[ "$status" != "Accepted" ]]; then
+    echo "notarization failed for $(basename "$path") with status: $status" >&2
+    xcrun notarytool log "$submission_id" \
+      --key "$OCTOWATCH_NOTARY_KEY_FILE" \
+      --key-id "$OCTOWATCH_NOTARY_KEY_ID" \
+      --issuer "$OCTOWATCH_NOTARY_ISSUER_ID" >&2 || true
+    return 1
+  fi
 }
 
 if [[ -n "${OCTOWATCH_CODESIGN_IDENTITY:-}" || -n "${OCTOWATCH_APPLE_TEAM_ID:-}" ]]; then
