@@ -37,6 +37,7 @@ VERSIONED_ZIP_NAME="Octowatch-${VERSION}.zip"
 VERSIONED_DMG_NAME="Octowatch-${VERSION}.dmg"
 LATEST_ZIP_NAME="Octowatch.zip"
 LATEST_DMG_NAME="Octowatch.dmg"
+NOTARY_SUBMISSION_ZIP_NAME=".Octowatch-notary-submit.zip"
 CASK_NAME="octowatch.rb"
 APPCAST_NAME="appcast.xml"
 
@@ -141,8 +142,12 @@ if [[ "$SIGNED_RELEASE" == "true" ]]; then
 fi
 
 if [[ "$NOTARIZED_RELEASE" == "true" ]]; then
-  notarize "$APP_PATH"
+  ditto -c -k --sequesterRsrc --keepParent \
+    "$APP_PATH" \
+    "$DIST_DIR/$NOTARY_SUBMISSION_ZIP_NAME"
+  notarize "$DIST_DIR/$NOTARY_SUBMISSION_ZIP_NAME"
   xcrun stapler staple "$APP_PATH"
+  rm -f "$DIST_DIR/$NOTARY_SUBMISSION_ZIP_NAME"
 fi
 
 ditto -c -k --sequesterRsrc --keepParent \

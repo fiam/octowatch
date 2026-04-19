@@ -126,7 +126,7 @@ jobs:
         run: |
           BUILD_NUMBER="$(
             gh api "repos/${{ github.repository }}/releases" --paginate \
-              --jq '[.[] | select(.draft == false and .prerelease == false)] | length'
+              --jq '[.[] | select(.draft == false and .prerelease == false and .tag_name != "${{ needs.release-please.outputs.release_tag }}")] | length'
           )"
           if [[ -z "$BUILD_NUMBER" || ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
             echo "invalid release build number: ${BUILD_NUMBER:-<empty>}" >&2
