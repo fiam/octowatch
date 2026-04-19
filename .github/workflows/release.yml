@@ -60,7 +60,7 @@ jobs:
   publish-release:
     name: Build And Publish Release
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_tag != '' && github.event.inputs.publish_version != '') }}
+    if: ${{ always() && (needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_tag != '' && github.event.inputs.publish_version != '')) }}
     runs-on: macos-26
     timeout-minutes: 60
     env:
