@@ -63,8 +63,8 @@ function notarize() {
     --wait
 }
 
-if [[ -n "${OCTOWATCH_CODESIGN_IDENTITY:-}" || -n "${OCTOWATCH_APPLE_TEAM_ID:-}" || -n "${SPARKLE_PUBLIC_ED_KEY:-}" ]]; then
-  require_env OCTOWATCH_CODESIGN_IDENTITY OCTOWATCH_APPLE_TEAM_ID SPARKLE_PUBLIC_ED_KEY
+if [[ -n "${OCTOWATCH_CODESIGN_IDENTITY:-}" || -n "${OCTOWATCH_APPLE_TEAM_ID:-}" ]]; then
+  require_env OCTOWATCH_CODESIGN_IDENTITY OCTOWATCH_APPLE_TEAM_ID
   SIGNED_RELEASE=true
 fi
 
@@ -107,8 +107,13 @@ if [[ "$SIGNED_RELEASE" == "true" ]]; then
     CODE_SIGN_STYLE=Manual
     CODE_SIGN_IDENTITY="$OCTOWATCH_CODESIGN_IDENTITY"
     OTHER_CODE_SIGN_FLAGS=--timestamp
-    SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
   )
+
+  if [[ -n "${SPARKLE_PUBLIC_ED_KEY:-}" ]]; then
+    xcodebuild_args+=(
+      SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY"
+    )
+  fi
 else
   xcodebuild_args+=(
     CODE_SIGNING_ALLOWED=NO

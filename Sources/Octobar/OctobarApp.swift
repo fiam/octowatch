@@ -13,15 +13,19 @@ struct OctowatchApp: App {
         .defaultSize(width: 1080, height: 720)
         .commands {
             CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") {
+                Button {
                     appUpdateController.checkForUpdates()
+                } label: {
+                    Label("Check for Updates…", systemImage: "arrow.down.circle")
                 }
                 .disabled(!appUpdateController.isAvailable)
             }
 
             CommandGroup(replacing: .appSettings) {
-                Button("Settings…") {
+                Button {
                     NotificationCenter.default.post(name: .openSettingsRequested, object: nil)
+                } label: {
+                    Label("Settings…", systemImage: "gearshape")
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }

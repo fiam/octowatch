@@ -15,7 +15,7 @@ settings:
     PRODUCT_BUNDLE_IDENTIFIER: app.octowatch.macos
     MARKETING_VERSION: 0.0.0
     CURRENT_PROJECT_VERSION: 1
-    SPARKLE_PUBLIC_ED_KEY: ""
+    SPARKLE_PUBLIC_ED_KEY: "NhQU/p4gwGIa0MO3rrdje2zJfzcQrJsUT19rOnxHB7k="
     SWIFT_VERSION: 6.0
 packages:
   Yams:

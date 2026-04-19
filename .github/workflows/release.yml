@@ -68,7 +68,6 @@ jobs:
           APPLE_NOTARY_API_PRIVATE_KEY: ${{ secrets.APPLE_NOTARY_API_PRIVATE_KEY }}
           HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
-          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
         run: |
           required_vars=(
             APPLE_CODESIGN_CERT_P12_BASE64
@@ -80,7 +79,6 @@ jobs:
             APPLE_NOTARY_API_PRIVATE_KEY
             HOMEBREW_TAP_DEPLOY_KEY
             SPARKLE_PRIVATE_ED_KEY
-            SPARKLE_PUBLIC_ED_KEY
           )
 
           missing=()
@@ -147,7 +145,6 @@ jobs:
           OCTOWATCH_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_API_ISSUER_ID }}
           OCTOWATCH_NOTARY_KEY_FILE: ${{ env.APPLE_NOTARY_API_KEY_PATH }}
           SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
-          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
         run: ./scripts/build-release-assets.sh "${{ needs.release-please.outputs.release_version }}"
 
       - name: Upload release assets
