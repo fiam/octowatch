@@ -10,6 +10,18 @@ on:
         description: Force the next release version (for example 1.2.3)
         required: false
         type: string
+      publish_tag:
+        description: Existing release tag to publish assets for
+        required: false
+        type: string
+      publish_version:
+        description: Version string that corresponds to publish_tag
+        required: false
+        type: string
+      publish_ref:
+        description: Git ref to build for manual publish (defaults to publish_tag)
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -27,6 +39,7 @@ defaults:
 jobs:
   release-please:
     name: Release Please
+    if: ${{ github.event_name != 'workflow_dispatch' || (github.event.inputs.publish_tag == '' && github.event.inputs.publish_version == '') }}
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
@@ -47,15 +60,19 @@ jobs:
   publish-release:
     name: Build And Publish Release
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_tag != '' && github.event.inputs.publish_version != '') }}
     runs-on: macos-26
     timeout-minutes: 60
+    env:
+      OCTOWATCH_PUBLISH_TAG: ${{ github.event.inputs.publish_tag != '' && github.event.inputs.publish_tag || needs.release-please.outputs.release_tag }}
+      OCTOWATCH_PUBLISH_VERSION: ${{ github.event.inputs.publish_version != '' && github.event.inputs.publish_version || needs.release-please.outputs.release_version }}
+      OCTOWATCH_PUBLISH_REF: ${{ github.event.inputs.publish_tag != '' && (github.event.inputs.publish_ref != '' && github.event.inputs.publish_ref || github.event.inputs.publish_tag) || needs.release-please.outputs.release_sha }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.release-please.outputs.release_sha }}
+          ref: ${{ env.OCTOWATCH_PUBLISH_REF }}
 
       - name: Validate release secrets
         env:
@@ -126,7 +143,7 @@ jobs:
         run: |
           BUILD_NUMBER="$(
             gh api "repos/${{ github.repository }}/releases" --paginate \
-              --jq '[.[] | select(.draft == false and .prerelease == false and .tag_name != "${{ needs.release-please.outputs.release_tag }}")] | length'
+              --jq '[.[] | select(.draft == false and .prerelease == false and .tag_name != "${{ env.OCTOWATCH_PUBLISH_TAG }}")] | length'
           )"
           if [[ -z "$BUILD_NUMBER" || ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
             echo "invalid release build number: ${BUILD_NUMBER:-<empty>}" >&2
@@ -136,7 +153,7 @@ jobs:
 
       - name: Build signed and notarized release artifacts
         env:
-          OCTOWATCH_RELEASE_TAG: ${{ needs.release-please.outputs.release_tag }}
+          OCTOWATCH_RELEASE_TAG: ${{ env.OCTOWATCH_PUBLISH_TAG }}
           OCTOWATCH_REPOSITORY: ${{ github.repository }}
           OCTOWATCH_BUILD_NUMBER: ${{ env.OCTOWATCH_BUILD_NUMBER }}
           OCTOWATCH_CODESIGN_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
@@ -145,15 +162,15 @@ jobs:
           OCTOWATCH_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_API_ISSUER_ID }}
           OCTOWATCH_NOTARY_KEY_FILE: ${{ env.APPLE_NOTARY_API_KEY_PATH }}
           SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
-        run: ./scripts/build-release-assets.sh "${{ needs.release-please.outputs.release_version }}"
+        run: ./scripts/build-release-assets.sh "${{ env.OCTOWATCH_PUBLISH_VERSION }}"
 
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN != '' && secrets.RELEASE_PLEASE_TOKEN || github.token }}
         run: |
-          gh release upload "${{ needs.release-please.outputs.release_tag }}" \
-            dist/Octowatch-${{ needs.release-please.outputs.release_version }}.dmg \
-            dist/Octowatch-${{ needs.release-please.outputs.release_version }}.zip \
+          gh release upload "${{ env.OCTOWATCH_PUBLISH_TAG }}" \
+            dist/Octowatch-${{ env.OCTOWATCH_PUBLISH_VERSION }}.dmg \
+            dist/Octowatch-${{ env.OCTOWATCH_PUBLISH_VERSION }}.zip \
             dist/Octowatch.dmg \
             dist/Octowatch.zip \
             dist/appcast.xml \
@@ -179,8 +196,8 @@ jobs:
           {
             echo "## Published release"
             echo
-            echo "- Tag: \`${{ needs.release-please.outputs.release_tag }}\`"
-            echo "- Version: \`${{ needs.release-please.outputs.release_version }}\`"
+            echo "- Tag: \`${{ env.OCTOWATCH_PUBLISH_TAG }}\`"
+            echo "- Version: \`${{ env.OCTOWATCH_PUBLISH_VERSION }}\`"
             echo "- Artifacts: signed universal app, notarized DMG, Sparkle appcast, Homebrew tap cask"
             echo
             echo '```text'
