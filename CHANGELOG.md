@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/fiam/octowatch/compare/v0.1.0...v0.2.0) (2026-04-19)
+
+
+### Bug Fixes
+
+* **release:** allow manual publish job ([2ca40cc](https://github.com/fiam/octowatch/commit/2ca40cce01bca431273884e7e57a2e1f6ebba526))
+* **release:** archive signed distributions ([7307994](https://github.com/fiam/octowatch/commit/7307994f5db71f40d65100798aa964bd291a6bdb))
+* **release:** default republish ref to HEAD ([c326243](https://github.com/fiam/octowatch/commit/c3262435faf5c919232aefe6ad21a5399c8ad259))
+* **release:** package notarization inputs ([d0d1f70](https://github.com/fiam/octowatch/commit/d0d1f70f9454746dadf0433424f1e1089925b517))
+* **release:** print notary rejection logs ([2a3c5f4](https://github.com/fiam/octowatch/commit/2a3c5f4e0adfa866d4b1c1d25a86044dd7dd65f4))
+* **release:** support manual republish ([3406d99](https://github.com/fiam/octowatch/commit/3406d999058222897dc1e09306df1b7964a7d9db))
+
 ## 0.1.0 (2026-04-19)
 
 
