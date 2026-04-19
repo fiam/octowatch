@@ -19,7 +19,7 @@ on:
         required: false
         type: string
       publish_ref:
-        description: Git ref to build for manual publish (defaults to publish_tag)
+        description: Git ref to build for manual publish (defaults to this workflow commit)
         required: false
         type: string
 
@@ -66,7 +66,7 @@ jobs:
     env:
       OCTOWATCH_PUBLISH_TAG: ${{ github.event.inputs.publish_tag != '' && github.event.inputs.publish_tag || needs.release-please.outputs.release_tag }}
       OCTOWATCH_PUBLISH_VERSION: ${{ github.event.inputs.publish_version != '' && github.event.inputs.publish_version || needs.release-please.outputs.release_version }}
-      OCTOWATCH_PUBLISH_REF: ${{ github.event.inputs.publish_tag != '' && (github.event.inputs.publish_ref != '' && github.event.inputs.publish_ref || github.event.inputs.publish_tag) || needs.release-please.outputs.release_sha }}
+      OCTOWATCH_PUBLISH_REF: ${{ github.event.inputs.publish_tag != '' && (github.event.inputs.publish_ref != '' && github.event.inputs.publish_ref || github.sha) || needs.release-please.outputs.release_sha }}
 
     steps:
       - name: Check out repository
