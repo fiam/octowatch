@@ -12,11 +12,30 @@ more context, and focuses on actionable pull requests, notifications,
 workflow runs, and security alerts without requiring a GitHub App or
 webhooks.
 
-## Screenshots
+Website: [octowatch.app](https://octowatch.app)
+
+## Requirements
+
+- macOS 26 or newer
+- Swift 6.2+
+- XcodeGen for local Xcode project generation
+
+## Install
+
+Published releases are universal (`arm64` + `x86_64`), Developer ID
+signed, notarized, and support Sparkle in-app updates.
+
+- Direct download: [octowatch.app](https://octowatch.app)
+- GitHub Releases: <https://github.com/fiam/octowatch/releases>
+- Homebrew:
+
+```bash
+brew install --cask fiam/tap/octowatch
+```
+
+## Screenshot
 
 ![Octowatch main window](docs/images/readme-main-window.png)
-
-![Octowatch first-run setup](docs/images/readme-onboarding.png)
 
 ## What It Does
 
@@ -68,25 +87,6 @@ Repository coverage follows GitHub notifications:
   notifications and Octowatch will stay silent about that repository too
 - ignoring an item in Octowatch only hides it in Octowatch; it does not
   change your notification settings for that repository on GitHub
-
-## Requirements
-
-- macOS 26 or newer
-- Swift 6.2+
-- XcodeGen for local Xcode project generation
-
-## Install
-
-Published releases are universal (`arm64` + `x86_64`), Developer ID
-signed, notarized, and support Sparkle in-app updates.
-
-- Direct download: [octowatch.app](https://octowatch.app) or
-  [GitHub Releases](https://github.com/fiam/octowatch/releases)
-- Homebrew:
-
-```bash
-brew install --cask fiam/tap/octowatch
-```
 
 ## Getting Started
 
