@@ -236,7 +236,7 @@ if [[ "$SPARKLE_APPCAST" == "true" ]]; then
   appcast_args=(
     --download-url-prefix "$DOWNLOAD_URL_PREFIX"
     --link "https://octowatch.app"
-    -o "$APPCAST_NAME"
+    -o "$DIST_DIR/$APPCAST_NAME"
     "$APPCAST_DIR"
   )
 
@@ -245,7 +245,6 @@ if [[ "$SPARKLE_APPCAST" == "true" ]]; then
       --ed-key-file - \
       "${appcast_args[@]}"
 
-  cp "$APPCAST_DIR/$APPCAST_NAME" "$DIST_DIR/$APPCAST_NAME"
 fi
 
 "$ROOT_DIR/scripts/build-dmg.sh" \
