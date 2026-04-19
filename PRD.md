@@ -1,7 +1,7 @@
 # Octowatch — Product Requirements Document
 
 ## Vision
-A native macOS menu-bar app that surfaces GitHub work items requiring
+A macOS menu-bar app that surfaces GitHub work items requiring
 your attention, so nothing slips through the cracks without drowning you
 in noise.
 

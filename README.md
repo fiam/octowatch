@@ -4,7 +4,7 @@
 
 # Octowatch
 
-Octowatch is a native macOS app that watches GitHub and pulls the work
+Octowatch is a macOS app that watches GitHub and pulls the work
 that needs your attention into one place.
 
 It lives in the menu bar, opens into a full triage window when you need
@@ -85,7 +85,7 @@ signed, notarized, and support Sparkle in-app updates.
 - Homebrew:
 
 ```bash
-brew install --cask fiam/octowatch/octowatch
+brew install --cask fiam/tap/octowatch
 ```
 
 ## Getting Started

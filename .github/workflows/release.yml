@@ -165,7 +165,7 @@ jobs:
       - name: Publish Homebrew tap
         env:
           OCTOWATCH_REPOSITORY: ${{ github.repository }}
-          OCTOWATCH_HOMEBREW_TAP_REPOSITORY: fiam/homebrew-octowatch
+          OCTOWATCH_HOMEBREW_TAP_REPOSITORY: fiam/homebrew-tap
           OCTOWATCH_HOMEBREW_TAP_SSH_KEY: ${{ env.OCTOWATCH_HOMEBREW_TAP_SSH_KEY }}
         run: |
           ./scripts/publish-homebrew-tap.sh \

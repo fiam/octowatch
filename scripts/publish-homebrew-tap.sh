@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TAP_REPOSITORY="${OCTOWATCH_HOMEBREW_TAP_REPOSITORY:-fiam/homebrew-octowatch}"
+TAP_REPOSITORY="${OCTOWATCH_HOMEBREW_TAP_REPOSITORY:-fiam/homebrew-tap}"
 APP_REPOSITORY="${OCTOWATCH_REPOSITORY:-fiam/octowatch}"
 SSH_KEY_PATH="${OCTOWATCH_HOMEBREW_TAP_SSH_KEY:-}"
 GIT_AUTHOR_NAME="${OCTOWATCH_HOMEBREW_TAP_GIT_NAME:-github-actions[bot]}"
@@ -64,13 +64,10 @@ git clone "git@github.com:${TAP_REPOSITORY}.git" "$TAP_DIR"
 
 mkdir -p "$TAP_DIR/Casks"
 cp "$CASK_PATH" "$TAP_DIR/Casks/octowatch.rb"
-OCTOWATCH_REPOSITORY="$APP_REPOSITORY" \
-OCTOWATCH_HOMEBREW_TAP_REPOSITORY="$TAP_REPOSITORY" \
-  "$ROOT_DIR/scripts/generate-homebrew-tap-readme.sh" > "$TAP_DIR/README.md"
 
 git -C "$TAP_DIR" config user.name "$GIT_AUTHOR_NAME"
 git -C "$TAP_DIR" config user.email "$GIT_AUTHOR_EMAIL"
-git -C "$TAP_DIR" add README.md Casks/octowatch.rb
+git -C "$TAP_DIR" add Casks/octowatch.rb
 
 if git -C "$TAP_DIR" diff --cached --quiet; then
   echo "homebrew tap already up to date"

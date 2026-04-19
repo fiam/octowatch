@@ -3235,6 +3235,8 @@ private struct LaunchFixture {
             return offlineStartupFixture
         case "readme-demo":
             return readmeDemoFixture
+        case "website-demo":
+            return websiteDemoFixture
         default:
             return nil
         }
@@ -3711,6 +3713,251 @@ private struct LaunchFixture {
             pullRequestFocusesBySubjectKey: [subjectKey: reviewFocus],
             autoMarkReadSetting: .threeSeconds,
             lastUpdated: now.addingTimeInterval(-18),
+            lastError: nil,
+            connectivityStatus: .online,
+            gitHubCLIAvailable: true,
+            gitHubCLIAuthStatus: .ready,
+            personalAccessTokenAuthStatus: .unavailable,
+            storesPersonalAccessTokenInKeychain: true,
+            usingGitHubCLIToken: true,
+            usingKeychainStoredPersonalAccessToken: false,
+            hasCompletedInitialSetup: true,
+            hasPendingGitHubCLIToken: false
+        )
+    }
+
+    private static var websiteDemoFixture: LaunchFixture {
+        let now = Date()
+        let repository = "OctoCorp/octowatch"
+        let reference = PullRequestReference(
+            owner: "OctoCorp",
+            name: "octowatch",
+            number: 128
+        )
+        let subjectKey = reference.pullRequestURL.absoluteString
+        let author = AttentionActor(
+            login: "product-designer",
+            avatarURL: URL(string: "https://avatars.githubusercontent.com/u/9919?v=4")
+        )
+        let merger = AttentionActor(
+            login: "launch-operator",
+            avatarURL: URL(string: "https://avatars.githubusercontent.com/u/1296269?v=4")
+        )
+        let reviewer = AttentionActor(
+            login: "octowatch-user",
+            avatarURL: URL(string: "https://avatars.githubusercontent.com/u/1342004?v=4")
+        )
+        let automation = AttentionActor(
+            login: "deploy-bot[bot]",
+            avatarURL: URL(string: "https://avatars.githubusercontent.com/u/49699333?v=4"),
+            isBot: true
+        )
+
+        let mergedItem = AttentionItem(
+            id: "fixture-website-pr",
+            subjectKey: subjectKey,
+            stream: .pullRequests,
+            type: .reviewApproved,
+            focusType: .reviewApproved,
+            title: "Ship the launch-ready website refresh",
+            subtitle: "\(repository) · Review approved",
+            repository: repository,
+            labels: [
+                GitHubLabel(name: "launch", colorHex: "7c3aed", description: "Launch work"),
+                GitHubLabel(name: "website", colorHex: "1f6feb", description: "Marketing site"),
+                GitHubLabel(name: "distribution", colorHex: "238636", description: "Release setup")
+            ],
+            timestamp: now.addingTimeInterval(-900),
+            url: reference.pullRequestURL,
+            actor: reviewer,
+            subjectResolution: .merged,
+            detail: AttentionDetail(
+                why: AttentionWhy(
+                    summary: "This pull request was merged and its post-merge work succeeded.",
+                    detail: "The launch site is live and the follow-up distribution job completed."
+                ),
+                evidence: [
+                    AttentionEvidence(
+                        id: "repository",
+                        title: "Repository",
+                        detail: repository,
+                        iconName: "shippingbox",
+                        url: URL(string: "https://github.com/\(repository)")!
+                    )
+                ],
+                updates: [
+                    AttentionUpdate(
+                        id: "fixture-website-update-merged",
+                        type: .pullRequestStateChanged,
+                        title: "Merged",
+                        detail: "The launch site refresh landed in main.",
+                        timestamp: now.addingTimeInterval(-900),
+                        actor: merger,
+                        url: reference.pullRequestURL
+                    ),
+                    AttentionUpdate(
+                        id: "fixture-website-update-deploy",
+                        type: .workflowSucceeded,
+                        title: "Build succeeded",
+                        detail: "Release packaging",
+                        timestamp: now.addingTimeInterval(-660),
+                        actor: automation,
+                        url: reference.checksURL
+                    )
+                ],
+                actions: AttentionAction.pullRequestActions(
+                    reference: reference,
+                    mode: .participating,
+                    checkSummary: PullRequestCheckSummary(
+                        passedCount: 5,
+                        skippedCount: 0,
+                        failedCount: 0,
+                        pendingCount: 0
+                    ),
+                    hasNewCommits: false,
+                    hasPrimaryMutationAction: false
+                )
+            ),
+            currentUpdateTypes: [.workflowSucceeded],
+            currentRelationshipTypes: [.reviewApproved],
+            isUnread: true
+        )
+
+        let mergedFocus = PullRequestFocus(
+            reference: reference,
+            baseBranch: "main",
+            sourceType: .reviewApproved,
+            mode: .participating,
+            resolution: .merged,
+            mergedAt: now.addingTimeInterval(-950),
+            author: author,
+            labels: mergedItem.labels,
+            headerFacts: PullRequestHeaderFact.build(
+                sourceType: .reviewApproved,
+                resolution: .merged,
+                sourceActor: reviewer,
+                author: author,
+                assigner: nil,
+                latestApprover: reviewer,
+                approvalCount: 1,
+                mergedBy: merger
+            ),
+            contextBadges: [
+                PullRequestContextBadge(
+                    id: "merged",
+                    title: "Merged",
+                    iconName: "checkmark.circle.fill",
+                    accent: .resolved
+                )
+            ],
+            descriptionHTML: """
+                <p>Refresh the launch site so the app screenshot, GitHub trust
+                signals, and install path all fit above the fold.</p>
+                <ul>
+                  <li>Lead with a full-window product shot.</li>
+                  <li>Show GitHub stars and release state immediately.</li>
+                  <li>Keep Homebrew install instructions visible in the hero.</li>
+                </ul>
+                """,
+            statusSummary: PullRequestStatusSummary.build(
+                mode: .participating,
+                resolution: .merged,
+                checkSummary: PullRequestCheckSummary(
+                    passedCount: 5,
+                    skippedCount: 0,
+                    failedCount: 0,
+                    pendingCount: 0
+                ),
+                openThreadCount: 0,
+                reviewMergeAction: nil
+            ),
+            postMergeWorkflowPreview: PullRequestPostMergeWorkflowPreview(
+                mode: .observed(branch: "main"),
+                workflows: [
+                    PullRequestPostMergeWorkflow(
+                        id: "release-packaging",
+                        title: "Release packaging",
+                        url: URL(string: "https://github.com/\(repository)/actions/runs/9001")!,
+                        status: .succeeded,
+                        timestamp: now.addingTimeInterval(-620)
+                    )
+                ],
+                evaluationIssues: []
+            ),
+            sections: [],
+            timeline: [],
+            actions: AttentionAction.pullRequestActions(
+                reference: reference,
+                mode: .participating,
+                checkSummary: PullRequestCheckSummary(
+                    passedCount: 5,
+                    skippedCount: 0,
+                    failedCount: 0,
+                    pendingCount: 0
+                ),
+                hasNewCommits: false,
+                hasPrimaryMutationAction: false
+            ),
+            readyForReviewAction: nil,
+            reviewMergeAction: nil,
+            emptyStateTitle: "No further work left on this pull request",
+            emptyStateDetail: "The launch refresh merged cleanly and the release workflow finished."
+        )
+
+        let workflowItem = AttentionItem(
+            id: "fixture-website-workflow",
+            subjectKey: "https://github.com/\(repository)/actions/runs/9112",
+            type: .workflowApprovalRequired,
+            title: "Approve staged release promotion",
+            subtitle: "\(repository) · Workflow waiting for approval",
+            repository: repository,
+            timestamp: now.addingTimeInterval(-1_200),
+            url: URL(string: "https://github.com/\(repository)/actions/runs/9112")!,
+            actor: automation,
+            isUnread: true
+        )
+
+        let notificationItem = AttentionItem(
+            id: "fixture-website-comment",
+            subjectKey: "https://github.com/OctoCorp/payment-gateway/pull/94",
+            stream: .pullRequests,
+            type: .comment,
+            title: "Clarify checkout retry behavior",
+            subtitle: "OctoCorp/payment-gateway · New review comment",
+            repository: "OctoCorp/payment-gateway",
+            timestamp: now.addingTimeInterval(-4_800),
+            url: URL(string: "https://github.com/OctoCorp/payment-gateway/pull/94")!,
+            actor: reviewer,
+            isUnread: false
+        )
+
+        let draftItem = AttentionItem(
+            id: "fixture-website-draft",
+            subjectKey: "https://github.com/OctoCorp/octowatch/pull/121",
+            stream: .pullRequests,
+            type: .authoredPullRequest,
+            title: "Draft: simplify the menu bar glance view",
+            subtitle: "\(repository) · Draft · Created by you",
+            repository: repository,
+            timestamp: now.addingTimeInterval(-8_400),
+            url: URL(string: "https://github.com/\(repository)/pull/121")!,
+            actor: author,
+            isDraft: true,
+            isUnread: false
+        )
+
+        return LaunchFixture(
+            token: "ui-test-token",
+            login: "octowatch-user",
+            attentionItems: [
+                mergedItem,
+                workflowItem,
+                notificationItem,
+                draftItem
+            ],
+            pullRequestFocusesBySubjectKey: [subjectKey: mergedFocus],
+            autoMarkReadSetting: .threeSeconds,
+            lastUpdated: now.addingTimeInterval(-22),
             lastError: nil,
             connectivityStatus: .online,
             gitHubCLIAvailable: true,
