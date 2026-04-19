@@ -26,6 +26,8 @@ on:
 permissions:
   contents: write
   issues: write
+  id-token: write
+  pages: write
   pull-requests: write
 
 concurrency:
@@ -171,13 +173,21 @@ jobs:
           gh release upload "${{ env.OCTOWATCH_PUBLISH_TAG }}" \
             dist/Octowatch-${{ env.OCTOWATCH_PUBLISH_VERSION }}.dmg \
             dist/Octowatch-${{ env.OCTOWATCH_PUBLISH_VERSION }}.zip \
-            dist/Octowatch.dmg \
-            dist/Octowatch.zip \
-            dist/appcast.xml \
             dist/octowatch.rb \
             dist/checksums.txt \
-            dist/release-metadata.json \
             --clobber
+
+      - name: Prepare Pages artifact
+        run: |
+          rm -rf .pages-dist
+          mkdir -p .pages-dist
+          cp -R website/. .pages-dist/
+          cp dist/appcast.xml .pages-dist/appcast.xml
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: .pages-dist
 
       - name: Publish Homebrew tap
         env:
@@ -198,9 +208,23 @@ jobs:
             echo
             echo "- Tag: \`${{ env.OCTOWATCH_PUBLISH_TAG }}\`"
             echo "- Version: \`${{ env.OCTOWATCH_PUBLISH_VERSION }}\`"
-            echo "- Artifacts: signed universal app, notarized DMG, Sparkle appcast, Homebrew tap cask"
+            echo "- Artifacts: signed universal app, notarized DMG, Pages appcast, Homebrew tap cask"
             echo
             echo '```text'
             cat dist/checksums.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-pages:
+    name: Deploy Pages
+    needs: publish-release
+    if: ${{ needs.publish-release.result == 'success' }}
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

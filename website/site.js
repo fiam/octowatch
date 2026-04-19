@@ -13,7 +13,7 @@ const repoStars = document.getElementById("repo-stars");
 const starsLink = document.getElementById("stars-link");
 
 function preferredAsset(assets, exactName, suffix) {
-  return assets.find((asset) => asset.name === exactName) ??
+  return (exactName ? assets.find((asset) => asset.name === exactName) : null) ??
     assets.find((asset) => asset.name.endsWith(suffix));
 }
 
@@ -73,8 +73,8 @@ async function loadLatestRelease() {
 
     const release = await response.json();
     const assets = release.assets ?? [];
-    const dmg = preferredAsset(assets, "Octowatch.dmg", ".dmg");
-    const zip = preferredAsset(assets, "Octowatch.zip", ".zip");
+    const dmg = preferredAsset(assets, null, ".dmg");
+    const zip = preferredAsset(assets, null, ".zip");
 
     if (!dmg && !zip) {
       useReleaseFallback("");

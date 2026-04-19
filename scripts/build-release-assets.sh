@@ -7,7 +7,6 @@ VERSION="${1:-}"
 RELEASE_TAG="${OCTOWATCH_RELEASE_TAG:-v$VERSION}"
 REPOSITORY="${OCTOWATCH_REPOSITORY:-fiam/octowatch}"
 DOWNLOAD_URL_PREFIX="${OCTOWATCH_DOWNLOAD_URL_PREFIX:-https://github.com/$REPOSITORY/releases/download/$RELEASE_TAG}"
-LATEST_DOWNLOAD_URL_PREFIX="${OCTOWATCH_LATEST_DOWNLOAD_URL_PREFIX:-https://github.com/$REPOSITORY/releases/latest/download}"
 BUILD_NUMBER="${OCTOWATCH_BUILD_NUMBER:-1}"
 
 if [[ -z "$VERSION" ]]; then
@@ -37,8 +36,6 @@ APPCAST_DIR="$DIST_DIR/appcast"
 SPARKLE_TOOLS_DIR="$ROOT_DIR/.sparkle-tools"
 VERSIONED_ZIP_NAME="Octowatch-${VERSION}.zip"
 VERSIONED_DMG_NAME="Octowatch-${VERSION}.dmg"
-LATEST_ZIP_NAME="Octowatch.zip"
-LATEST_DMG_NAME="Octowatch.dmg"
 NOTARY_SUBMISSION_ZIP_NAME=".Octowatch-notary-submit.zip"
 CASK_NAME="octowatch.rb"
 APPCAST_NAME="appcast.xml"
@@ -257,9 +254,6 @@ if [[ "$NOTARIZED_RELEASE" == "true" ]]; then
   xcrun stapler staple "$DIST_DIR/$VERSIONED_DMG_NAME"
 fi
 
-cp "$DIST_DIR/$VERSIONED_ZIP_NAME" "$DIST_DIR/$LATEST_ZIP_NAME"
-cp "$DIST_DIR/$VERSIONED_DMG_NAME" "$DIST_DIR/$LATEST_DMG_NAME"
-
 DMG_SHA256="$(shasum -a 256 "$DIST_DIR/$VERSIONED_DMG_NAME" | awk '{print $1}')"
 OCTOWATCH_HOMEBREW_CASK_VERSION="$VERSION" \
 OCTOWATCH_HOMEBREW_CASK_SHA256="$DMG_SHA256" \
@@ -269,8 +263,6 @@ OCTOWATCH_HOMEBREW_CASK_URL="$DOWNLOAD_URL_PREFIX/$VERSIONED_DMG_NAME" \
 checksum_inputs=(
   "$VERSIONED_ZIP_NAME"
   "$VERSIONED_DMG_NAME"
-  "$LATEST_ZIP_NAME"
-  "$LATEST_DMG_NAME"
   "$CASK_NAME"
 )
 
@@ -294,11 +286,8 @@ cat > "$DIST_DIR/release-metadata.json" <<EOF
   "notarized": $NOTARIZED_RELEASE,
   "zip": "$VERSIONED_ZIP_NAME",
   "dmg": "$VERSIONED_DMG_NAME",
-  "latestZip": "$LATEST_ZIP_NAME",
-  "latestDmg": "$LATEST_DMG_NAME",
   "homebrewCask": "$CASK_NAME",
-  "downloadURLPrefix": "$DOWNLOAD_URL_PREFIX",
-  "latestDownloadURLPrefix": "$LATEST_DOWNLOAD_URL_PREFIX"
+  "downloadURLPrefix": "$DOWNLOAD_URL_PREFIX"
 }
 EOF
 
