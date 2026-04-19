@@ -215,13 +215,15 @@ struct AttentionWindowView: View {
         .toolbar {
             if !selectionActionItems.isEmpty, model.hasToken {
                 ToolbarItemGroup {
-                    Button {
-                        openSelection(selectionActionItems)
-                    } label: {
-                        Label("Open", systemImage: "safari")
+                    if shouldShowSelectionOpenToolbarButton {
+                        Button {
+                            openSelection(selectionActionItems)
+                        } label: {
+                            Label("Open", systemImage: "safari")
+                        }
+                        .appToolbarHover()
+                        .help(selectionActionItems.count == 1 ? "Open on GitHub" : "Open selected items on GitHub")
                     }
-                    .appToolbarHover()
-                    .help(selectionActionItems.count == 1 ? "Open on GitHub" : "Open selected items on GitHub")
 
                     if showsReadActions {
                         Button {
@@ -254,6 +256,20 @@ struct AttentionWindowView: View {
                     }
                     .appToolbarHover()
                     .help(selectionActionItems.count == 1 ? selectionActionItems[0].ignoreActionTitle : "Ignore selected items")
+                }
+            }
+
+            if !pullRequestToolbarActions.isEmpty, model.hasToken {
+                ToolbarItemGroup(placement: .principal) {
+                    ForEach(pullRequestToolbarActions) { action in
+                        Button {
+                            openURL(action.url)
+                        } label: {
+                            Label(action.title, systemImage: action.iconName)
+                        }
+                        .appToolbarHover()
+                        .help(action.title)
+                    }
                 }
             }
 
@@ -505,6 +521,22 @@ struct AttentionWindowView: View {
 
     private var showsReadActions: Bool {
         selectionActionItems.contains(where: \.supportsReadState)
+    }
+
+    private var pullRequestToolbarActions: [AttentionAction] {
+        guard
+            let item = selectedItem,
+            item.pullRequestReference != nil,
+            case let .loaded(focus) = pullRequestFocusState
+        else {
+            return []
+        }
+
+        return focus.actions.filter(\.prefersToolbarPlacementInPullRequestFocus)
+    }
+
+    private var shouldShowSelectionOpenToolbarButton: Bool {
+        pullRequestToolbarActions.isEmpty
     }
 
     private var hasVisibleToasts: Bool {
@@ -2557,6 +2589,17 @@ private enum PullRequestReadyForReviewState: Equatable {
     case failed(String)
 }
 
+private extension AttentionAction {
+    var prefersToolbarPlacementInPullRequestFocus: Bool {
+        switch id {
+        case "view-pr", "open-files", "open-checks", "open-commits":
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 private struct AttentionSidebarRow: View {
     let item: AttentionItem
     let viewerLogin: String?
@@ -3364,6 +3407,28 @@ private struct PullRequestFocusView: View {
         return displayedMergeOutcome == nil && reviewMergeAction.needsMergeMethodSelection
     }
 
+    private var showsStatusSummaryReviewMergeAction: Bool {
+        guard let reviewMergeAction = focus.reviewMergeAction else {
+            return false
+        }
+
+        return focus.statusSummary != nil &&
+            !showsReadyForReviewAction &&
+            displayedMergeOutcome == nil &&
+            reviewMergeAction.isEnabled &&
+            resolvedReviewMergeMethod != nil
+    }
+
+    private var showsInlineReviewMergeAction: Bool {
+        guard focus.reviewMergeAction != nil else {
+            return false
+        }
+
+        return !showsReadyForReviewAction &&
+            focus.statusSummary == nil &&
+            displayedMergeOutcome == nil
+    }
+
     private var reviewMergeButtonTitle: String {
         guard let reviewMergeAction = focus.reviewMergeAction else {
             return ""
@@ -3396,6 +3461,66 @@ private struct PullRequestFocusView: View {
         focus.displayedContextBadges(excluding: sourceItem.type)
     }
 
+    private var inlineActions: [AttentionAction] {
+        focus.actions.filter { !$0.prefersToolbarPlacementInPullRequestFocus }
+    }
+
+    private var reviewMergeStatusCardActionView: AnyView? {
+        guard
+            showsStatusSummaryReviewMergeAction,
+            let reviewMergeAction = focus.reviewMergeAction
+        else {
+            return nil
+        }
+
+        return AnyView(reviewMergeStatusAction(reviewMergeAction: reviewMergeAction))
+    }
+
+    private var showsTopActionControls: Bool {
+        showsReadyForReviewAction ||
+            showsInlineReviewMergeAction ||
+            !inlineActions.isEmpty
+    }
+
+    private var topActionSupportingMessage: String? {
+        if let readyForReviewAction = focus.readyForReviewAction,
+           showsReadyForReviewAction,
+           let disabledReason = readyForReviewAction.disabledReason,
+           !readyForReviewAction.isEnabled {
+            return disabledReason
+        }
+
+        if case let .failed(message) = readyForReviewState {
+            return message
+        }
+
+        if case let .failed(message) = reviewMergeState {
+            return message
+        }
+
+        if focus.statusSummary == nil,
+           let reviewMergeAction = focus.reviewMergeAction,
+           !showsTerminalReviewMergeAction,
+           let disabledReason = reviewMergeAction.disabledReason,
+           !reviewMergeAction.isEnabled {
+            return disabledReason
+        }
+
+        return nil
+    }
+
+    private var topActionSupportingMessageIsFailure: Bool {
+        if case .failed = readyForReviewState {
+            return true
+        }
+
+        if case .failed = reviewMergeState {
+            return true
+        }
+
+        return false
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             if !displayedContextBadges.isEmpty {
@@ -3408,124 +3533,110 @@ private struct PullRequestFocusView: View {
                 }
             }
 
-            if focus.reviewMergeAction != nil || !focus.actions.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
-                        if let readyForReviewAction = focus.readyForReviewAction,
-                           showsReadyForReviewAction {
-                            Button {
-                                onPerformReadyForReview()
-                            } label: {
-                                readyForReviewButtonLabel(readyForReviewAction: readyForReviewAction)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(!isReadyForReviewActionInteractive)
-                            .modifier(
-                                ConditionalInteractiveHoverModifier(
-                                    isEnabled: isReadyForReviewActionInteractive
+            if showsTopActionControls || topActionSupportingMessage != nil {
+                if showsTopActionControls {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            if let readyForReviewAction = focus.readyForReviewAction,
+                               showsReadyForReviewAction {
+                                Button {
+                                    onPerformReadyForReview()
+                                } label: {
+                                    readyForReviewButtonLabel(readyForReviewAction: readyForReviewAction)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(!isReadyForReviewActionInteractive)
+                                .modifier(
+                                    ConditionalInteractiveHoverModifier(
+                                        isEnabled: isReadyForReviewActionInteractive
+                                    )
                                 )
-                            )
-                            .help("Mark this draft pull request ready for review")
-                            .accessibilityIdentifier("ready-for-review-button")
-                        }
+                                .help("Mark this draft pull request ready for review")
+                                .accessibilityIdentifier("ready-for-review-button")
+                            }
 
-                        if let reviewMergeAction = focus.reviewMergeAction,
-                           !showsReadyForReviewAction {
-                            if shouldShowMergeMethodSelector {
-                                Menu {
-                                    ForEach(reviewMergeAction.allowedMergeMethods, id: \.self) { method in
-                                        Button {
-                                            selectMergeMethod(method)
-                                        } label: {
-                                            if resolvedReviewMergeMethod == method {
-                                                Label(method.selectorTitle, systemImage: "checkmark")
-                                            } else {
-                                                Text(method.selectorTitle)
+                            if let reviewMergeAction = focus.reviewMergeAction,
+                               showsInlineReviewMergeAction {
+                                if shouldShowMergeMethodSelector {
+                                    Menu {
+                                        ForEach(reviewMergeAction.allowedMergeMethods, id: \.self) { method in
+                                            Button {
+                                                selectMergeMethod(method)
+                                            } label: {
+                                                if resolvedReviewMergeMethod == method {
+                                                    Label(method.selectorTitle, systemImage: "checkmark")
+                                                } else {
+                                                    Text(method.selectorTitle)
+                                                }
                                             }
                                         }
+                                    } label: {
+                                        reviewMergeButtonLabel(reviewMergeAction: reviewMergeAction)
+                                    } primaryAction: {
+                                        onPerformReviewMerge(resolvedReviewMergeMethod)
                                     }
-                                } label: {
-                                    reviewMergeButtonLabel(reviewMergeAction: reviewMergeAction)
-                                } primaryAction: {
-                                    onPerformReviewMerge(resolvedReviewMergeMethod)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(reviewMergeButtonTint)
-                                .disabled(!isReviewMergeActionInteractive)
-                                .modifier(
-                                    ConditionalInteractiveHoverModifier(
-                                        isEnabled: isReviewMergeActionInteractive
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(reviewMergeButtonTint)
+                                    .disabled(!isReviewMergeActionInteractive)
+                                    .modifier(
+                                        ConditionalInteractiveHoverModifier(
+                                            isEnabled: isReviewMergeActionInteractive
+                                        )
                                     )
-                                )
-                                .help("Merge this pull request or choose a different merge method")
-                            } else {
-                                Button {
-                                    onPerformReviewMerge(resolvedReviewMergeMethod)
-                                } label: {
-                                    reviewMergeButtonLabel(reviewMergeAction: reviewMergeAction)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(reviewMergeButtonTint)
-                                .disabled(!isReviewMergeActionInteractive)
-                                .modifier(
-                                    ConditionalInteractiveHoverModifier(
-                                        isEnabled: isReviewMergeActionInteractive
+                                    .help("Merge this pull request or choose a different merge method")
+                                } else {
+                                    Button {
+                                        onPerformReviewMerge(resolvedReviewMergeMethod)
+                                    } label: {
+                                        reviewMergeButtonLabel(reviewMergeAction: reviewMergeAction)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(reviewMergeButtonTint)
+                                    .disabled(!isReviewMergeActionInteractive)
+                                    .modifier(
+                                        ConditionalInteractiveHoverModifier(
+                                            isEnabled: isReviewMergeActionInteractive
+                                        )
                                     )
-                                )
+                                }
                             }
-                        }
 
-                        ForEach(focus.actions) { action in
-                            if action.isPrimary {
-                                Button {
-                                    onOpenURL(action.url)
-                                } label: {
-                                    Label(action.title, systemImage: action.iconName)
+                            ForEach(inlineActions) { action in
+                                if action.isPrimary {
+                                    Button {
+                                        onOpenURL(action.url)
+                                    } label: {
+                                        Label(action.title, systemImage: action.iconName)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(action.id == "merge" ? .green : nil)
+                                    .appInteractiveHover()
+                                } else {
+                                    Button {
+                                        onOpenURL(action.url)
+                                    } label: {
+                                        Label(action.title, systemImage: action.iconName)
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .appInteractiveHover()
                                 }
-                                .buttonStyle(.borderedProminent)
-                                .tint(action.id == "merge" ? .green : nil)
-                                .appInteractiveHover()
-                            } else {
-                                Button {
-                                    onOpenURL(action.url)
-                                } label: {
-                                    Label(action.title, systemImage: action.iconName)
-                                }
-                                .buttonStyle(.bordered)
-                                .appInteractiveHover()
                             }
                         }
                     }
                 }
 
-                if let readyForReviewAction = focus.readyForReviewAction,
-                   showsReadyForReviewAction,
-                   let disabledReason = readyForReviewAction.disabledReason,
-                   !readyForReviewAction.isEnabled {
-                    Text(disabledReason)
+                if let topActionSupportingMessage {
+                    Text(topActionSupportingMessage)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else if case let .failed(message) = readyForReviewState {
-                    Text(message)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                } else if let reviewMergeAction = focus.reviewMergeAction {
-                    if case let .failed(message) = reviewMergeState {
-                        Text(message)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    } else if showsTerminalReviewMergeAction {
-                    } else if let disabledReason = reviewMergeAction.disabledReason,
-                        !reviewMergeAction.isEnabled {
-                        Text(disabledReason)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                        .foregroundStyle(topActionSupportingMessageIsFailure ? .red : .secondary)
                 }
             }
 
             if let statusSummary = focus.statusSummary, !showsTerminalReviewMergeAction {
-                PullRequestStatusSummaryCard(summary: statusSummary)
+                PullRequestStatusSummaryCard(
+                    summary: statusSummary,
+                    action: reviewMergeStatusCardActionView
+                )
             }
 
             if let postMergeWorkflowPreview = focus.postMergeWorkflowPreview {
@@ -3646,6 +3757,112 @@ private struct PullRequestFocusView: View {
                         ? "checkmark.circle.badge.questionmark"
                         : "checkmark.circle")
             )
+        }
+    }
+
+    @ViewBuilder
+    private func reviewMergeStatusAction(
+        reviewMergeAction: PullRequestReviewMergeAction
+    ) -> some View {
+        if shouldShowMergeMethodSelector {
+            Menu {
+                ForEach(reviewMergeAction.allowedMergeMethods, id: \.self) { method in
+                    Button {
+                        selectMergeMethod(method)
+                    } label: {
+                        if resolvedReviewMergeMethod == method {
+                            Label(method.selectorTitle, systemImage: "checkmark")
+                        } else {
+                            Text(method.selectorTitle)
+                        }
+                    }
+                }
+            } label: {
+                reviewMergeStatusActionLabel()
+            } primaryAction: {
+                onPerformReviewMerge(resolvedReviewMergeMethod)
+            }
+            .buttonStyle(.plain)
+            .disabled(!isReviewMergeActionInteractive)
+            .appLinkHover()
+            .help("Approve and merge this pull request or choose a different merge method")
+        } else {
+            Button {
+                onPerformReviewMerge(resolvedReviewMergeMethod)
+            } label: {
+                reviewMergeStatusActionLabel()
+            }
+            .buttonStyle(.plain)
+            .disabled(!isReviewMergeActionInteractive)
+            .appLinkHover()
+            .help("Approve and merge this pull request")
+        }
+    }
+
+    private func reviewMergeStatusActionLabel() -> some View {
+        HStack(spacing: 8) {
+            if reviewMergeState == .running {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(.white)
+            }
+
+            Text(reviewMergeStatusActionTitle)
+                .font(.subheadline.weight(.semibold))
+        }
+        .foregroundStyle(reviewMergeActionForegroundStyle)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(reviewMergeActionBackgroundStyle)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(reviewMergeActionBorderStyle, lineWidth: 1)
+        )
+    }
+
+    private var reviewMergeActionBackgroundStyle: Color {
+        reviewMergeButtonTint ?? .accentColor
+    }
+
+    private var reviewMergeActionBorderStyle: Color {
+        (reviewMergeButtonTint ?? .accentColor).opacity(0.55)
+    }
+
+    private var reviewMergeActionForegroundStyle: Color {
+        .white
+    }
+
+    private var reviewMergeStatusActionTitle: String {
+        if reviewMergeState == .running {
+            return focus.reviewMergeAction?.requiresApproval == true
+                ? "Approving…"
+                : "Merging…"
+        }
+
+        guard let reviewMergeAction = focus.reviewMergeAction else {
+            return "Merge"
+        }
+
+        guard let mergeMethod = resolvedReviewMergeMethod else {
+            return reviewMergeAction.requiresApproval ? "Approve & Merge" : "Merge"
+        }
+
+        switch (reviewMergeAction.requiresApproval, mergeMethod) {
+        case (true, .merge):
+            return "Approve & Merge"
+        case (true, .squash):
+            return "Approve & Squash"
+        case (true, .rebase):
+            return "Approve & Rebase"
+        case (false, .merge):
+            return "Merge"
+        case (false, .squash):
+            return "Squash Merge"
+        case (false, .rebase):
+            return "Rebase Merge"
         }
     }
 
@@ -3774,6 +3991,7 @@ private struct ActorLinkLabel: View {
 
 private struct PullRequestStatusSummaryCard: View {
     let summary: PullRequestStatusSummary
+    let action: AnyView?
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -3784,12 +4002,22 @@ private struct PullRequestStatusSummaryCard: View {
                 .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 8) {
-                Text(summary.title)
-                    .font(.headline)
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(summary.title)
+                            .font(.headline)
 
-                Text(summary.detail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                        Text(summary.detail)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 12)
+
+                    if let action {
+                        action
+                    }
+                }
             }
         }
         .padding(20)
