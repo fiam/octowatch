@@ -321,15 +321,9 @@ struct GitHubClient {
             observer: observer
         )
 
-        async let pullRequestsTask = fetchAssignedPullRequests(
+        async let pollSnapshotTask = fetchPollSnapshot(
             token: token,
             login: login,
-            observer: observer
-        )
-        async let openAuthoredPullRequestsTask = searchIssueItems(
-            token: token,
-            query: "is:open is:pr author:\(login) archived:false",
-            perPage: max(authoredPullRequestLimit, trackedPullRequestLimit),
             observer: observer
         )
         async let notificationsTask = fetchActionableNotifications(
@@ -340,29 +334,13 @@ struct GitHubClient {
             observer: observer
         )
 
-        let openAuthoredPullRequests = try await openAuthoredPullRequestsTask
-        async let trackedPullRequestsTask = fetchTrackedPullRequests(
-            token: token,
-            login: login,
-            openAuthoredIssues: openAuthoredPullRequests,
-            observer: observer
-        )
-        async let authoredPullRequestSignalsTask = fetchAuthoredPullRequestSignals(
-            token: token,
-            login: login,
-            openAuthoredIssues: openAuthoredPullRequests,
-            observer: observer
-        )
-
-        let pullRequests = try await pullRequestsTask
-        let trackedPullRequests = try await trackedPullRequestsTask
-        let authoredPullRequestSignals = try await authoredPullRequestSignalsTask
+        let pollSnapshot = try await pollSnapshotTask
         let notificationFetch = try await notificationsTask
 
         let workflowCandidates = workflowWatchCandidates(
-            assignedPullRequests: pullRequests,
-            trackedPullRequests: trackedPullRequests,
-            openAuthoredIssues: openAuthoredPullRequests
+            assignedPullRequests: pollSnapshot.assignedPullRequests,
+            trackedPullRequests: pollSnapshot.trackedPullRequests,
+            openAuthoredPullRequests: pollSnapshot.openAuthoredPullRequests
         )
         workflowRunCache.pruneOlderThan(Date(timeIntervalSinceNow: -300))
         let workflowRuns = try await fetchWatchedWorkflowRuns(
@@ -374,9 +352,9 @@ struct GitHubClient {
         )
 
         let attentionItems = buildAttentionItems(
-            pullRequests: pullRequests,
-            trackedPullRequests: trackedPullRequests,
-            authoredPullRequestSignals: authoredPullRequestSignals,
+            pullRequests: pollSnapshot.assignedPullRequests,
+            trackedPullRequests: pollSnapshot.trackedPullRequests,
+            authoredPullRequestSignals: pollSnapshot.authoredPullRequestSignals,
             notifications: notificationFetch.notifications,
             actionRuns: workflowRuns,
             trackedIssues: []
@@ -2432,81 +2410,6 @@ struct GitHubClient {
         return String(collapsed.prefix(137)) + "..."
     }
 
-    private func fetchAssignedPullRequests(
-        token: String,
-        login: String,
-        observer: GitHubRateLimitObserver
-    ) async throws -> [PullRequestSummary] {
-        let summaries = try await searchPullRequests(
-            token: token,
-            query: "is:pr assignee:\(login) archived:false",
-            perPage: 40,
-            observer: observer
-        )
-
-        var byKey = [String: PullRequestSummary]()
-        for summary in summaries {
-            if let existing = byKey[summary.ignoreKey], existing.updatedAt >= summary.updatedAt {
-                continue
-            }
-
-            byKey[summary.ignoreKey] = summary
-        }
-
-        return byKey.values.sorted { $0.updatedAt > $1.updatedAt }
-    }
-
-    private func fetchTrackedPullRequests(
-        token: String,
-        login: String,
-        openAuthoredIssues: [IssueItem],
-        observer: GitHubRateLimitObserver
-    ) async throws -> [TrackedSubjectSummary] {
-        async let mergedAuthoredTask = searchTrackedSubjects(
-            token: token,
-            query: "is:merged is:pr author:\(login) archived:false",
-            type: .authoredPullRequest,
-            perPage: trackedPullRequestLimit,
-            observer: observer
-        )
-        async let reviewedTask = searchTrackedSubjects(
-            token: token,
-            query: "is:pr reviewed-by:\(login) archived:false",
-            type: .reviewedPullRequest,
-            perPage: trackedPullRequestLimit,
-            observer: observer
-        )
-        async let commentedTask = searchTrackedSubjects(
-            token: token,
-            query: "is:pr commenter:\(login) archived:false",
-            type: .commentedPullRequest,
-            perPage: trackedPullRequestLimit,
-            observer: observer
-        )
-
-        let authored = trackedSubjectSummaries(
-            from: openAuthoredIssues,
-            type: .authoredPullRequest,
-            resolution: .open
-        ) + (try await mergedAuthoredTask)
-        let reviewed = try await reviewedTask
-        let commented = try await commentedTask
-
-        let merged = try await enrichMergedTrackedPullRequests(
-            mergeTrackedSubjects(authored + reviewed + commented),
-            token: token,
-            login: login,
-            observer: observer
-        )
-
-        return try await enrichTrackedPullRequestSelfUpdates(
-            merged,
-            token: token,
-            login: login,
-            observer: observer
-        )
-    }
-
     private func classifyReviewRequests(
         from issues: [IssueItem],
         token: String,
@@ -2618,154 +2521,6 @@ struct GitHubClient {
         }
     }
 
-    private func searchTrackedSubjects(
-        token: String,
-        query: String,
-        type: AttentionItemType,
-        perPage: Int,
-        observer: GitHubRateLimitObserver
-    ) async throws -> [TrackedSubjectSummary] {
-        let issues = try await searchIssueItems(
-            token: token,
-            query: query,
-            perPage: perPage,
-            observer: observer
-        )
-
-        let summaries = trackedSubjectSummaries(from: issues, type: type)
-
-        var byKey = [String: TrackedSubjectSummary]()
-        for summary in summaries {
-            if let existing = byKey[summary.ignoreKey], existing.updatedAt >= summary.updatedAt {
-                continue
-            }
-
-            byKey[summary.ignoreKey] = summary
-        }
-
-        return Array(byKey.values)
-    }
-
-    private func enrichMergedTrackedPullRequests(
-        _ summaries: [TrackedSubjectSummary],
-        token: String,
-        login: String,
-        observer: GitHubRateLimitObserver
-    ) async throws -> [TrackedSubjectSummary] {
-        await withTaskGroup(of: (Int, TrackedSubjectSummary).self) { group in
-            for (index, summary) in summaries.enumerated() {
-                group.addTask {
-                    guard summary.resolution == .merged else {
-                        return (index, summary)
-                    }
-
-                    do {
-                        let repository = try self.parseRepositoryFullName(summary.repository)
-                        let state: PullRequestStateResponse = try await self.request(
-                            path: "/repos/\(repository.owner)/\(repository.name)/pulls/\(summary.number)",
-                            token: token,
-                            observer: observer
-                        )
-                        let mergedBy = self.attentionActor(from: state.mergedBy)
-
-                        return (
-                            index,
-                            TrackedSubjectSummary(
-                                id: summary.id,
-                                ignoreKey: summary.ignoreKey,
-                                type: summary.type,
-                                number: summary.number,
-                                title: summary.title,
-                                subtitle: self.mergedTrackedPullRequestSubtitle(
-                                    repository: summary.repository,
-                                    mergedBy: mergedBy,
-                                    currentLogin: login
-                                ),
-                                repository: summary.repository,
-                                labels: summary.labels,
-                                url: summary.url,
-                                updatedAt: state.mergedAt ?? summary.updatedAt,
-                                actor: mergedBy,
-                                isTriggeredByCurrentUser: summary.isTriggeredByCurrentUser,
-                                latestSelfUpdate: summary.latestSelfUpdate,
-                                isDraft: summary.isDraft,
-                                resolution: summary.resolution
-                            )
-                        )
-                    } catch {
-                        return (index, summary)
-                    }
-                }
-            }
-
-            var enriched = summaries
-            for await (index, summary) in group {
-                enriched[index] = summary
-            }
-
-            return enriched
-        }
-    }
-
-    private func enrichTrackedPullRequestSelfUpdates(
-        _ summaries: [TrackedSubjectSummary],
-        token: String,
-        login: String,
-        observer: GitHubRateLimitObserver
-    ) async throws -> [TrackedSubjectSummary] {
-        await withTaskGroup(of: (Int, TrackedSubjectSummary).self) { group in
-            for (index, summary) in summaries.enumerated() {
-                group.addTask {
-                    guard summary.type == .reviewedPullRequest else {
-                        return (index, summary)
-                    }
-
-                    do {
-                        let reviews = try await self.fetchPullRequestReviews(
-                            token: token,
-                            repository: summary.repository,
-                            number: summary.number,
-                            observer: observer
-                        )
-
-                        return (
-                            index,
-                            TrackedSubjectSummary(
-                                id: summary.id,
-                                ignoreKey: summary.ignoreKey,
-                                type: summary.type,
-                                number: summary.number,
-                                title: summary.title,
-                                subtitle: summary.subtitle,
-                                repository: summary.repository,
-                                labels: summary.labels,
-                                url: summary.url,
-                                updatedAt: summary.updatedAt,
-                                actor: summary.actor,
-                                isTriggeredByCurrentUser: summary.isTriggeredByCurrentUser,
-                                latestSelfUpdate: self.latestViewerReviewUpdate(
-                                    reviews: reviews,
-                                    login: login
-                                ),
-                                isDraft: summary.isDraft,
-                                resolution: summary.resolution
-                            )
-                        )
-                    } catch {
-                        return (index, summary)
-                    }
-                }
-            }
-
-            var enriched = summaries
-            for await (index, summary) in group {
-                enriched[index] = summary
-            }
-
-            return enriched
-        }
-    }
-
     private func mergedTrackedPullRequestSubtitle(
         repository: String,
         mergedBy: AttentionActor?,
@@ -2805,43 +2560,6 @@ struct GitHubClient {
         return components.joined(separator: " · ")
     }
 
-    private func searchPullRequests(
-        token: String,
-        query: String,
-        perPage: Int,
-        observer: GitHubRateLimitObserver
-    ) async throws -> [PullRequestSummary] {
-        let issues = try await searchIssueItems(
-            token: token,
-            query: query,
-            perPage: perPage,
-            observer: observer
-        )
-        return issues.compactMap { issue in
-            guard let repository = repositoryFullName(from: issue.repositoryURL) else {
-                return nil
-            }
-
-            return PullRequestSummary(
-                id: issue.id,
-                ignoreKey: issue.htmlURL.absoluteString,
-                number: issue.number,
-                title: issue.title,
-                subtitle: pullRequestSubtitle(
-                    number: issue.number,
-                    repository: repository,
-                    isDraft: issue.isDraft
-                ),
-                repository: repository,
-                labels: issue.labels.map(\.gitHubLabel),
-                url: issue.htmlURL,
-                updatedAt: issue.updatedAt,
-                isDraft: issue.isDraft,
-                resolution: issue.resolution
-            )
-        }
-    }
-
     private func mergeTrackedSubjects(_ subjects: [TrackedSubjectSummary]) -> [TrackedSubjectSummary] {
         var byKey = [String: TrackedSubjectSummary]()
 
@@ -2877,42 +2595,6 @@ struct GitHubClient {
         }
     }
 
-    private func fetchAuthoredPullRequestSignals(
-        token: String,
-        login: String,
-        openAuthoredIssues: [IssueItem],
-        observer: GitHubRateLimitObserver
-    ) async throws -> [AuthoredPullRequestSignalSummary] {
-        return await withTaskGroup(of: [AuthoredPullRequestSignalSummary].self) { group in
-            for issue in openAuthoredIssues.prefix(authoredPullRequestLimit) {
-                group.addTask {
-                    do {
-                        return try await buildAuthoredPullRequestSignals(
-                            token: token,
-                            login: login,
-                            issue: issue,
-                            observer: observer
-                        )
-                    } catch {
-                        return []
-                    }
-                }
-            }
-
-            var summaries = [AuthoredPullRequestSignalSummary]()
-            for await groupSummaries in group {
-                summaries.append(contentsOf: groupSummaries)
-            }
-
-            return summaries.sorted { lhs, rhs in
-                if lhs.updatedAt == rhs.updatedAt {
-                    return lhs.type.aggregateDisplayPriority > rhs.type.aggregateDisplayPriority
-                }
-                return lhs.updatedAt > rhs.updatedAt
-            }
-        }
-    }
-
     private func searchIssueItems(
         token: String,
         query: String,
@@ -2932,200 +2614,6 @@ struct GitHubClient {
         )
 
         return response.items
-    }
-
-    private func trackedSubjectSummaries(
-        from issues: [IssueItem],
-        type: AttentionItemType,
-        resolution: GitHubSubjectResolution? = nil
-    ) -> [TrackedSubjectSummary] {
-        issues.compactMap { issue in
-            guard let repository = repositoryFullName(from: issue.repositoryURL) else {
-                return nil
-            }
-
-            return TrackedSubjectSummary(
-                id: "\(repository)#\(issue.number)",
-                ignoreKey: issue.htmlURL.absoluteString,
-                type: type,
-                number: issue.number,
-                title: issue.title,
-                subtitle: trackedSubjectSubtitle(
-                    for: type,
-                    repository: repository,
-                    isDraft: issue.isDraft
-                ),
-                repository: repository,
-                labels: issue.labels.map(\.gitHubLabel),
-                url: issue.htmlURL,
-                updatedAt: issue.updatedAt,
-                actor: nil,
-                isTriggeredByCurrentUser: type.isSelfTriggeredRelationshipType,
-                latestSelfUpdate: nil,
-                isDraft: issue.isDraft,
-                resolution: resolution ?? issue.resolution
-            )
-        }
-    }
-
-    private func buildAuthoredPullRequestSignals(
-        token: String,
-        login: String,
-        issue: IssueItem,
-        observer: GitHubRateLimitObserver
-    ) async throws -> [AuthoredPullRequestSignalSummary] {
-        guard let repository = repositoryFullName(from: issue.repositoryURL) else {
-            return []
-        }
-
-        let repositoryID = try parseRepositoryFullName(repository)
-        let details: PullRequestDetails = try await request(
-            path: "/repos/\(repositoryID.owner)/\(repositoryID.name)/pulls/\(issue.number)",
-            token: token,
-            observer: observer
-        )
-
-        guard details.state.caseInsensitiveCompare("open") == .orderedSame,
-            !details.merged else {
-            return []
-        }
-
-        let reviews = try await fetchPullRequestReviews(
-            token: token,
-            repository: repository,
-            number: issue.number,
-            observer: observer
-        )
-        let approvalSummary = latestApprovalSummary(reviews: reviews, excluding: login)
-        let checkInsights = try await fetchCheckInsights(
-            token: token,
-            reference: PullRequestReference(
-                owner: repositoryID.owner,
-                name: repositoryID.name,
-                number: issue.number
-            ),
-            headSHA: details.head.sha,
-            observer: observer
-        )
-
-        let pendingReviewRequests = details.requestedReviewers.count + details.requestedTeams.count
-        let commonValues = (
-            idBase: "\(repository)#\(issue.number)",
-            ignoreKey: details.htmlURL.absoluteString,
-            number: issue.number,
-            title: issue.title,
-            repository: repository,
-            labels: issue.labels.map(\.gitHubLabel),
-            url: details.htmlURL,
-            updatedAt: issue.updatedAt,
-            actor: approvalSummary.latestApprover,
-            checkSummary: checkInsights.summary
-        )
-
-        var summaries = [AuthoredPullRequestSignalSummary]()
-
-        if AuthoredPullRequestAttentionPolicy.shouldSurfaceReadyToMerge(
-            state: details.state,
-            merged: details.merged,
-            isDraft: details.isDraft,
-            mergeable: details.mergeable,
-            mergeableState: details.mergeableState,
-            pendingReviewRequests: pendingReviewRequests,
-            approvalCount: approvalSummary.approvalCount,
-            hasChangesRequested: approvalSummary.hasChangesRequested,
-            checkSummary: checkInsights.summary
-        ) {
-            let subtitle: String
-            if let actor = approvalSummary.latestApprover {
-                subtitle = "\(actor.login) · \(repository) · Ready to merge"
-            } else {
-                subtitle = "\(repository) · Ready to merge"
-            }
-
-            summaries.append(
-                AuthoredPullRequestSignalSummary(
-                    id: "\(commonValues.idBase):\(AttentionItemType.readyToMerge.rawValue)",
-                    ignoreKey: commonValues.ignoreKey,
-                    type: .readyToMerge,
-                    number: commonValues.number,
-                    title: commonValues.title,
-                    subtitle: subtitle,
-                    repository: commonValues.repository,
-                    labels: commonValues.labels,
-                    url: commonValues.url,
-                    updatedAt: commonValues.updatedAt,
-                    actor: commonValues.actor,
-                    approvalCount: approvalSummary.approvalCount,
-                    checkSummary: commonValues.checkSummary,
-                    isDraft: details.isDraft
-                )
-            )
-        }
-
-        if AuthoredPullRequestAttentionPolicy.shouldSurfaceMergeConflicts(
-            state: details.state,
-            merged: details.merged,
-            isDraft: details.isDraft,
-            mergeableState: details.mergeableState
-        ) {
-            summaries.append(
-                AuthoredPullRequestSignalSummary(
-                    id: "\(commonValues.idBase):\(AttentionItemType.pullRequestMergeConflicts.rawValue)",
-                    ignoreKey: commonValues.ignoreKey,
-                    type: .pullRequestMergeConflicts,
-                    number: commonValues.number,
-                    title: commonValues.title,
-                    subtitle: draftAwareSubtitle(
-                        repository: repository,
-                        detail: "Merge conflicts",
-                        isDraft: details.isDraft
-                    ),
-                    repository: commonValues.repository,
-                    labels: commonValues.labels,
-                    url: commonValues.url,
-                    updatedAt: commonValues.updatedAt,
-                    actor: nil,
-                    approvalCount: nil,
-                    checkSummary: commonValues.checkSummary,
-                    isDraft: details.isDraft
-                )
-            )
-        }
-
-        if AuthoredPullRequestAttentionPolicy.shouldSurfaceFailedChecks(
-            state: details.state,
-            merged: details.merged,
-            isDraft: details.isDraft,
-            checkSummary: checkInsights.summary
-        ) {
-            let failureLabel = checkInsights.summary.failedCount == 1
-                ? "1 failed check"
-                : "\(checkInsights.summary.failedCount) failed checks"
-            summaries.append(
-                AuthoredPullRequestSignalSummary(
-                    id: "\(commonValues.idBase):\(AttentionItemType.pullRequestFailedChecks.rawValue)",
-                    ignoreKey: commonValues.ignoreKey,
-                    type: .pullRequestFailedChecks,
-                    number: commonValues.number,
-                    title: commonValues.title,
-                    subtitle: draftAwareSubtitle(
-                        repository: repository,
-                        detail: failureLabel,
-                        isDraft: details.isDraft
-                    ),
-                    repository: commonValues.repository,
-                    labels: commonValues.labels,
-                    url: commonValues.url,
-                    updatedAt: commonValues.updatedAt,
-                    actor: nil,
-                    approvalCount: nil,
-                    checkSummary: commonValues.checkSummary,
-                    isDraft: details.isDraft
-                )
-            )
-        }
-
-        return summaries
     }
 
     private func fetchActionableNotifications(
@@ -4104,16 +3592,13 @@ struct GitHubClient {
     private func workflowWatchCandidates(
         assignedPullRequests: [PullRequestSummary],
         trackedPullRequests: [TrackedSubjectSummary],
-        openAuthoredIssues: [IssueItem]
+        openAuthoredPullRequests: [PullRequestSummary]
     ) -> [WorkflowWatchCandidate] {
         var candidates = [WorkflowWatchCandidate]()
 
-        for pr in openAuthoredIssues {
-            guard let repository = repositoryFullName(from: pr.repositoryURL) else {
-                continue
-            }
+        for pr in openAuthoredPullRequests {
             candidates.append(WorkflowWatchCandidate(
-                repository: repository,
+                repository: pr.repository,
                 number: pr.number,
                 relationship: .authored,
                 updatedAt: pr.updatedAt
@@ -5814,7 +5299,7 @@ private struct PullRequestFocusGraphQLConnection<Node: Decodable>: Decodable {
     let nodes: [Node?]
 }
 
-private struct PullRequestFocusGraphQLLabel: Decodable {
+struct PullRequestFocusGraphQLLabel: Decodable, Sendable {
     let name: String
     let color: String
     let description: String?
@@ -5863,7 +5348,7 @@ private struct PullRequestGraphQLRuleParameters: Decodable {
     }
 }
 
-private struct PullRequestFocusGraphQLActor: Decodable {
+struct PullRequestFocusGraphQLActor: Decodable, Sendable {
     let typeName: String
     let login: String
     let avatarURL: URL?
@@ -5924,7 +5409,7 @@ private struct PullRequestFocusGraphQLReviewComment: Decodable {
     let author: PullRequestFocusGraphQLActor?
 }
 
-private struct PullRequestFocusGraphQLReview: Decodable {
+struct PullRequestFocusGraphQLReview: Decodable, Sendable {
     let id: String
     let state: String
     let bodyHTML: String?
@@ -6798,4 +6283,769 @@ final class WorkflowRunCache: @unchecked Sendable {
 
 private struct GitHubAPIError: Decodable {
     let message: String
+}
+
+// MARK: - GraphQL Snapshot (poll loop)
+
+struct SnapshotPollData: Sendable {
+    let assignedPullRequests: [PullRequestSummary]
+    let openAuthoredPullRequests: [PullRequestSummary]
+    let trackedPullRequests: [TrackedSubjectSummary]
+    let authoredPullRequestSignals: [AuthoredPullRequestSignalSummary]
+}
+
+extension GitHubClient {
+    fileprivate static let snapshotPollQuery = """
+    query SnapshotPoll(
+      $login: String!,
+      $assignedQuery: String!,
+      $authoredOpenQuery: String!,
+      $authoredMergedQuery: String!,
+      $reviewedQuery: String!,
+      $commentedQuery: String!,
+      $assignedFirst: Int!,
+      $authoredOpenFirst: Int!,
+      $authoredMergedFirst: Int!,
+      $reviewedFirst: Int!,
+      $commentedFirst: Int!
+    ) {
+      assigned: search(query: $assignedQuery, type: ISSUE, first: $assignedFirst) {
+        nodes { __typename ...prCore }
+      }
+      authoredOpen: search(query: $authoredOpenQuery, type: ISSUE, first: $authoredOpenFirst) {
+        nodes { __typename ...prCore ...prSignals }
+      }
+      authoredMerged: search(query: $authoredMergedQuery, type: ISSUE, first: $authoredMergedFirst) {
+        nodes { __typename ...prCore ...prMergedBy }
+      }
+      reviewed: search(query: $reviewedQuery, type: ISSUE, first: $reviewedFirst) {
+        nodes { __typename ...prCore ...prViewerReviews }
+      }
+      commented: search(query: $commentedQuery, type: ISSUE, first: $commentedFirst) {
+        nodes { __typename ...prCore }
+      }
+      rateLimit { cost remaining resetAt }
+    }
+
+    fragment prCore on PullRequest {
+      databaseId
+      number
+      title
+      url
+      isDraft
+      updatedAt
+      state
+      merged
+      mergedAt
+      repository { nameWithOwner }
+      author { __typename login avatarUrl url }
+      labels(first: 50) { nodes { name color description } }
+    }
+
+    fragment prMergedBy on PullRequest {
+      mergedBy { __typename login avatarUrl url }
+    }
+
+    fragment prViewerReviews on PullRequest {
+      viewerReviews: reviews(first: 50, author: $login) {
+        nodes { id state submittedAt url author { __typename login avatarUrl url } }
+      }
+    }
+
+    fragment prSignals on PullRequest {
+      mergeable
+      reviewDecision
+      headRefOid
+      reviewRequests(first: 1) { totalCount }
+      reviews(first: 50) {
+        nodes { id state submittedAt url author { __typename login avatarUrl url } }
+      }
+      commits(last: 1) {
+        nodes {
+          commit {
+            statusCheckRollup {
+              contexts(first: 100) {
+                nodes {
+                  __typename
+                  ... on CheckRun {
+                    databaseId
+                    name
+                    status
+                    conclusion
+                    startedAt
+                    completedAt
+                    detailsUrl
+                    permalink
+                    checkSuite { app { slug } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    fileprivate func fetchPollSnapshot(
+        token: String,
+        login: String,
+        observer: GitHubRateLimitObserver
+    ) async throws -> SnapshotPollData {
+        let variables = SnapshotPollQueryVariables(
+            login: login,
+            assignedQuery: "is:pr assignee:\(login) archived:false",
+            authoredOpenQuery: "is:open is:pr author:\(login) archived:false",
+            authoredMergedQuery: "is:merged is:pr author:\(login) archived:false",
+            reviewedQuery: "is:pr reviewed-by:\(login) archived:false",
+            commentedQuery: "is:pr commenter:\(login) archived:false",
+            assignedFirst: snapshotAssignedPullRequestLimit,
+            authoredOpenFirst: max(authoredPullRequestLimit, trackedPullRequestLimit),
+            authoredMergedFirst: trackedPullRequestLimit,
+            reviewedFirst: trackedPullRequestLimit,
+            commentedFirst: trackedPullRequestLimit
+        )
+
+        let data: SnapshotPollQueryData = try await graphQLRequest(
+            query: Self.snapshotPollQuery,
+            variables: variables,
+            token: token,
+            observer: observer
+        )
+
+        return buildSnapshotPollData(from: data, login: login)
+    }
+
+    func buildSnapshotPollData(
+        from data: SnapshotPollQueryData,
+        login: String
+    ) -> SnapshotPollData {
+        let assignedNodes = data.assigned.pullRequestNodes
+        let openAuthoredNodes = data.authoredOpen.pullRequestNodes
+        let mergedAuthoredNodes = data.authoredMerged.pullRequestNodes
+        let reviewedNodes = data.reviewed.pullRequestNodes
+        let commentedNodes = data.commented.pullRequestNodes
+
+        let assigned = deduplicatedPullRequestSummaries(
+            assignedNodes.compactMap { pullRequestSummary(from: $0) }
+        )
+        let openAuthored = deduplicatedPullRequestSummaries(
+            openAuthoredNodes.compactMap { pullRequestSummary(from: $0) }
+        )
+
+        let authoredOpenTracked = openAuthoredNodes.compactMap {
+            trackedSubjectSummary(from: $0, type: .authoredPullRequest, login: login)
+        }
+        let authoredMergedTracked = mergedAuthoredNodes.compactMap {
+            trackedSubjectSummary(from: $0, type: .authoredPullRequest, login: login)
+        }
+        let reviewedTracked = reviewedNodes.compactMap {
+            trackedSubjectSummary(from: $0, type: .reviewedPullRequest, login: login)
+        }
+        let commentedTracked = commentedNodes.compactMap {
+            trackedSubjectSummary(from: $0, type: .commentedPullRequest, login: login)
+        }
+
+        let trackedCombined = mergeTrackedSubjects(
+            authoredOpenTracked + authoredMergedTracked + reviewedTracked + commentedTracked
+        )
+
+        let authoredSignals = authoredPullRequestSignals(
+            from: openAuthoredNodes,
+            login: login,
+            limit: authoredPullRequestLimit
+        )
+
+        return SnapshotPollData(
+            assignedPullRequests: assigned,
+            openAuthoredPullRequests: openAuthored,
+            trackedPullRequests: trackedCombined,
+            authoredPullRequestSignals: authoredSignals
+        )
+    }
+
+    private var snapshotAssignedPullRequestLimit: Int { 40 }
+
+    private func deduplicatedPullRequestSummaries(
+        _ summaries: [PullRequestSummary]
+    ) -> [PullRequestSummary] {
+        var byKey = [String: PullRequestSummary]()
+        for summary in summaries {
+            if let existing = byKey[summary.ignoreKey], existing.updatedAt >= summary.updatedAt {
+                continue
+            }
+            byKey[summary.ignoreKey] = summary
+        }
+        return byKey.values.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private func pullRequestSummary(
+        from node: SnapshotPollPullRequestNode
+    ) -> PullRequestSummary? {
+        guard node.typeName == "PullRequest",
+              let databaseId = node.databaseId,
+              let number = node.number,
+              let title = node.title,
+              let url = node.url,
+              let updatedAt = node.updatedAt,
+              let repository = node.repository?.nameWithOwner,
+              let state = node.state else {
+            return nil
+        }
+        let isDraft = node.isDraft ?? false
+        return PullRequestSummary(
+            id: databaseId,
+            ignoreKey: url.absoluteString,
+            number: number,
+            title: title,
+            subtitle: pullRequestSubtitle(
+                number: number,
+                repository: repository,
+                isDraft: isDraft
+            ),
+            repository: repository,
+            labels: (node.labels?.nodes ?? []).compactMap { $0?.gitHubLabel },
+            url: url,
+            updatedAt: updatedAt,
+            isDraft: isDraft,
+            resolution: snapshotResolution(state: state, merged: node.merged ?? false)
+        )
+    }
+
+    private func trackedSubjectSummary(
+        from node: SnapshotPollPullRequestNode,
+        type: AttentionItemType,
+        login: String
+    ) -> TrackedSubjectSummary? {
+        guard node.typeName == "PullRequest",
+              let number = node.number,
+              let title = node.title,
+              let url = node.url,
+              let updatedAt = node.updatedAt,
+              let repository = node.repository?.nameWithOwner,
+              let state = node.state else {
+            return nil
+        }
+        let isDraft = node.isDraft ?? false
+        let merged = node.merged ?? false
+        let resolution = snapshotResolution(state: state, merged: merged)
+        let labels = (node.labels?.nodes ?? []).compactMap { $0?.gitHubLabel }
+
+        let actor: AttentionActor?
+        let subtitle: String
+        if type == .authoredPullRequest, resolution == .merged {
+            actor = attentionActor(from: node.mergedBy)
+            subtitle = mergedTrackedPullRequestSubtitle(
+                repository: repository,
+                mergedBy: actor,
+                currentLogin: login
+            )
+        } else {
+            actor = nil
+            subtitle = trackedSubjectSubtitle(
+                for: type,
+                repository: repository,
+                isDraft: isDraft
+            )
+        }
+
+        let latestSelfUpdate: TrackedSubjectSelfUpdateSummary?
+        if type == .reviewedPullRequest {
+            let reviews = (node.viewerReviews?.nodes ?? []).compactMap { $0?.asPullRequestFocusReview }
+            latestSelfUpdate = latestViewerReviewUpdate(
+                fromGraphQLReviews: reviews,
+                login: login
+            )
+        } else {
+            latestSelfUpdate = nil
+        }
+
+        return TrackedSubjectSummary(
+            id: "\(repository)#\(number)",
+            ignoreKey: url.absoluteString,
+            type: type,
+            number: number,
+            title: title,
+            subtitle: subtitle,
+            repository: repository,
+            labels: labels,
+            url: url,
+            updatedAt: updatedAt,
+            actor: actor,
+            isTriggeredByCurrentUser: type.isSelfTriggeredRelationshipType,
+            latestSelfUpdate: latestSelfUpdate,
+            isDraft: isDraft,
+            resolution: resolution
+        )
+    }
+
+    private func authoredPullRequestSignals(
+        from nodes: [SnapshotPollPullRequestNode],
+        login: String,
+        limit: Int
+    ) -> [AuthoredPullRequestSignalSummary] {
+        var summaries = [AuthoredPullRequestSignalSummary]()
+
+        for node in nodes.prefix(limit) {
+            guard node.typeName == "PullRequest",
+                  let number = node.number,
+                  let title = node.title,
+                  let url = node.url,
+                  let updatedAt = node.updatedAt,
+                  let repository = node.repository?.nameWithOwner,
+                  let state = node.state else {
+                continue
+            }
+
+            let merged = node.merged ?? false
+            let normalizedState = state.lowercased() == "open" ? "open" : state.lowercased()
+            guard normalizedState == "open", !merged else { continue }
+
+            let isDraft = node.isDraft ?? false
+            let labels = (node.labels?.nodes ?? []).compactMap { $0?.gitHubLabel }
+            let reviews = (node.reviews?.nodes ?? []).compactMap { $0?.asPullRequestFocusReview }
+            let approvalSummary = latestApprovalSummary(reviews: reviews, excluding: login)
+            let checkRuns = snapshotCheckRuns(from: node.commits)
+            let rolledUp = PullRequestCheckRunRollupPolicy.latestRuns(from: checkRuns)
+            let checkSummary = snapshotCheckSummary(from: rolledUp)
+            let pendingReviewRequests = node.reviewRequests?.totalCount ?? 0
+            let mergeable = snapshotMergeable(node.mergeable)
+            let mergeableState = snapshotMergeableState(
+                graphqlMergeable: node.mergeable,
+                reviewDecision: node.reviewDecision,
+                approvalSummary: approvalSummary,
+                checkSummary: checkSummary
+            )
+
+            let idBase = "\(repository)#\(number)"
+            let ignoreKey = url.absoluteString
+            let actor = approvalSummary.latestApprover
+
+            if AuthoredPullRequestAttentionPolicy.shouldSurfaceReadyToMerge(
+                state: normalizedState,
+                merged: merged,
+                isDraft: isDraft,
+                mergeable: mergeable,
+                mergeableState: mergeableState,
+                pendingReviewRequests: pendingReviewRequests,
+                approvalCount: approvalSummary.approvalCount,
+                hasChangesRequested: approvalSummary.hasChangesRequested,
+                checkSummary: checkSummary
+            ) {
+                let subtitle: String
+                if let actor {
+                    subtitle = "\(actor.login) · \(repository) · Ready to merge"
+                } else {
+                    subtitle = "\(repository) · Ready to merge"
+                }
+
+                summaries.append(
+                    AuthoredPullRequestSignalSummary(
+                        id: "\(idBase):\(AttentionItemType.readyToMerge.rawValue)",
+                        ignoreKey: ignoreKey,
+                        type: .readyToMerge,
+                        number: number,
+                        title: title,
+                        subtitle: subtitle,
+                        repository: repository,
+                        labels: labels,
+                        url: url,
+                        updatedAt: updatedAt,
+                        actor: actor,
+                        approvalCount: approvalSummary.approvalCount,
+                        checkSummary: checkSummary,
+                        isDraft: isDraft
+                    )
+                )
+            }
+
+            if AuthoredPullRequestAttentionPolicy.shouldSurfaceMergeConflicts(
+                state: normalizedState,
+                merged: merged,
+                isDraft: isDraft,
+                mergeableState: mergeableState
+            ) {
+                summaries.append(
+                    AuthoredPullRequestSignalSummary(
+                        id: "\(idBase):\(AttentionItemType.pullRequestMergeConflicts.rawValue)",
+                        ignoreKey: ignoreKey,
+                        type: .pullRequestMergeConflicts,
+                        number: number,
+                        title: title,
+                        subtitle: draftAwareSubtitle(
+                            repository: repository,
+                            detail: "Merge conflicts",
+                            isDraft: isDraft
+                        ),
+                        repository: repository,
+                        labels: labels,
+                        url: url,
+                        updatedAt: updatedAt,
+                        actor: nil,
+                        approvalCount: nil,
+                        checkSummary: checkSummary,
+                        isDraft: isDraft
+                    )
+                )
+            }
+
+            if AuthoredPullRequestAttentionPolicy.shouldSurfaceFailedChecks(
+                state: normalizedState,
+                merged: merged,
+                isDraft: isDraft,
+                checkSummary: checkSummary
+            ) {
+                let failureLabel = checkSummary.failedCount == 1
+                    ? "1 failed check"
+                    : "\(checkSummary.failedCount) failed checks"
+                summaries.append(
+                    AuthoredPullRequestSignalSummary(
+                        id: "\(idBase):\(AttentionItemType.pullRequestFailedChecks.rawValue)",
+                        ignoreKey: ignoreKey,
+                        type: .pullRequestFailedChecks,
+                        number: number,
+                        title: title,
+                        subtitle: draftAwareSubtitle(
+                            repository: repository,
+                            detail: failureLabel,
+                            isDraft: isDraft
+                        ),
+                        repository: repository,
+                        labels: labels,
+                        url: url,
+                        updatedAt: updatedAt,
+                        actor: nil,
+                        approvalCount: nil,
+                        checkSummary: checkSummary,
+                        isDraft: isDraft
+                    )
+                )
+            }
+        }
+
+        return summaries.sorted { lhs, rhs in
+            if lhs.updatedAt == rhs.updatedAt {
+                return lhs.type.aggregateDisplayPriority > rhs.type.aggregateDisplayPriority
+            }
+            return lhs.updatedAt > rhs.updatedAt
+        }
+    }
+
+    private func latestViewerReviewUpdate(
+        fromGraphQLReviews reviews: [PullRequestFocusGraphQLReview],
+        login: String
+    ) -> TrackedSubjectSelfUpdateSummary? {
+        let viewerReviews = reviews.filter { review in
+            guard let reviewer = review.author?.login else { return false }
+            return reviewer.caseInsensitiveCompare(login) == .orderedSame
+        }
+        guard let latest = viewerReviews.max(by: { $0.submittedAt < $1.submittedAt }) else {
+            return nil
+        }
+        return viewerReviewUpdateSummary(from: latest)
+    }
+
+    private func snapshotResolution(state: String, merged: Bool) -> GitHubSubjectResolution {
+        if merged {
+            return .merged
+        }
+        switch state.uppercased() {
+        case "MERGED": return .merged
+        case "CLOSED": return .closed
+        default: return .open
+        }
+    }
+
+    private func snapshotMergeable(_ value: String?) -> Bool? {
+        switch value?.uppercased() {
+        case "MERGEABLE": return true
+        case "CONFLICTING": return false
+        default: return nil
+        }
+    }
+
+    private func snapshotMergeableState(
+        graphqlMergeable: String?,
+        reviewDecision: String?,
+        approvalSummary: LatestApprovalSummary,
+        checkSummary: PullRequestCheckSummary
+    ) -> String? {
+        switch graphqlMergeable?.uppercased() {
+        case "CONFLICTING":
+            return "dirty"
+        case "MERGEABLE":
+            if approvalSummary.hasChangesRequested {
+                return "blocked"
+            }
+            if checkSummary.hasFailures {
+                return "unstable"
+            }
+            if checkSummary.pendingCount > 0 {
+                return "unstable"
+            }
+            switch reviewDecision?.uppercased() {
+            case "CHANGES_REQUESTED", "REVIEW_REQUIRED":
+                return "blocked"
+            default:
+                return "clean"
+            }
+        default:
+            return "unknown"
+        }
+    }
+
+    private func snapshotCheckRuns(
+        from commits: SnapshotPollCommitConnection?
+    ) -> [PullRequestCheckRun] {
+        let commitNodes = commits?.nodes?.compactMap { $0 } ?? []
+        guard let latest = commitNodes.last else { return [] }
+        let contexts = latest.commit.statusCheckRollup?.contexts.nodes?.compactMap { $0 } ?? []
+        return contexts.compactMap { context -> PullRequestCheckRun? in
+            guard context.typeName == "CheckRun",
+                  let id = context.databaseId,
+                  let name = context.name,
+                  let status = context.status else {
+                return nil
+            }
+            return PullRequestCheckRun(
+                id: id,
+                name: name,
+                status: status.lowercased(),
+                conclusion: context.conclusion?.lowercased(),
+                htmlURL: context.permalink,
+                detailsURL: context.detailsUrl,
+                startedAt: context.startedAt,
+                completedAt: context.completedAt,
+                appSlug: context.checkSuite?.app?.slug
+            )
+        }
+    }
+
+    private func snapshotCheckSummary(
+        from runs: [PullRequestCheckRun]
+    ) -> PullRequestCheckSummary {
+        let failingConclusions: Set<String> = [
+            "action_required",
+            "cancelled",
+            "failure",
+            "startup_failure",
+            "timed_out"
+        ]
+        let pendingStatuses: Set<String> = [
+            "queued",
+            "in_progress",
+            "waiting",
+            "pending",
+            "requested"
+        ]
+
+        var passedCount = 0
+        var skippedCount = 0
+        var failedCount = 0
+        var pendingCount = 0
+
+        for run in runs {
+            let status = run.status.lowercased()
+            let conclusion = run.conclusion?.lowercased()
+
+            if pendingStatuses.contains(status) {
+                pendingCount += 1
+                continue
+            }
+
+            switch conclusion {
+            case "success":
+                passedCount += 1
+            case "skipped", "neutral":
+                skippedCount += 1
+            case let value? where failingConclusions.contains(value):
+                failedCount += 1
+            default:
+                if conclusion == nil {
+                    pendingCount += 1
+                }
+            }
+        }
+
+        return PullRequestCheckSummary(
+            passedCount: passedCount,
+            skippedCount: skippedCount,
+            failedCount: failedCount,
+            pendingCount: pendingCount
+        )
+    }
+}
+
+struct SnapshotPollQueryVariables: Encodable, Sendable {
+    let login: String
+    let assignedQuery: String
+    let authoredOpenQuery: String
+    let authoredMergedQuery: String
+    let reviewedQuery: String
+    let commentedQuery: String
+    let assignedFirst: Int
+    let authoredOpenFirst: Int
+    let authoredMergedFirst: Int
+    let reviewedFirst: Int
+    let commentedFirst: Int
+}
+
+struct SnapshotPollQueryData: Decodable, Sendable {
+    let assigned: SnapshotPollSearchResults
+    let authoredOpen: SnapshotPollSearchResults
+    let authoredMerged: SnapshotPollSearchResults
+    let reviewed: SnapshotPollSearchResults
+    let commented: SnapshotPollSearchResults
+    let rateLimit: SnapshotPollRateLimit?
+}
+
+struct SnapshotPollRateLimit: Decodable, Sendable {
+    let cost: Int?
+    let remaining: Int?
+    let resetAt: Date?
+}
+
+struct SnapshotPollSearchResults: Decodable, Sendable {
+    let nodes: [SnapshotPollPullRequestNode?]?
+
+    var pullRequestNodes: [SnapshotPollPullRequestNode] {
+        (nodes ?? []).compactMap { $0 }.filter { $0.typeName == "PullRequest" }
+    }
+}
+
+struct SnapshotPollPullRequestNode: Decodable, Sendable {
+    let typeName: String?
+    let databaseId: Int?
+    let number: Int?
+    let title: String?
+    let url: URL?
+    let isDraft: Bool?
+    let updatedAt: Date?
+    let state: String?
+    let merged: Bool?
+    let mergedAt: Date?
+    let repository: SnapshotPollRepositoryRef?
+    let author: PullRequestFocusGraphQLActor?
+    let labels: SnapshotPollLabelConnection?
+    let mergedBy: PullRequestFocusGraphQLActor?
+    let viewerReviews: SnapshotPollReviewConnection?
+    let mergeable: String?
+    let reviewDecision: String?
+    let headRefOid: String?
+    let reviewRequests: SnapshotPollReviewRequestsConnection?
+    let reviews: SnapshotPollReviewConnection?
+    let commits: SnapshotPollCommitConnection?
+
+    enum CodingKeys: String, CodingKey {
+        case typeName = "__typename"
+        case databaseId
+        case number
+        case title
+        case url
+        case isDraft
+        case updatedAt
+        case state
+        case merged
+        case mergedAt
+        case repository
+        case author
+        case labels
+        case mergedBy
+        case viewerReviews
+        case mergeable
+        case reviewDecision
+        case headRefOid
+        case reviewRequests
+        case reviews
+        case commits
+    }
+}
+
+struct SnapshotPollRepositoryRef: Decodable, Sendable {
+    let nameWithOwner: String
+}
+
+struct SnapshotPollLabelConnection: Decodable, Sendable {
+    let nodes: [PullRequestFocusGraphQLLabel?]?
+}
+
+struct SnapshotPollReviewConnection: Decodable, Sendable {
+    let nodes: [SnapshotPollReviewNode?]?
+}
+
+struct SnapshotPollReviewNode: Decodable, Sendable {
+    let id: String
+    let state: String
+    let submittedAt: Date
+    let url: URL
+    let author: PullRequestFocusGraphQLActor?
+
+    var asPullRequestFocusReview: PullRequestFocusGraphQLReview {
+        PullRequestFocusGraphQLReview(
+            id: id,
+            state: state,
+            bodyHTML: nil,
+            submittedAt: submittedAt,
+            url: url,
+            author: author
+        )
+    }
+}
+
+struct SnapshotPollReviewRequestsConnection: Decodable, Sendable {
+    let totalCount: Int
+}
+
+struct SnapshotPollCommitConnection: Decodable, Sendable {
+    let nodes: [SnapshotPollCommitNode?]?
+}
+
+struct SnapshotPollCommitNode: Decodable, Sendable {
+    let commit: SnapshotPollCommit
+}
+
+struct SnapshotPollCommit: Decodable, Sendable {
+    let statusCheckRollup: SnapshotPollStatusCheckRollup?
+}
+
+struct SnapshotPollStatusCheckRollup: Decodable, Sendable {
+    let contexts: SnapshotPollCheckContextConnection
+}
+
+struct SnapshotPollCheckContextConnection: Decodable, Sendable {
+    let nodes: [SnapshotPollCheckContext?]?
+}
+
+struct SnapshotPollCheckContext: Decodable, Sendable {
+    let typeName: String
+    let databaseId: Int?
+    let name: String?
+    let status: String?
+    let conclusion: String?
+    let startedAt: Date?
+    let completedAt: Date?
+    let detailsUrl: URL?
+    let permalink: URL?
+    let checkSuite: SnapshotPollCheckSuite?
+
+    enum CodingKeys: String, CodingKey {
+        case typeName = "__typename"
+        case databaseId
+        case name
+        case status
+        case conclusion
+        case startedAt
+        case completedAt
+        case detailsUrl
+        case permalink
+        case checkSuite
+    }
+}
+
+struct SnapshotPollCheckSuite: Decodable, Sendable {
+    let app: SnapshotPollCheckApp?
+}
+
+struct SnapshotPollCheckApp: Decodable, Sendable {
+    let slug: String?
 }
