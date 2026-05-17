@@ -4356,17 +4356,23 @@ enum AttentionSubjectViewPolicy {
     }
 
     private static func relationshipSort(lhs: AttentionItem, rhs: AttentionItem) -> Bool {
-        if lhs.type.relationshipPriority == rhs.type.relationshipPriority {
+        if lhs.type.relationshipPriority != rhs.type.relationshipPriority {
+            return lhs.type.relationshipPriority < rhs.type.relationshipPriority
+        }
+        if lhs.timestamp != rhs.timestamp {
             return lhs.timestamp < rhs.timestamp
         }
-        return lhs.type.relationshipPriority < rhs.type.relationshipPriority
+        return lhs.updateKey < rhs.updateKey
     }
 
     private static func updateSort(lhs: AttentionItem, rhs: AttentionItem) -> Bool {
-        if lhs.type.aggregateDisplayPriority == rhs.type.aggregateDisplayPriority {
+        if lhs.type.aggregateDisplayPriority != rhs.type.aggregateDisplayPriority {
+            return lhs.type.aggregateDisplayPriority < rhs.type.aggregateDisplayPriority
+        }
+        if lhs.timestamp != rhs.timestamp {
             return lhs.timestamp < rhs.timestamp
         }
-        return lhs.type.aggregateDisplayPriority < rhs.type.aggregateDisplayPriority
+        return lhs.updateKey < rhs.updateKey
     }
 
     private static func secondaryIndicator(
