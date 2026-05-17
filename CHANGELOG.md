@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/fiam/octowatch/compare/v0.2.0...v0.3.0) (2026-05-17)
+
+
+### Bug Fixes
+
+* **attention:** stabilize subject item selection across polls ([4c7fb26](https://github.com/fiam/octowatch/commit/4c7fb268cc354e4adca48c51dacc81006e8e8f7f))
+
+
+### Performance Improvements
+
+* **client:** consolidate poll loop on a single GraphQL query ([57f80bf](https://github.com/fiam/octowatch/commit/57f80bfda702a5621d7f13bbd112ca803626f794))
+
 ## 0.2.0 (2026-04-19)
 
 
